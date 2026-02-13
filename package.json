@@ -1,0 +1,82 @@
+{
+  "name": "global-registry-bot",
+  "version": "0.1.7-dev.1",
+  "private": true,
+  "description": "A configurable GitHub App bot to validate and automate registry-related requests",
+  "author": "SAP SE",
+  "homepage": "https://github.com/open-resource-discovery/global-registry-bot",
+  "keywords": [
+    "probot",
+    "github",
+    "probot-app"
+  ],
+  "scripts": {
+    "prepare": "is-ci || husky",
+    "lint": "eslint .",
+    "format": "npm run prettier",
+    "lint:fix": "npm run prettier && eslint --fix .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.prod.json",
+    "prettier:check": "npm run prettier:ci",
+    "start": "probot run ./dist/index.js",
+    "start:src": "probot run ./src/index.js",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --coverage",
+    "prettier": "prettier --write \"**/*.{js,ts,json,yml,yaml,md}\"",
+    "prettier:ci": "prettier --check \"**/*.{js,ts,json,yml,yaml,md}\"",
+    "lint:staged": "lint-staged"
+  },
+  "dependencies": {
+    "ajv": "^8.12.0",
+    "ajv-errors": "^3.0.0",
+    "ajv-formats": "^2.1.1",
+    "js-yaml": "4.1.1",
+    "piscina": "5.1.4",
+    "probot": "^13.0.1",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@babel/core": "7.28.5",
+    "@babel/preset-env": "7.28.5",
+    "@babel/preset-typescript": "7.28.5",
+    "@sap/eslint-config": "0.4.0",
+    "@types/jest": "30.0.0",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "25.0.3",
+    "babel-jest": "30.2.0",
+    "eslint": "9.38.0",
+    "globals": "^16.4.0",
+    "husky": "^9.1.7",
+    "jest": "30.2.0",
+    "lint-staged": "^16.2.1",
+    "nock": "^14.0.0-beta.5",
+    "prettier": "^3.6.2",
+    "smee-client": "^2.0.0",
+    "ts-jest": "29.4.6",
+    "typescript": "5.7.3",
+    "is-ci": "4.1.0"
+  },
+  "engines": {
+    "node": "22",
+    "npm": ">=10.0.0"
+  },
+  "lint-staged": {
+    "**/*.{js,ts,mjs,cjs}": [
+      "prettier --write",
+      "eslint --fix"
+    ],
+    "**/*.{md,json,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/open-resource-discovery/global-registry-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/open-resource-discovery/global-registry-bot/issues"
+  }
+}

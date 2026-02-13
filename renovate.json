@@ -1,0 +1,91 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests",
+    "docker:enableMajor",
+    ":pinAllExceptPeerDependencies"
+  ],
+  "enabledManagers": ["npm", "dockerfile", "github-actions"],
+  "branchPrefix": "deps/",
+  "timezone": "Europe/Berlin",
+  "schedule": ["every weekend"],
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 2,
+  "vulnerabilityAlerts": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Security fixes: fast path",
+      "matchUpdateTypes": ["security"],
+      "semanticCommitType": "fix",
+      "automerge": true
+    },
+    {
+      "groupName": "GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "semanticCommitType": "chore",
+      "automerge": true
+    },
+    {
+      "groupName": "Docker base images",
+      "matchManagers": ["dockerfile"],
+      "semanticCommitType": "chore",
+      "automerge": true
+    },
+    {
+      "groupName": "Runtime deps",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies"],
+      "matchPackageNames": ["ajv", "ajv-errors", "ajv-formats", "js-yaml", "piscina", "probot", "yaml"],
+      "semanticCommitType": "fix",
+      "automerge": true,
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "groupName": "Dev toolchain (TypeScript/Babel)",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchPackagePatterns": ["^@babel/"],
+      "matchPackageNames": ["typescript", "ts-jest", "babel-jest"],
+      "semanticCommitType": "chore",
+      "automerge": true,
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "groupName": "Lint & formatting",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchPackageNames": ["eslint", "@sap/eslint-config", "prettier", "globals"],
+      "semanticCommitType": "chore",
+      "automerge": true,
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "groupName": "Tests",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchPackageNames": ["jest", "@jest/globals", "@types/jest", "nock"],
+      "semanticCommitType": "chore",
+      "automerge": true,
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "groupName": "Type definitions",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchPackageNames": ["@types/node", "@types/js-yaml"],
+      "semanticCommitType": "chore",
+      "automerge": true,
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "description": "Major updates: keep manual",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
