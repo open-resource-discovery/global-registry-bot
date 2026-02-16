@@ -131,7 +131,7 @@ export default async function hookWorker(task: Task): Promise<HookWorkerResult> 
 
   const { log, logs } = makeCapturingLog();
 
-  const api = installSafeFetch(task.allowedHosts ?? ['api.sap.com'], task.secrets ?? {});
+  const api = installSafeFetch(task.allowedHosts ?? [], task.secrets ?? {});
 
   try {
     const mod = await loadModule(task);

@@ -42,7 +42,7 @@ export interface HookApi {
   assertAllowedUrl(url: string): URL;
 }
 
-const DEFAULT_ALLOWED_HOSTS = ['api.sap.com'] as const;
+const DEFAULT_ALLOWED_HOSTS: readonly string[] = [];
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;

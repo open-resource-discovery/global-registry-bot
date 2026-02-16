@@ -87,7 +87,7 @@ afterEach(() => {
 });
 
 test('assertAllowedUrl allows default host api.sap.com', () => {
-  const api = createHookApi({}, {});
+  const api = createHookApi({}, { allowedHosts: ['api.sap.com'] });
   const u = api.assertAllowedUrl('https://api.sap.com/path?a=1');
   expect(u.hostname).toBe('api.sap.com');
 });
@@ -118,9 +118,14 @@ test('assertAllowedUrl rejects empty/invalid host', () => {
 });
 
 test('assertAllowedUrl allows trailing-dot host via canonicalization', () => {
-  const api = createHookApi({}, {});
+  const api = createHookApi({}, { allowedHosts: ['api.sap.com'] });
   const u = api.assertAllowedUrl('https://api.sap.com./x');
   expect(u.hostname).toBe('api.sap.com.');
+});
+
+test('assertAllowedUrl denies all hosts by default (deny-by-default)', () => {
+  const api = createHookApi({}, {});
+  expect(() => api.assertAllowedUrl('https://api.sap.com/x')).toThrow('Host not allowed: api.sap.com');
 });
 
 test('allowedHosts supports host:port, host/path and full urls; ignores invalid entries', () => {
