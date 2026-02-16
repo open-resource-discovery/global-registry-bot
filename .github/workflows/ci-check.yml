@@ -27,6 +27,11 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Use public npm registry
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config delete @sap:registry || true
+
       - name: Install dependencies
         run: npm ci --prefer-offline
 
