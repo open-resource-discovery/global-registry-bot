@@ -191,7 +191,7 @@ test('blocks disallowed fetch host and returns __hookError', async (): Promise<v
   const task = mkTask({
     code: `
       export async function onValidate() {
-        await fetch('https://evil.com/');
+        await fetch('https://127.0.0.1/');
         return [];
       }
       export default { onValidate };

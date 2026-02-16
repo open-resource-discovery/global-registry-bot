@@ -42,7 +42,8 @@ export interface HookApi {
   assertAllowedUrl(url: string): URL;
 }
 
-const DEFAULT_ALLOWED_HOSTS: readonly string[] = [];
+// NOTE: '*' means allow any public HTTPS host
+const DEFAULT_ALLOWED_HOSTS: readonly string[] = ['*'];
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -91,6 +92,42 @@ function normalizeHostInput(input: string): string {
 function isLoopbackLikeHost(host: string): boolean {
   const h = canonicalizeHost(host);
   return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0.0.0.0';
+}
+
+function isIpv4Literal(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+}
+
+function isPrivateOrLinkLocalIpv4(host: string): boolean {
+  if (!isIpv4Literal(host)) return false;
+
+  const parts = host.split('.').map((x) => Number(x));
+  if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+
+  return false;
+}
+
+function isIpv6Literal(host: string): boolean {
+  return host.includes(':');
+}
+
+function isPrivateOrLinkLocalIpv6(host: string): boolean {
+  const h = canonicalizeHost(host);
+  if (!isIpv6Literal(h)) return false;
+
+  if (h === '::1') return true;
+  if (h.startsWith('fe80:')) return true;
+  if (h.startsWith('fc') || h.startsWith('fd')) return true;
+
+  return false;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -225,10 +262,20 @@ export function createHookApi(
   { secrets = {}, allowedHosts = [] }: CreateHookApiOptions = {}
 ): HookApi {
   const allow = new Set<string>();
+  let allowAllHosts = false;
 
-  for (const h of DEFAULT_ALLOWED_HOSTS) allow.add(canonicalizeHost(h));
+  for (const h of DEFAULT_ALLOWED_HOSTS) {
+    if (String(h).trim() === '*') allowAllHosts = true;
+    else allow.add(canonicalizeHost(h));
+  }
+
   for (const h of allowedHosts) {
-    const host = normalizeHostInput(h);
+    const raw = String(h ?? '').trim();
+    if (raw === '*') {
+      allowAllHosts = true;
+      continue;
+    }
+    const host = normalizeHostInput(raw);
     if (host) allow.add(host);
   }
 
@@ -247,10 +294,13 @@ export function createHookApi(
     }
 
     const host = canonicalizeHost(u.hostname);
+    if (isPrivateOrLinkLocalIpv4(host)) throw new Error(`Host not allowed: ${host}`);
+    if (isPrivateOrLinkLocalIpv6(host)) throw new Error(`Host not allowed: ${host}`);
+
     if (!host) throw new Error('Invalid host');
 
     if (isLoopbackLikeHost(host)) throw new Error(`Host not allowed: ${host}`);
-    if (!allow.has(host)) throw new Error(`Host not allowed: ${host}`);
+    if (!allowAllHosts && !allow.has(host)) throw new Error(`Host not allowed: ${host}`);
 
     return u;
   }

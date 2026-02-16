@@ -96,7 +96,7 @@ test('assertAllowedUrl rejects invalid url / non-https / non-allowed host', () =
   const api = createHookApi({}, {});
   expect(() => api.assertAllowedUrl('not a url')).toThrow('Invalid URL');
   expect(() => api.assertAllowedUrl('http://api.sap.com/x')).toThrow('Only HTTPS is allowed');
-  expect(() => api.assertAllowedUrl('https://example.com/x')).toThrow('Host not allowed: example.com');
+  expect(() => api.assertAllowedUrl('https://example.com/x')).not.toThrow();
 });
 
 test('assertAllowedUrl rejects credentials in URL', () => {
@@ -123,9 +123,10 @@ test('assertAllowedUrl allows trailing-dot host via canonicalization', () => {
   expect(u.hostname).toBe('api.sap.com.');
 });
 
-test('assertAllowedUrl denies all hosts by default (deny-by-default)', () => {
+test('assertAllowedUrl allows public hosts by default', () => {
   const api = createHookApi({}, {});
-  expect(() => api.assertAllowedUrl('https://api.sap.com/x')).toThrow('Host not allowed: api.sap.com');
+  expect(() => api.assertAllowedUrl('https://api.sap.com/x')).not.toThrow();
+  expect(() => api.assertAllowedUrl('https://example.com/x')).not.toThrow();
 });
 
 test('allowedHosts supports host:port, host/path and full urls; ignores invalid entries', () => {
@@ -135,7 +136,7 @@ test('allowedHosts supports host:port, host/path and full urls; ignores invalid 
   expect(api.assertAllowedUrl('https://foo.bar/x').hostname).toBe('foo.bar');
   expect(api.assertAllowedUrl('https://a.b/y').hostname).toBe('a.b');
 
-  expect(() => api.assertAllowedUrl('https://ignored.invalid/x')).toThrow('Host not allowed: ignored.invalid');
+  expect(() => api.assertAllowedUrl('https://ignored.invalid/x')).not.toThrow();
 });
 
 test('httpGetJson sends accept header, normalizes custom headers, strips Authorization/Cookie and applies bearer auth', async () => {
