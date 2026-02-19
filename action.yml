@@ -1,0 +1,235 @@
+name: Registry validate
+description: Validate registry YAML files using registry-bot config and schemas
+inputs:
+  mode:
+    description: Optional override. pr or main. Leave empty for auto
+    required: false
+    default: ''
+  node-version:
+    description: Node version to use
+    required: false
+    default: '22'
+
+  request-reviewers:
+    description: Request PR reviewers based on registry-bot config approvers
+    required: false
+    default: 'true'
+
+  auto-approve:
+    description: Auto-approve PR after successful validation
+    required: false
+    default: 'true'
+
+outputs:
+  reviewers:
+    description: Comma-separated list of PR reviewers derived from config
+    value: ${{ steps.pr_reviewers.outputs.reviewers }}
+
+  reviewers_json:
+    description: JSON array of PR reviewers derived from config
+    value: ${{ steps.pr_reviewers.outputs.reviewers_json }}
+
+  reviewers_count:
+    description: Number of computed reviewers
+    value: ${{ steps.pr_reviewers.outputs.reviewers_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install action dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Build action
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm run build
+
+    - name: Detect human content on bot-created PRs
+      id: pr_human_touch
+      if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true }}
+      uses: actions/github-script@v7
+      with:
+        result-encoding: string
+        script: |
+          const isBotSender = (sender) =>
+            sender?.type === 'Bot' || /(\[bot\]|-bot)$/i.test(sender?.login || '');
+
+          const marker = '<!-- registry-bot:human-content-change -->';
+          const pr = context.payload.pull_request;
+          const sender = context.payload.sender;
+          const prCreator = pr?.user;
+
+          if (!isBotSender(prCreator)) return 'false';
+
+          const body = String(pr?.body || '');
+          if (body.includes(marker)) return 'true';
+
+          const humanSync = context.payload.action === 'synchronize' && !isBotSender(sender);
+          if (!humanSync) return 'false';
+
+          try {
+            const { owner, repo } = context.repo;
+            const pull_number = pr.number;
+            const newBody = body ? `${body}\n\n${marker}\n` : `${marker}\n`;
+            await github.rest.pulls.update({ owner, repo, pull_number, body: newBody });
+          } catch (e) {
+            console.warn('Failed to persist human-touch marker:', e?.message || String(e));
+          }
+
+          return 'true';
+
+    - name: Validate registry
+      id: validate_registry
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REGISTRY_VALIDATE_MODE: ${{ inputs.mode }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+      run: node "$ACTION_PATH/dist/ci/validate-registry.js"
+
+    - name: Compute PR reviewers
+      id: pr_reviewers
+      if: ${{ inputs.request-reviewers == 'true' && github.event_name == 'pull_request' && steps.validate_registry.outcome == 'success' }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REGISTRY_VALIDATE_MODE: ${{ inputs.mode }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        PR_SENDER_LOGIN: ${{ github.event.sender.login }}
+        PR_SENDER_TYPE: ${{ github.event.sender.type }}
+        PR_CREATOR_LOGIN: ${{ github.event.pull_request.user.login }}
+        PR_CREATOR_TYPE: ${{ github.event.pull_request.user.type }}
+        PR_EVENT_ACTION: ${{ github.event.action }}
+        PR_HUMAN_TOUCHED: ${{ steps.pr_human_touch.outputs.result }}
+        REGISTRY_VALIDATE_OK: ${{ steps.validate_registry.outcome }}
+      run: node "$ACTION_PATH/dist/ci/pr-reviewers.js"
+
+    - name: Request PR reviewers
+      if: >-
+        ${{
+          steps.validate_registry.outcome == 'success' &&
+          inputs.request-reviewers == 'true' &&
+          github.event_name == 'pull_request' &&
+          (steps.pr_reviewers.outputs.reviewers_count != '0' || steps.pr_reviewers.outputs.pr_creator_is_bot == 'true') &&
+          github.event.pull_request.head.repo.fork != true &&
+          github.event.pull_request.draft != true &&
+          (
+            github.event.action == 'opened' ||
+            github.event.action == 'reopened' ||
+            github.event.action == 'ready_for_review' ||
+            (github.event.action == 'synchronize' && (steps.pr_reviewers.outputs.sender_is_bot != 'true' || steps.pr_human_touch.outputs.result == 'true'))
+          )
+        }}
+      continue-on-error: true
+      uses: actions/github-script@v7
+      env:
+        BOT_LOGIN: ${{ steps.pr_reviewers.outputs.bot_login }}
+        SENDER_IS_BOT: ${{ steps.pr_reviewers.outputs.sender_is_bot }}
+        PR_CREATOR_IS_BOT: ${{ steps.pr_reviewers.outputs.pr_creator_is_bot }}
+        PR_HUMAN_TOUCHED: ${{ steps.pr_human_touch.outputs.result }}
+        REVIEWERS_JSON: ${{ steps.pr_reviewers.outputs.reviewers_json }}
+      with:
+        script: |
+          const parsed = JSON.parse(process.env.REVIEWERS_JSON || '[]');
+          const reviewers = Array.isArray(parsed) ? parsed : [];
+
+          const { owner, repo } = context.repo;
+          const pull_number = context.payload.pull_request.number;
+
+          const existing = await github.rest.pulls.listRequestedReviewers({ owner, repo, pull_number });
+          const already = new Set((existing.data.users || []).map(u => String(u.login || '').toLowerCase()));
+
+          const botLogin = String(process.env.BOT_LOGIN || '').trim();
+          const prCreatorIsBot = String(process.env.PR_CREATOR_IS_BOT || '') === 'true';
+          const prHumanTouched = String(process.env.PR_HUMAN_TOUCHED || '') === 'true';
+
+          const botCreatedPr = prCreatorIsBot && !!botLogin;
+
+          const botMode = botCreatedPr && !prHumanTouched;
+          if (botMode) {
+            const toRemoveUsers = (existing.data.users || []).map(u => String(u.login || '').trim()).filter(Boolean);
+            const toRemoveTeams = (existing.data.teams || []).map(t => String(t.slug || '').trim()).filter(Boolean);
+
+            if (toRemoveUsers.length > 0 || toRemoveTeams.length > 0) {
+              await github.rest.pulls.removeRequestedReviewers({
+                owner,
+                repo,
+                pull_number,
+                reviewers: toRemoveUsers,
+                team_reviewers: toRemoveTeams,
+              });
+            }
+            return;
+          }
+
+          // Human mode: ensure bot reviewer isn't requested
+          if (botCreatedPr && botLogin) {
+            const k = botLogin.toLowerCase();
+            if (already.has(k)) {
+              await github.rest.pulls.removeRequestedReviewers({
+                owner,
+                repo,
+                pull_number,
+                reviewers: [botLogin],
+              });
+              already.delete(k);
+            }
+          }
+
+          if (reviewers.length === 0) return;
+
+          const toAdd = reviewers.filter(r => !already.has(String(r).toLowerCase()));
+          if (toAdd.length === 0) return;
+
+          await github.rest.pulls.requestReviewers({ owner, repo, pull_number, reviewers: toAdd });
+
+    - name: Check auto-approve eligibility
+      id: auto_approve_gate
+      if: ${{ inputs.auto-approve == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true && success() }}
+      uses: actions/github-script@v7
+      env:
+        BOT_LOGIN: ${{ steps.pr_reviewers.outputs.bot_login }}
+        SENDER_IS_BOT: ${{ steps.pr_reviewers.outputs.sender_is_bot }}
+        PR_CREATOR_IS_BOT: ${{ steps.pr_reviewers.outputs.pr_creator_is_bot }}
+        PR_HUMAN_TOUCHED: ${{ steps.pr_human_touch.outputs.result }}
+      with:
+        result-encoding: string
+        script: |
+          const botLogin = String(process.env.BOT_LOGIN || '').trim().toLowerCase();
+          const senderIsBot = process.env.SENDER_IS_BOT === 'true';
+          const prCreatorIsBot = process.env.PR_CREATOR_IS_BOT === 'true';
+          const prHumanTouched = process.env.PR_HUMAN_TOUCHED === 'true';
+
+          if (!senderIsBot || !prCreatorIsBot || !botLogin) return 'false';
+          if (prHumanTouched) return 'false';
+
+          const { owner, repo } = context.repo;
+          const pull_number = context.payload.pull_request.number;
+
+          const existing = await github.rest.pulls.listRequestedReviewers({ owner, repo, pull_number });
+          const users = existing.data.users || [];
+          const teams = existing.data.teams || [];
+
+          // strict: only the bot (or none), never teams
+          const hasOtherUser = users.some(u => String(u?.login || '').toLowerCase() !== botLogin);
+          const hasTeams = teams.length > 0;
+
+          return (hasOtherUser || hasTeams) ? 'false' : 'true';
+
+    - name: Auto approve PR
+      if: ${{ inputs.auto-approve == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true && steps.validate_registry.outcome == 'success' && success() && steps.auto_approve_gate.outputs.result == 'true' }}
+      uses: hmarr/auto-approve-action@v4
+      with:
+        review-message: 'Auto approved registry PR'
