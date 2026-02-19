@@ -39,7 +39,7 @@ runs:
     - name: Setup Node
       uses: actions/setup-node@v4
       with:
-        node-version: 22
+        node-version: ${{ inputs.node-version }}
 
     - name: Install action dependencies
       shell: bash
