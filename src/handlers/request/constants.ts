@@ -285,8 +285,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
               enum: ['merge', 'squash', 'rebase', 'MERGE', 'SQUASH', 'REBASE', null],
               errorMessage: {
                 type: 'pr.autoMerge.method must be a string.',
-                enum:
-                  'pr.autoMerge.method must be one of: merge, squash, rebase, MERGE, SQUASH, REBASE, or null.',
+                enum: 'pr.autoMerge.method must be one of: merge, squash, rebase, MERGE, SQUASH, REBASE, or null.',
               },
             },
           },
