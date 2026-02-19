@@ -55,7 +55,8 @@ export const SNAPSHOT_HASH_MARKER_KEY = 'nsreq:snapshot-hash';
 // Stable stringify with sorted keys and deterministic recursion
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
+    const json = JSON.stringify(value);
+    return json === undefined ? 'null' : json;
   }
 
   if (Array.isArray(value)) {
