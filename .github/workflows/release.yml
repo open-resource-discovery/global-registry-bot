@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       docker:
-        description: "Build and push Docker image to GHCR"
+        description: 'Build and push Docker image to GHCR'
         required: false
         type: boolean
         default: true
@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node (for version read)
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Compute tags
         id: meta
