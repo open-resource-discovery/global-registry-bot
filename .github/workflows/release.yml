@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       docker:
-        description: 'Build and push Docker image to GHCR'
+        description: "Docker Image"
         required: false
         type: boolean
         default: true
@@ -13,50 +13,42 @@ jobs:
   docker:
     if: inputs.docker
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: write
-
+    environment: docker-registry
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          fetch-depth: 0
 
-      - name: Compute tags
-        id: meta
-        run: |
-          VERSION=$(node -p -e "require('./package.json').version")
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-            echo "Error: package.json version '$VERSION' is not a valid semantic version." >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "repository=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - name: Login to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ vars.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
+      - name: Set Docker Tags
+        id: docker_tags
+        run: |
+          VERSION=$(node -p -e "require('./package.json').version")
+          TAGS=""
+
+          if [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            TAGS="${{ vars.DOCKER_REGISTRY }}/${{ github.repository }}:latest"
+          fi
+
+          TAGS="$TAGS,${{ vars.DOCKER_REGISTRY }}/${{ github.repository }}:$VERSION"
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "$TAGS"
+
+      - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ steps.meta.outputs.repository }}:${{ steps.meta.outputs.version }}
-            ghcr.io/${{ steps.meta.outputs.repository }}:latest
+          tags: ${{ steps.docker_tags.outputs.tags }}
