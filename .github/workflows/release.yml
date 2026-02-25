@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       docker:
-        description: "Docker Image"
+        description: 'Docker Image'
         required: false
         type: boolean
         default: true
