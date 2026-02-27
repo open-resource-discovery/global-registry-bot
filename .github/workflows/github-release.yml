@@ -1,10 +1,10 @@
-name: "GitHub Release"
+name: 'GitHub Release'
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for the release (e.g. 1.2.3)"
+        description: 'Version for the release (e.g. 1.2.3)'
         required: false
         type: string
 
@@ -20,5 +20,5 @@ jobs:
       - name: Create GitHub Release
         uses: open-resource-discovery/github-release@main
         with:
-          tag-template: "rel/<version>"
+          tag-template: 'rel/<version>'
           version: ${{ inputs.version }}
