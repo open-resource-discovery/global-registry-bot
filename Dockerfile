@@ -4,8 +4,10 @@ WORKDIR /app
 
 RUN apk add --no-cache bash
 
+ENV CI=true
+
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --ignore-scripts
 
 # Stage 2: build
 FROM node:22-alpine AS build
