@@ -1,0 +1,24 @@
+name: "GitHub Release"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the release (e.g. 1.2.3)"
+        required: false
+        type: string
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: open-resource-discovery/github-release@main
+        with:
+          tag-template: "rel/<version>"
+          version: ${{ inputs.version }}
