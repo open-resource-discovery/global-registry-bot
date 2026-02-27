@@ -1,12 +1,18 @@
 # Stage 1: install prod deps
 FROM node:22-alpine AS deps
 WORKDIR /app
+
+RUN apk add --no-cache bash
+
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # Stage 2: build
 FROM node:22-alpine AS build
 WORKDIR /app
+
+RUN apk add --no-cache bash
+
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
@@ -18,7 +24,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# copy prod deps + build artifacts only
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
