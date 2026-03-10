@@ -851,6 +851,135 @@ export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: F
   return pickIdentifierFromFields(template, formData);
 }
 
+function resolvePrimaryIdFromSchemaAndForm(formData: FormData, schemaObj: unknown): string {
+  const asTrimmed = (v: unknown): string => toStringSafe(v).replaceAll('\u00a0', ' ').trim();
+
+  const directIdentifier = asTrimmed(formData.identifier);
+  if (directIdentifier) return directIdentifier;
+
+  const directNamespace = asTrimmed(formData.namespace);
+  if (directNamespace) return directNamespace;
+
+  const directProductId = asTrimmed(formData['product-id'] || formData.productId);
+  if (directProductId) return directProductId;
+
+  const schemaProps = getObjectProp(schemaObj, 'properties');
+  if (schemaProps) {
+    for (const [propName, propDef] of Object.entries(schemaProps)) {
+      if (isPlainObject(propDef) && propDef['x-form-field'] === 'identifier') {
+        const viaIdentifier = asTrimmed(formData.identifier);
+        if (viaIdentifier) return viaIdentifier;
+
+        const viaProp = asTrimmed((formData as Record<string, unknown>)[propName]);
+        if (viaProp) return viaProp;
+
+        break;
+      }
+    }
+  }
+
+  return asTrimmed(
+    formData.name ||
+      formData.vendor ||
+      formData.title ||
+      (formData as Record<string, unknown>)['identifier'] ||
+      (formData as Record<string, unknown>)['namespace'] ||
+      ''
+  );
+}
+
+function normalizeFormDataForHookValidation(
+  requestType: string,
+  formData: FormData,
+  schemaObj: unknown,
+  template?: TemplateLike | null
+): FormData {
+  const rawResolved = template
+    ? resolvePrimaryIdFromTemplate(template, formData, schemaObj)
+    : resolvePrimaryIdFromSchemaAndForm(formData, schemaObj);
+
+  const rawIdOrNs = rawResolved.replaceAll('\u00a0', ' ').trim();
+
+  const description = String(
+    formData.description ||
+      (formData as Record<string, string>)['system-description'] ||
+      (formData as Record<string, string>)['sub-context-description'] ||
+      ''
+  )
+    .replaceAll('\u00a0', ' ')
+    .trim();
+
+  return {
+    ...formData,
+    requestType,
+    identifier: rawIdOrNs,
+    namespace: rawIdOrNs,
+    description,
+    contact: linesToSafeString(
+      (formData as Record<string, unknown>)['contact'] ?? (formData as Record<string, unknown>)['contacts']
+    ),
+    correlationIds: linesToSafeString(
+      (formData as Record<string, unknown>)['correlationIds'] ??
+        (formData as Record<string, unknown>)['correlation-ids']
+    ),
+  };
+}
+
+async function stringifyCandidateValueForForm(v: unknown): Promise<string> {
+  if (v === undefined || v === null) return '';
+
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+
+  if (Array.isArray(v)) {
+    const allScalar = v.every(
+      (it) => typeof it === 'string' || typeof it === 'number' || typeof it === 'boolean' || it === null
+    );
+    if (allScalar) return linesToSafeString(v);
+  }
+
+  try {
+    const yamlMod = (await import('yaml')) as unknown as { stringify: (val: unknown) => string };
+    return yamlMod.stringify(v).trim();
+  } catch {
+    return String(v);
+  }
+}
+
+async function buildFormDataForHookValidationFromCandidate(
+  requestType: string,
+  schemaObj: unknown,
+  candidate: CandidateData
+): Promise<FormData> {
+  const out: FormData = {};
+  const props = getObjectProp(schemaObj, 'properties') || {};
+  const candidateRec = isPlainObject(candidate) ? candidate : {};
+
+  for (const [propName, propDef] of Object.entries(props)) {
+    const raw = getRecordProp(candidateRec, propName);
+    if (raw === undefined || raw === null) continue;
+
+    const serialized = await stringifyCandidateValueForForm(raw);
+    if (!serialized) continue;
+
+    const ff = isPlainObject(propDef) ? toStringSafe(propDef['x-form-field']).trim() : '';
+
+    if (ff && !out[ff]) out[ff] = serialized;
+    if (!out[propName]) out[propName] = serialized;
+  }
+
+  for (const [k, v] of Object.entries(candidateRec)) {
+    if (v === undefined || v === null) continue;
+    if (out[k]) continue;
+
+    const serialized = await stringifyCandidateValueForForm(v);
+    if (!serialized) continue;
+    out[k] = serialized;
+  }
+
+  return normalizeFormDataForHookValidation(requestType, out, schemaObj, null);
+}
+
 // AJV init + caches
 const SCHEMA_CACHE = new Map<string, ValidateFunction<unknown>>();
 const AJV_CACHE = new Map<string, AjvInstance>();
@@ -1649,27 +1778,12 @@ export async function validateRequestIssue(
   }
 
   // 7) Normalize formData
-  const description = String(
-    formData.description ||
-      (formData as Record<string, string>)['system-description'] ||
-      (formData as Record<string, string>)['sub-context-description'] ||
-      ''
-  )
-    .replaceAll('\u00a0', ' ')
-    .trim();
-
-  const normalizedFormData: FormData = {
-    ...formData,
+  const normalizedFormData: FormData = normalizeFormDataForHookValidation(
     requestType,
-    identifier: rawIdOrNs,
-    namespace: rawIdOrNs,
-    description,
-    contact: linesToSafeString((formData as Record<string, unknown>)['contact']),
-    correlationIds: linesToSafeString(
-      (formData as Record<string, unknown>)['correlationIds'] ??
-        (formData as Record<string, unknown>)['correlation-ids']
-    ),
-  };
+    formData,
+    schemaObjForId,
+    template
+  );
 
   if (DBG && context.log?.info) {
     context.log.info(
@@ -1941,55 +2055,22 @@ export async function runCustomValidateForRegistryCandidate(
 
   if (!hooks) return [];
 
-  // Build a "form-like" object from the YAML candidate
-  const buildFormFromCandidate = async (candidate: CandidateData): Promise<FormData> => {
-    const out: FormData = {};
-
-    if (isPlainObject(candidate)) {
-      for (const [k, v] of Object.entries(candidate)) {
-        if (v === undefined || v === null) continue;
-
-        if (typeof v === 'string') out[k] = v;
-        else if (typeof v === 'number' || typeof v === 'boolean') out[k] = String(v);
-        else {
-          try {
-            const yamlMod = (await import('yaml')) as unknown as {
-              stringify: (v: unknown) => string;
-            };
-            out[k] = yamlMod.stringify(v).trim();
-          } catch {
-            out[k] = String(v);
-          }
-        }
-      }
-    }
-
-    const inferredName =
-      toStringSafe(getRecordProp(candidate, 'name')) ||
-      toStringSafe(getRecordProp(candidate, 'identifier')) ||
-      toStringSafe(getRecordProp(candidate, 'namespace'));
-
-    if (inferredName) {
-      if (!out.identifier) out.identifier = inferredName;
-      if (!out.namespace) out.namespace = inferredName;
-      if (!out.name) out.name = inferredName;
-    }
-
-    return out;
-  };
-
   const allowedHosts = Array.isArray(context.resourceBotConfig?.hooks?.allowedHosts)
     ? context.resourceBotConfig.hooks.allowedHosts
     : [];
 
+  const form =
+    args.formData && isPlainObject(args.formData)
+      ? normalizeFormDataForHookValidation(args.requestType, args.formData, args.schema, null)
+      : await buildFormDataForHookValidationFromCandidate(args.requestType, args.schema, args.candidate);
+
   const resourceName =
     toStringSafe(args.resourceName) ||
+    toStringSafe(form.identifier) ||
+    toStringSafe(form.namespace) ||
     toStringSafe(getRecordProp(args.candidate, 'name')) ||
     toStringSafe(getRecordProp(args.candidate, 'identifier')) ||
     toStringSafe(getRecordProp(args.candidate, 'namespace'));
-
-  const form =
-    args.formData && isPlainObject(args.formData) ? args.formData : await buildFormFromCandidate(args.candidate);
 
   const onValidateHook = hooks.onValidate;
   const isLegacyHook = typeof onValidateHook === 'function';
@@ -2042,6 +2123,16 @@ export async function runCustomValidateForRegistryCandidate(
       },
       { timeoutMs: 8000 }
     );
+
+    if (res.logs?.length && context.log?.info) {
+      for (const l of res.logs) {
+        const msg = l.msg || 'hook:onValidate';
+        if (l.level === 'error') context.log.error?.(l.obj, msg);
+        else if (l.level === 'warn') context.log.warn?.(l.obj, msg);
+        else if (l.level === 'debug') context.log.debug?.(l.obj, msg);
+        else context.log.info?.(l.obj, msg);
+      }
+    }
 
     const msgs = normalizeHookErrors(res.value);
     return msgs.length ? msgs : [];

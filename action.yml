@@ -40,6 +40,7 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
+        token: ${{ github.token }}
 
     - name: Install action dependencies
       shell: bash
