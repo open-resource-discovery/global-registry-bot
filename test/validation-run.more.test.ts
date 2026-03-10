@@ -70,6 +70,7 @@ async function loadSubject(opts: { dbg?: '0' | '1'; mockYaml?: boolean } = {}) {
 
   if (opts.mockYaml) {
     await jest.unstable_mockModule('yaml', () => ({
+      stringify: (v: unknown) => JSON.stringify(v),
       default: {
         parse: (src: string) => {
           if (String(src).includes('kind:')) return [{ kind: 'x', value: 'y' }];
@@ -1348,11 +1349,287 @@ describe('validation/run.ts extra coverage', () => {
     );
 
     expect(mocks.runHookInWorker).toHaveBeenCalledWith(
-      expect.objectContaining({ fn: 'onValidate' }),
+      expect.objectContaining({
+        fn: 'onValidate',
+        args: expect.objectContaining({
+          requestType: 'system',
+          form: expect.objectContaining({
+            identifier: 'acme.sys',
+            namespace: 'acme.sys',
+          }),
+        }),
+      }),
       expect.anything()
     );
 
     expect(msgs).toEqual(['meta: bad']);
+
+    restore();
+  });
+  it('runCustomValidateForRegistryCandidate: normalizes explicit formData like issue validation', async () => {
+    const { mod, restore } = await loadSubject();
+
+    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+      expect(requestType).toBe('product');
+      expect(resourceName).toBe('EXPLICIT-ID');
+
+      expect(form.requestType).toBe('product');
+      expect(form.identifier).toBe('PROD-1');
+      expect(form.namespace).toBe('PROD-1');
+      expect(form.description).toBe('desc');
+      expect(form.contact).toBe('a@x\nb@y');
+      expect(form.correlationIds).toBe('c1\nc2');
+
+      return [];
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: { onValidate },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'product',
+        resourceName: 'EXPLICIT-ID',
+        schema: {
+          type: 'object',
+          properties: {
+            identifier: { type: 'string' },
+            title: { type: 'string' },
+          },
+        },
+        candidate: { name: 'ignored' },
+        formData: {
+          'product-id': ' PROD-1 ',
+          'description': '  desc  ',
+          'contacts': 'a@x\nb@y',
+          'correlation-ids': 'c1\nc2',
+        },
+      }
+    );
+
+    expect(msgs).toEqual([]);
+    expect(onValidate).toHaveBeenCalledTimes(1);
+
+    restore();
+  });
+
+  it('runCustomValidateForRegistryCandidate: builds normalized form from candidate using schema mapping', async () => {
+    const { mod, restore } = await loadSubject({ mockYaml: true });
+
+    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+      expect(requestType).toBe('system');
+      expect(resourceName).toBe('acme.sys');
+
+      expect(form.identifier).toBe('acme.sys');
+      expect(form.namespace).toBe('acme.sys');
+      expect(form.requestType).toBe('system');
+
+      expect(form.contact).toBe('a@x\nb@y');
+      expect(form.contacts).toBe('a@x\nb@y');
+      expect(typeof form.meta).toBe('string');
+      expect(form.meta).toContain('"a":1');
+      expect(form.enabled).toBe('true');
+      expect(form.count).toBe('3');
+
+      return ['ok'];
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: { onValidate },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'system',
+        schema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            contacts: { type: 'array', items: { type: 'string' } },
+            meta: { type: 'object' },
+            enabled: { type: 'boolean' },
+            count: { type: 'integer' },
+          },
+        },
+        candidate: {
+          name: 'acme.sys',
+          contacts: ['a@x', 'b@y'],
+          meta: { a: 1 },
+          enabled: true,
+          count: 3,
+        },
+      }
+    );
+
+    expect(msgs).toEqual(['ok']);
+    expect(onValidate).toHaveBeenCalledTimes(1);
+
+    restore();
+  });
+
+  it('runCustomValidateForRegistryCandidate: descriptor hooks forward worker logs and use normalized form', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.runHookInWorker.mockResolvedValueOnce({
+      found: true,
+      value: [{ field: 'identifier', message: 'bad id' }],
+      logs: [
+        { level: 'info', obj: { i: 1 }, msg: 'worker-info' },
+        { level: 'warn', obj: { w: 2 }, msg: 'worker-warn' },
+      ],
+    } as any);
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: {
+        __type: 'registry-bot-hooks:esm',
+        __path: '.github/registry-bot/config.js',
+        __hash: 'h',
+        __code: 'export default {}',
+      },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+      resourceBotHooksSource: 'repo:.github/registry-bot/config.js#h',
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'product',
+        schema: {
+          type: 'object',
+          properties: {
+            identifier: { type: 'string' },
+            title: { type: 'string' },
+          },
+        },
+        candidate: { name: 'ignored' },
+        formData: {
+          'product-id': ' PROD-2 ',
+          'contacts': ['a@x', 'b@y'] as any,
+        },
+      }
+    );
+
+    expect(mocks.runHookInWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fn: 'onValidate',
+        args: expect.objectContaining({
+          requestType: 'product',
+          resourceName: 'PROD-2',
+          form: expect.objectContaining({
+            identifier: 'PROD-2',
+            namespace: 'PROD-2',
+            contact: 'a@x\nb@y',
+          }),
+        }),
+      }),
+      expect.anything()
+    );
+
+    expect(ctx.log.info).toHaveBeenCalledWith({ i: 1 }, 'worker-info');
+    expect(ctx.log.warn).toHaveBeenCalledWith({ w: 2 }, 'worker-warn');
+    expect(msgs).toEqual(['identifier: bad id']);
+
+    restore();
+  });
+
+  it('runCustomValidateForRegistryCandidate: returns hook error when legacy onValidate throws', async () => {
+    const { mod, restore } = await loadSubject();
+
+    const onValidate = jest.fn(async () => {
+      throw new Error('boom');
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: { onValidate },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'product',
+        schema: {},
+        candidate: { name: 'acme.sys' },
+      }
+    );
+
+    expect(msgs).toEqual(['Hook onValidate failed: boom']);
+
+    restore();
+  });
+
+  it('validateRequestIssue: DBG logs schema-path and schema-input for x-form-field identifier mismatch', async () => {
+    const { mod, mocks, restore } = await loadSubject({ dbg: '1' });
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          system: { folderName: 'data', schema: '/schema.json', issueTemplate: 'x' },
+        },
+      },
+      hooks: null,
+      hooksSource: null,
+    } as any);
+
+    const schemaObj = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        type: { const: 'system' },
+        resourceName: { 'type': 'string', 'x-form-field': 'identifier' },
+      },
+      required: ['type', 'resourceName'],
+    };
+
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (path === 'schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
+      if (path === 'data/acme.sys.yaml') throw httpErr(404);
+      throw httpErr(404);
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const template: any = {
+      body: [{ id: 'namespace', attributes: { label: 'Namespace' }, validations: { required: true } }],
+      _meta: { requestType: 'system', schema: '/schema.json', root: 'data' },
+    };
+
+    const res = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      { template, formData: { resourceName: 'acme.sys' } }
+    );
+
+    expect(res.errors.join('\n')).toMatch(/schema marks a primary identifier/i);
+    expect(ctx.log.info.mock.calls.some((c: any[]) => c?.[1] === 'ns:schema-path')).toBe(true);
+    expect(ctx.log.info.mock.calls.some((c: any[]) => c?.[1] === 'schema-input')).toBe(true);
 
     restore();
   });
