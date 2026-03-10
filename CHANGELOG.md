@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.0.2](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/rel/0.0.2)] - 2026-03-10
+
 - Fixed inconsistency between issue validation and CI validation so both now use the same normalized hook input.
 - Fixed false-positive CI validation errors for custom hook checks such as Product ID comparison.
 - Updated the CI hook validation flow to match the same behavior as `validateRequestIssue`.
