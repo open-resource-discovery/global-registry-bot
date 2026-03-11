@@ -822,6 +822,56 @@ function pickIdentifierFromFields(template: TemplateLike, formData: FormData): s
   return '';
 }
 
+function normalizePrimaryResourceToken(v: unknown): string {
+  return toStringSafe(v)
+    .replace(/[\s_-]/g, '')
+    .toLowerCase();
+}
+
+function isPrimaryResourceField(v: unknown): boolean {
+  const t = normalizePrimaryResourceToken(v);
+  return t === 'identifier' || t === 'namespace' || t === 'productid' || t === 'id' || t === 'name' || t === 'vendor';
+}
+
+function resolvePrimaryIdFromRecord(schemaObj: unknown, record: Record<string, unknown>): string {
+  const asTrimmed = (v: unknown): string => toStringSafe(v).replaceAll('\u00a0', ' ').trim();
+
+  const directKeys = ['identifier', 'namespace', 'product-id', 'productId', 'id', 'name', 'vendor'];
+  for (const key of directKeys) {
+    const value = asTrimmed(record[key]);
+    if (value) return value;
+  }
+
+  const schemaProps = getObjectProp(schemaObj, 'properties');
+  if (!schemaProps) return '';
+
+  for (const [propName, propDef] of Object.entries(schemaProps)) {
+    if (!isPlainObject(propDef)) continue;
+
+    const ff = toStringSafe(propDef['x-form-field']);
+    if (!isPrimaryResourceField(ff)) continue;
+
+    const viaField = asTrimmed(record[ff]);
+    if (viaField) return viaField;
+
+    const viaProp = asTrimmed(record[propName]);
+    if (viaProp) return viaProp;
+  }
+
+  for (const propName of Object.keys(schemaProps)) {
+    if (!isPrimaryResourceField(propName)) continue;
+
+    const viaProp = asTrimmed(record[propName]);
+    if (viaProp) return viaProp;
+  }
+
+  return '';
+}
+
+export function resolvePrimaryIdFromCandidate(candidate: Record<string, unknown>, schemaObj: unknown): string {
+  return resolvePrimaryIdFromRecord(schemaObj, candidate);
+}
+
 export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: FormData, schemaObj: unknown): string {
   if (!template) return '';
   const asTrimmed = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
@@ -848,44 +898,19 @@ export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: F
     }
   }
 
+  const viaGeneric = resolvePrimaryIdFromRecord(schemaObj, formData as Record<string, unknown>);
+  if (viaGeneric) return viaGeneric;
+
   return pickIdentifierFromFields(template, formData);
 }
 
 function resolvePrimaryIdFromSchemaAndForm(formData: FormData, schemaObj: unknown): string {
   const asTrimmed = (v: unknown): string => toStringSafe(v).replaceAll('\u00a0', ' ').trim();
 
-  const directIdentifier = asTrimmed(formData.identifier);
-  if (directIdentifier) return directIdentifier;
+  const viaGeneric = resolvePrimaryIdFromRecord(schemaObj, formData as Record<string, unknown>);
+  if (viaGeneric) return viaGeneric;
 
-  const directNamespace = asTrimmed(formData.namespace);
-  if (directNamespace) return directNamespace;
-
-  const directProductId = asTrimmed(formData['product-id'] || formData.productId);
-  if (directProductId) return directProductId;
-
-  const schemaProps = getObjectProp(schemaObj, 'properties');
-  if (schemaProps) {
-    for (const [propName, propDef] of Object.entries(schemaProps)) {
-      if (isPlainObject(propDef) && propDef['x-form-field'] === 'identifier') {
-        const viaIdentifier = asTrimmed(formData.identifier);
-        if (viaIdentifier) return viaIdentifier;
-
-        const viaProp = asTrimmed((formData as Record<string, unknown>)[propName]);
-        if (viaProp) return viaProp;
-
-        break;
-      }
-    }
-  }
-
-  return asTrimmed(
-    formData.name ||
-      formData.vendor ||
-      formData.title ||
-      (formData as Record<string, unknown>)['identifier'] ||
-      (formData as Record<string, unknown>)['namespace'] ||
-      ''
-  );
+  return asTrimmed(formData.title || '');
 }
 
 function normalizeFormDataForHookValidation(
@@ -2064,13 +2089,20 @@ export async function runCustomValidateForRegistryCandidate(
       ? normalizeFormDataForHookValidation(args.requestType, args.formData, args.schema, null)
       : await buildFormDataForHookValidationFromCandidate(args.requestType, args.schema, args.candidate);
 
+  const normalizedResourceName = toStringSafe(form.identifier) || toStringSafe(form.namespace);
+  const inferredResourceName = resolvePrimaryIdFromCandidate(args.candidate, args.schema);
+
   const resourceName =
+    normalizedResourceName ||
+    inferredResourceName ||
     toStringSafe(args.resourceName) ||
-    toStringSafe(form.identifier) ||
-    toStringSafe(form.namespace) ||
+    toStringSafe(getRecordProp(args.candidate, 'product-id')) ||
+    toStringSafe(getRecordProp(args.candidate, 'productId')) ||
+    toStringSafe(getRecordProp(args.candidate, 'id')) ||
     toStringSafe(getRecordProp(args.candidate, 'name')) ||
     toStringSafe(getRecordProp(args.candidate, 'identifier')) ||
-    toStringSafe(getRecordProp(args.candidate, 'namespace'));
+    toStringSafe(getRecordProp(args.candidate, 'namespace')) ||
+    toStringSafe(getRecordProp(args.candidate, 'vendor'));
 
   const onValidateHook = hooks.onValidate;
   const isLegacyHook = typeof onValidateHook === 'function';

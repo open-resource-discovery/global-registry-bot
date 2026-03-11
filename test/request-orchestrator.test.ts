@@ -4,9 +4,18 @@ import { jest } from '@jest/globals';
 
 process.env.DEBUG_NS = '0';
 
+type IssueParams = { owner: string; repo: string; issue_number: number };
+type CollapseBotCommentsByPrefix = (
+  ctx: unknown,
+  params: IssueParams,
+  opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
+) => Promise<void>;
+
+const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
 const setStateLabel = jest.fn(async () => {});
 const ensureAssigneesOnce = jest.fn(async () => {});
 const postOnce = jest.fn(async (..._args: any[]) => {});
+
 const loadTemplate = jest.fn(async () => ({}));
 const parseForm = jest.fn(() => ({}));
 const validateRequestIssue = jest.fn(async () => ({}));
@@ -122,6 +131,7 @@ beforeAll(async () => {
 
   await jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
     postOnce,
+    collapseBotCommentsByPrefix,
   }));
 
   await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
