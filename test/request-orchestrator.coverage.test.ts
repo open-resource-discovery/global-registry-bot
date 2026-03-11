@@ -121,6 +121,12 @@ type LoadStaticConfig = (
 
 type PostOnce = (ctx: unknown, params: IssueParams, body: string, opts?: { minimizeTag?: string }) => Promise<void>;
 
+type CollapseBotCommentsByPrefix = (
+  ctx: unknown,
+  params: IssueParams,
+  opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
+) => Promise<void>;
+
 type SetStateLabel = (ctx: unknown, params: IssueParams, issue: Issue, state: string) => Promise<void>;
 
 type EnsureAssigneesOnce = (ctx: unknown, params: IssueParams, issue: Issue, assignees: string[]) => Promise<void>;
@@ -162,6 +168,7 @@ const DEFAULT_CONFIG_MOCK: StaticConfig = {
 const setStateLabel = jest.fn<SetStateLabel>(async () => {});
 const ensureAssigneesOnce = jest.fn<EnsureAssigneesOnce>(async () => {});
 const postOnce = jest.fn<PostOnce>(async () => {});
+const collapseBotCommentsByPrefix = jest.fn<CollapseBotCommentsByPrefix>(async () => {});
 
 const loadTemplate = jest.fn<LoadTemplate>();
 const parseForm = jest.fn<ParseForm>();
@@ -185,6 +192,7 @@ jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
 
 jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
   postOnce,
+  collapseBotCommentsByPrefix,
 }));
 
 jest.unstable_mockModule('../src/handlers/request/template.js', () => ({

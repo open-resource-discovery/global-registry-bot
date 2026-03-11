@@ -91,6 +91,11 @@ type PostOnceFn = (
   body: string,
   options?: { minimizeTag?: string }
 ) => Promise<void>;
+type CollapseBotCommentsByPrefix = (
+  ctx: unknown,
+  params: IssueParams,
+  opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
+) => Promise<void>;
 type SetStateLabelFn = (
   context: unknown,
   params: IssueParams,
@@ -117,6 +122,7 @@ type AppLike = {
 const setStateLabel = jest.fn() as unknown as jest.MockedFunction<SetStateLabelFn>;
 const ensureAssigneesOnce = jest.fn() as unknown as jest.MockedFunction<EnsureAssigneesOnceFn>;
 const postOnce = jest.fn() as unknown as jest.MockedFunction<PostOnceFn>;
+const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
 const loadTemplate = jest.fn() as unknown as jest.MockedFunction<LoadTemplateFn>;
 const parseForm = jest.fn() as unknown as jest.MockedFunction<ParseFormFn>;
 
@@ -195,6 +201,7 @@ jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
 
 jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
   postOnce,
+  collapseBotCommentsByPrefix,
 }));
 
 jest.unstable_mockModule('../src/handlers/request/template.js', () => ({

@@ -7,6 +7,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## Added
+
+- Safe validation support for fork PRs.
+- CI detected-issue comments for fork PRs.
+- Parent-owner approval for sub-namespace requests.
+
+## Changed
+
+- Aligned CI validation with issue validation.
+- Extended filename vs identifier validation to all `data/*` resources.
+- Improved bot comment deduplication and collapsing.
+
+## Fixed
+
+- Missing validation comments on fork PRs.
+- False positives from inconsistent validation input.
+- Repeated routing-label lock comments.
+
 ## [[0.0.2](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/rel/0.0.2)] - 2026-03-10
 
 - Fixed inconsistency between issue validation and CI validation so both now use the same normalized hook input.

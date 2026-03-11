@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import type { RegistryBotHooks, NormalizedStaticConfig } from '../config.js';
 import {
   runCustomValidateForRegistryCandidate,
+  resolvePrimaryIdFromCandidate,
   type OctokitLike,
   type IssueListItem,
 } from '../handlers/request/validation/run.js';
@@ -20,6 +21,12 @@ const CONFIG_BASE_DIR = '.github/registry-bot';
 const MAIN_DISABLE_VALIDATION_KEY = 'x-sap-main-disable-validation';
 
 type RequestsConfig = Record<string, { folderName: string; schema: string }>;
+
+type LoadedValidationConfig = {
+  requests: RequestsConfig;
+  hooksAllowedHosts: string[];
+};
+
 type Mode = 'pr' | 'main';
 
 type SchemaCandidate = {
@@ -122,7 +129,36 @@ function requireEnv(name: string): string {
   return v;
 }
 
-async function loadRequestsConfig(): Promise<RequestsConfig> {
+async function readTextFromGitRevision(revision: string, repoPath: string): Promise<string | null> {
+  const rev = String(revision ?? '').trim();
+  const rel = normalizeRepoPath(repoPath);
+  if (!rev || !rel) return null;
+
+  try {
+    const { stdout } = await execFileAsync('git', ['show', `${rev}:${rel}`], {
+      maxBuffer: 5 * 1024 * 1024,
+    });
+    return String(stdout ?? '');
+  } catch {
+    return null;
+  }
+}
+
+async function readTrustedRepoFileText(repoPath: string, trustedRef?: string | null): Promise<string> {
+  const rel = normalizeRepoPath(repoPath);
+  if (!rel) throw new Error(`Invalid repository path '${repoPath}'`);
+
+  const trusted = String(trustedRef ?? '').trim();
+  if (trusted) {
+    const txt = await readTextFromGitRevision(trusted, rel);
+    if (txt === null) throw new Error(`Missing trusted file '${rel}' at revision '${trusted}'`);
+    return txt;
+  }
+
+  return await readFile(rel, 'utf8');
+}
+
+async function loadValidationConfig(trustedRef?: string | null): Promise<LoadedValidationConfig> {
   const paths = ['.github/registry-bot/config.yaml', '.github/registry-bot/config.yml'];
 
   let raw: string | null = null;
@@ -130,7 +166,7 @@ async function loadRequestsConfig(): Promise<RequestsConfig> {
 
   for (const p of paths) {
     try {
-      raw = await readFile(p, 'utf8');
+      raw = await readTrustedRepoFileText(p, trustedRef);
       usedPath = p;
       break;
     } catch {
@@ -163,7 +199,6 @@ async function loadRequestsConfig(): Promise<RequestsConfig> {
     const folder = normalizeRepoPath(folderName);
     let schemaPath = normalizeRepoPath(schema);
 
-    // If schema path is relative
     if (schemaPath && !schemaPath.startsWith(`${CONFIG_BASE_DIR}/`) && !schemaPath.startsWith('.github/')) {
       schemaPath = `${CONFIG_BASE_DIR}/${schemaPath}`;
     }
@@ -175,7 +210,13 @@ async function loadRequestsConfig(): Promise<RequestsConfig> {
     throw new Error(`Invalid config: no usable requests.*.folderName + requests.*.schema found in ${usedPath}`);
   }
 
-  return out;
+  const hooksRaw = parsed['hooks'];
+  const hooksAllowedHosts =
+    isPlainObject(hooksRaw) && Array.isArray(hooksRaw['allowedHosts'])
+      ? (hooksRaw['allowedHosts'] as unknown[]).map((x) => String(x ?? '').trim()).filter(Boolean)
+      : [];
+
+  return { requests: out, hooksAllowedHosts };
 }
 
 function matchRequestTypesForFile(filePath: string, requests: RequestsConfig): FileTarget | null {
@@ -195,16 +236,25 @@ function matchRequestTypesForFile(filePath: string, requests: RequestsConfig): F
   return { filePath: fp, candidates };
 }
 
-async function getChangedFiles(baseSha: string, headSha: string): Promise<string[]> {
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=AMR', baseSha, headSha], {
-    maxBuffer: 5 * 1024 * 1024,
-  });
+async function getChangedFiles(baseSha: string, headRef = 'HEAD'): Promise<string[]> {
+  const run = async (lhs: string, rhs: string): Promise<string[]> => {
+    const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=AMR', lhs, rhs], {
+      maxBuffer: 5 * 1024 * 1024,
+    });
 
-  return String(stdout ?? '')
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => s.replace(/\\/g, '/'));
+    return String(stdout ?? '')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => s.replace(/\\/g, '/'));
+  };
+
+  try {
+    return await run(baseSha, headRef);
+  } catch {
+    if (headRef !== 'HEAD') return await run(baseSha, 'HEAD');
+    throw new Error(`Failed to diff changed files for base '${baseSha}' and head '${headRef}'`);
+  }
 }
 
 async function getAllTrackedFilesUnder(folder: string): Promise<string[]> {
@@ -305,8 +355,8 @@ function maybePatchSchemaForMain(schemaObj: unknown, mode: Mode): unknown {
   return cloned;
 }
 
-async function loadJsonFile(path: string): Promise<unknown> {
-  const raw = await readFile(path, 'utf8');
+async function loadJsonFile(path: string, trustedRef?: string | null): Promise<unknown> {
+  const raw = await readTrustedRepoFileText(path, trustedRef);
   return JSON.parse(raw) as unknown;
 }
 
@@ -342,13 +392,15 @@ async function getSchemaEntry(
   schemaFsPath: string,
   ajv: AjvInstance,
   schemaCache: Map<string, SchemaCacheEntry>,
-  mode: Mode = pickMode()
+  mode: Mode = pickMode(),
+  trustedRef?: string | null
 ): Promise<SchemaCacheEntry> {
-  const cacheKey = `${mode}:${schemaFsPath}`;
+  const refKey = String(trustedRef ?? '').trim() || 'workspace';
+  const cacheKey = `${mode}:${refKey}:${schemaFsPath}`;
   const cached = schemaCache.get(cacheKey);
   if (cached) return cached;
 
-  const schemaObjRaw = await loadJsonFile(schemaFsPath);
+  const schemaObjRaw = await loadJsonFile(schemaFsPath, trustedRef);
   const schemaObj = maybePatchSchemaForMain(schemaObjRaw, mode);
   const validate = ajv.compile(schemaObj);
 
@@ -399,7 +451,8 @@ async function validateOneFile(
   schemaCache: Map<string, SchemaCacheEntry>,
   botValidationContext: BotValidationContext,
   repoInfo: RepoInfo,
-  mode: Mode = pickMode()
+  mode: Mode = pickMode(),
+  trustedRef?: string | null
 ): Promise<FileValidationResult> {
   const fileFsPath = normalizeRepoPath(target.filePath);
   const doc = await loadYamlFile(fileFsPath);
@@ -414,7 +467,7 @@ async function validateOneFile(
   for (const c of target.candidates) {
     const schemaFsPath = normalizeRepoPath(c.schemaPath);
     try {
-      const entry = await getSchemaEntry(schemaFsPath, ajv, schemaCache, mode);
+      const entry = await getSchemaEntry(schemaFsPath, ajv, schemaCache, mode, trustedRef);
       loaded.push({ candidate: c, schemaFsPath, entry });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -468,19 +521,17 @@ async function validateOneFile(
 
       const extraErrors: string[] = [];
 
-      // Ensure filename matches the primary identifier used for the entry.
-      // In the registry, the filename is derived from the resource identifier.
       const fileBase = path
         .basename(target.filePath)
         .replace(/\.ya?ml$/i, '')
         .trim();
 
       const docObj = isPlainObject(doc) ? doc : {};
-      const rawId = String(docObj['identifier'] ?? docObj['namespace'] ?? docObj['name'] ?? '')
+      const resourceIdentifier = resolvePrimaryIdFromCandidate(docObj, x.entry.schemaObj)
         .replaceAll('\u00a0', ' ')
         .trim();
 
-      if (rawId) {
+      if (resourceIdentifier) {
         const norm = (s: string): string =>
           s
             .replaceAll('\u00a0', ' ')
@@ -489,9 +540,9 @@ async function validateOneFile(
             .replace(/\s+/g, '')
             .replace(/[^a-z0-9._-]/g, '');
 
-        if (norm(rawId) !== norm(fileBase)) {
+        if (norm(resourceIdentifier) !== norm(fileBase)) {
           extraErrors.push(
-            `File name '${fileBase}' must match the resource identifier '${rawId}'. Please rename the file or update the identifier field.`
+            `File name '${fileBase}' must match the resource identifier '${resourceIdentifier}'. Please rename the file or update the identifier field.`
           );
         }
       }
@@ -506,7 +557,7 @@ async function validateOneFile(
       // Bot hook validation parity (PR only)
       if (mode === 'pr') {
         try {
-          const resourceName = path.basename(target.filePath).replace(/\.ya?ml$/i, '');
+          const resourceName = resourceIdentifier || path.basename(target.filePath).replace(/\.ya?ml$/i, '');
 
           const hookErrors = await runCustomValidateForRegistryCandidate(botValidationContext, repoInfo, {
             requestType: x.candidate.requestType,
@@ -698,15 +749,13 @@ type HooksDescriptor = {
   hooksSource: string | null;
 };
 
-async function loadLocalHooksDescriptor(): Promise<HooksDescriptor> {
+async function loadLocalHooksDescriptor(trustedRef?: string | null): Promise<HooksDescriptor> {
   const relPath = '.github/registry-bot/config.js';
-  const absPath = path.join(process.cwd(), relPath);
 
   try {
-    const code = await readFile(absPath, 'utf8');
+    const code = await readTrustedRepoFileText(relPath, trustedRef);
     const hash = createHash('sha256').update(code).digest('hex');
 
-    // Descriptor object that run.ts can execute in worker mode
     const hooks = {
       __type: 'registry-bot-hooks:esm',
       __path: relPath,
@@ -722,6 +771,8 @@ async function loadLocalHooksDescriptor(): Promise<HooksDescriptor> {
 
 async function checkFlatParentChain(filePath: string): Promise<string[]> {
   const fp = normalizeRepoPath(filePath);
+
+  if (!/(^|\/)namespaces\//i.test(fp)) return [];
 
   const base = path.basename(fp).replace(/\.ya?ml$/i, '');
   const parts = base.split('.').filter(Boolean);
@@ -757,20 +808,26 @@ async function checkFlatParentChain(filePath: string): Promise<string[]> {
 async function main(): Promise<void> {
   const mode = pickMode();
 
-  // No forks supported for now
-  const isFork = String(process.env.PR_IS_FORK ?? '')
-    .trim()
-    .toLowerCase();
-  if (mode === 'pr' && isFork === 'true') {
-    throw new Error('Fork PRs are not supported for registry validation');
+  const isForkPr =
+    mode === 'pr' &&
+    String(process.env.PR_IS_FORK ?? '')
+      .trim()
+      .toLowerCase() === 'true';
+  const trustedConfigRef = isForkPr ? requireEnv('PR_BASE_SHA') : '';
+
+  if (isForkPr) {
+    console.log(`Fork PR detected -> using trusted config/hooks/schemas from base ${trustedConfigRef}`);
   }
 
-  const requests = await loadRequestsConfig();
+  const validationConfig = await loadValidationConfig(trustedConfigRef);
+  const requests = validationConfig.requests;
   const repoInfo = readRepoInfoFromEnv();
-  const hooksDesc = await loadLocalHooksDescriptor();
+  const hooksDesc = await loadLocalHooksDescriptor(trustedConfigRef);
 
-  // Minimal context shape
-  const botConfig = { requests } as unknown as NormalizedStaticConfig;
+  const botConfig = {
+    requests,
+    hooks: { allowedHosts: validationConfig.hooksAllowedHosts },
+  } as unknown as NormalizedStaticConfig;
 
   const botValidationContext: BotValidationContext = {
     octokit: createLocalOctokit(),
@@ -790,9 +847,9 @@ async function main(): Promise<void> {
 
   if (mode === 'pr') {
     const baseSha = requireEnv('PR_BASE_SHA');
-    const headSha = requireEnv('PR_HEAD_SHA');
+    const headRef = isForkPr ? 'HEAD' : requireEnv('PR_HEAD_SHA');
 
-    const changed = await getChangedFiles(baseSha, headSha);
+    const changed = await getChangedFiles(baseSha, headRef);
 
     targets = changed
       .filter(isYamlPath)
@@ -841,7 +898,7 @@ async function main(): Promise<void> {
 
   for (const t of targets) {
     try {
-      const r = await validateOneFile(t, ajv, schemaCache, botValidationContext, repoInfo, mode);
+      const r = await validateOneFile(t, ajv, schemaCache, botValidationContext, repoInfo, mode, trustedConfigRef);
       results.push(r);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

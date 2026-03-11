@@ -1,5 +1,5 @@
 import { setStateLabel as setStateLabelRaw, ensureAssigneesOnce as ensureAssigneesOnceRaw } from './state.js';
-import { postOnce as postOnceRaw } from './comments.js';
+import { postOnce as postOnceRaw, collapseBotCommentsByPrefix as collapseBotCommentsByPrefixRaw } from './comments.js';
 import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './template.js';
 import { validateRequestIssue as validateRequestIssueRaw } from './validation/run.js';
 import {
@@ -12,6 +12,7 @@ import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
 import type { Context, Probot } from 'probot';
+import YAML from 'yaml';
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -80,6 +81,14 @@ type FormData = Record<string, string>;
 
 type PostOnceOptions = { minimizeTag?: string };
 
+type CollapseBotCommentsByPrefixOptions = {
+  perPage?: number;
+  tagPrefix: string;
+  keepTags?: string[];
+  collapseBody?: string;
+  classifier?: 'OUTDATED' | 'RESOLVED' | 'DUPLICATE' | 'OFF_TOPIC' | 'SPAM' | 'ABUSE';
+};
+
 type PullRequestLike = {
   number: number;
   body?: string | null;
@@ -141,6 +150,250 @@ function toStringTrim(value: unknown): string {
   return '';
 }
 
+function normalizeLogin(value: unknown): string {
+  return toStringTrim(value).replace(/^@+/, '').trim();
+}
+
+function uniqLogins(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of values || []) {
+    const s = normalizeLogin(v);
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+type RepoContentFile = { content?: string; encoding?: string };
+
+function isRepoContentFile(v: unknown): v is RepoContentFile {
+  return isPlainObject(v) && typeof v['content'] === 'string';
+}
+
+async function readRepoFileText(
+  context: BotContext<RequestEvents>,
+  repo: RepoInfo,
+  path: string
+): Promise<string | null> {
+  const p = toStringTrim(path).replace(/^\/+/, '');
+  if (!p) return null;
+
+  try {
+    const res = await context.octokit.repos.getContent({ owner: repo.owner, repo: repo.repo, path: p });
+    const data = (res as unknown as { data?: unknown }).data;
+
+    if (Array.isArray(data) || !isRepoContentFile(data)) return null;
+
+    const enc = typeof data.encoding === 'string' ? data.encoding : 'base64';
+    return Buffer.from(String(data.content || ''), enc as BufferEncoding).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+async function readYamlFromRepo(
+  context: BotContext<RequestEvents>,
+  repo: RepoInfo,
+  path: string
+): Promise<unknown | null> {
+  const txt = await readRepoFileText(context, repo, path);
+  if (!txt) return null;
+
+  try {
+    return YAML.parse(txt);
+  } catch {
+    return null;
+  }
+}
+
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function extractParentContactCandidates(value: unknown): { logins: string[]; emails: string[] } {
+  const logins: string[] = [];
+  const emails: string[] = [];
+
+  const pushLogin = (v: unknown): void => {
+    const s = normalizeLogin(v);
+    if (!s) return;
+    if (!LOGIN_RE.test(s)) return;
+    logins.push(s);
+  };
+
+  const pushEmail = (v: unknown): void => {
+    const s = toStringTrim(v);
+    if (!s) return;
+    const t = s.replace(/^<|>$/g, '').trim();
+    if (!EMAIL_RE.test(t)) return;
+    emails.push(t);
+  };
+
+  const fromString = (raw: string, strongLoginHint: boolean): void => {
+    const s = toStringTrim(raw);
+    if (!s) return;
+
+    const urlM =
+      /(?:https?:\/\/)?(?:www\.)?(?:github\.com|github\.tools\.sap)\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/gi;
+    for (const m of s.matchAll(urlM)) {
+      if (m?.[1]) pushLogin(m[1]);
+    }
+
+    const tokens = s
+      .split(/[,\s;]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    for (let t of tokens) {
+      t = t.replace(/^[<([{"']+|[>)\]},"']+$/g, '').trim();
+      if (!t) continue;
+
+      if (t.includes('@') && EMAIL_RE.test(t)) {
+        pushEmail(t);
+        continue;
+      }
+
+      if (t.startsWith('@')) {
+        const u = t.slice(1);
+        if (u && !u.includes('.') && LOGIN_RE.test(u)) pushLogin(u);
+        continue;
+      }
+
+      if ((strongLoginHint || tokens.length === 1) && !t.includes('.') && LOGIN_RE.test(t)) {
+        pushLogin(t);
+      }
+    }
+  };
+
+  const walk = (v: unknown, keyHint?: string): void => {
+    if (v === null || v === undefined) return;
+
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      const k = String(keyHint || '').toLowerCase();
+      const strong = ['github', 'login', 'username', 'user', 'owner', 'id', 'uid', 'account', 'gh'].some((x) =>
+        k.includes(x)
+      );
+      fromString(String(v), strong);
+      return;
+    }
+
+    if (Array.isArray(v)) {
+      for (const el of v) walk(el, keyHint);
+      return;
+    }
+
+    if (isPlainObject(v)) {
+      for (const [k, vv] of Object.entries(v)) walk(vv, k);
+      return;
+    }
+  };
+
+  walk(value);
+
+  return { logins: uniqLogins(logins), emails: Array.from(new Set(emails.map((e) => e.toLowerCase()))) };
+}
+
+const EMAIL_TO_LOGINS_CACHE = new Map<string, Promise<string[]>>();
+
+async function lookupGithubLoginsByEmail(context: BotContext<RequestEvents>, email: string): Promise<string[]> {
+  const e = toStringTrim(email).toLowerCase();
+  if (!e || !e.includes('@')) return [];
+
+  const cached = EMAIL_TO_LOGINS_CACHE.get(e);
+  if (cached) return await cached;
+
+  const p = (async (): Promise<string[]> => {
+    const found: string[] = [];
+    const q = `${e} in:email`;
+
+    try {
+      const res = await context.octokit.search.users({ q, per_page: 5 });
+      const items = (res as unknown as { data?: { items?: { login?: string }[] } })?.data?.items ?? [];
+      for (const it of items) {
+        const login = normalizeLogin(it?.login);
+        if (login) found.push(login);
+      }
+    } catch {
+      /* empty */
+    }
+
+    if (found.length) return uniqLogins(found);
+
+    try {
+      const gql = `
+        query($q: String!) {
+          search(type: USER, query: $q, first: 5) {
+            nodes { ... on User { login } }
+          }
+        }
+      `;
+      const r = await (
+        context.octokit as unknown as {
+          graphql: (q: string, v: unknown) => Promise<{ search?: { nodes?: { login?: string }[] } }>;
+        }
+      ).graphql(gql, { q });
+
+      const nodes = r?.search?.nodes ?? [];
+      for (const n of nodes) {
+        const login = normalizeLogin(n?.login);
+        if (login) found.push(login);
+      }
+    } catch {
+      /* empty */
+    }
+
+    return uniqLogins(found);
+  })();
+
+  EMAIL_TO_LOGINS_CACHE.set(e, p);
+  return await p;
+}
+
+async function resolveParentOwnerLoginsForTarget(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  template: TemplateLike,
+  validatedNamespace: string,
+  requestType: string
+): Promise<{ parent: string; owners: string[] }> {
+  const rt = toStringTrim(requestType).toLowerCase();
+  if (!rt.includes('namespace')) return { parent: '', owners: [] };
+
+  const target = toStringTrim(validatedNamespace);
+  const parts = target
+    .split('.')
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 2) return { parent: '', owners: [] };
+
+  const parent = parts.slice(0, -1).join('.');
+  if (!parent) return { parent: '', owners: [] };
+
+  const rootRaw = toStringTrim(template?._meta?.root);
+  const root = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!root) return { parent, owners: [] };
+
+  const parentPath = `${root}/${parent}.yaml`;
+  const doc = await readYamlFromRepo(context, { owner: params.owner, repo: params.repo }, parentPath);
+  if (!isPlainObject(doc)) return { parent, owners: [] };
+
+  const rec = doc;
+  const contacts = rec['contacts'] ?? rec['contact'] ?? rec['owners'] ?? rec['owner'];
+
+  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
+
+  const resolved: string[] = [...directLogins];
+  for (const email of emails.slice(0, 10)) {
+    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
+  }
+
+  return { parent, owners: uniqLogins(resolved) };
+}
+
 function readCheckRunId(run: CheckRunLike | null): number | null {
   const id = run?.id;
   return typeof id === 'number' && Number.isFinite(id) ? id : null;
@@ -175,6 +428,77 @@ function readCheckSuitePrNumbers(suite: CheckSuiteLike | null): number[] {
     if (typeof n === 'number' && Number.isFinite(n)) out.push(n);
   }
   return out;
+}
+
+async function resolveCheckSuitePrNumbers(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  suite: CheckSuiteLike | null,
+  headSha: string
+): Promise<number[]> {
+  const direct = readCheckSuitePrNumbers(suite);
+  if (direct.length) return Array.from(new Set(direct));
+
+  const sha = toStringTrim(headSha);
+  if (!sha) return [];
+
+  try {
+    const res = await context.octokit.repos.listPullRequestsAssociatedWithCommit({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      commit_sha: sha,
+      per_page: 100,
+    });
+
+    const data = (res as unknown as { data?: unknown }).data;
+    const items = Array.isArray(data) ? data : [];
+
+    const fromCommit = items
+      .map((pr) => {
+        if (!isPlainObject(pr)) return null;
+
+        const state = toStringTrim(pr['state']).toLowerCase();
+        const number = pr['number'];
+
+        if (state !== 'open') return null;
+        if (typeof number !== 'number' || !Number.isFinite(number)) return null;
+
+        return number;
+      })
+      .filter((n): n is number => typeof n === 'number');
+
+    if (fromCommit.length) return Array.from(new Set(fromCommit));
+  } catch {
+    // ignore and fall through to the repo scan fallback
+  }
+
+  const matches: number[] = [];
+  let page = 1;
+
+  while (true) {
+    const { data } = await context.octokit.pulls.list({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      state: 'open',
+      per_page: 100,
+      page,
+    });
+
+    const prs = (data || []) as unknown as PullRequestLike[];
+    if (!prs.length) break;
+
+    for (const pr of prs) {
+      if (toStringTrim(pr.head?.sha) !== sha) continue;
+      if (typeof pr.number !== 'number' || !Number.isFinite(pr.number)) continue;
+      matches.push(pr.number);
+    }
+
+    if (prs.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+
+  return Array.from(new Set(matches));
 }
 
 async function listAllCheckRunsForSuite(
@@ -563,6 +887,12 @@ type PostOnceFn = (
   options?: PostOnceOptions
 ) => Promise<void>;
 
+type CollapseBotCommentsByPrefixFn = (
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  options: CollapseBotCommentsByPrefixOptions
+) => Promise<void>;
+
 type LoadTemplateFn = (
   context: BotContext<RequestEvents>,
   opts: {
@@ -615,6 +945,7 @@ type TryMergeIfGreenFn = (
 const setStateLabel = setStateLabelRaw as unknown as SetStateLabelFn;
 const ensureAssigneesOnce = ensureAssigneesOnceRaw as unknown as EnsureAssigneesOnceFn;
 const postOnce = postOnceRaw as unknown as PostOnceFn;
+const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as CollapseBotCommentsByPrefixFn;
 const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
 const parseForm = parseFormRaw as unknown as ParseFormFn;
 const validateRequestIssue = validateRequestIssueRaw as unknown as ValidateRequestIssueFn;
@@ -630,8 +961,13 @@ function extractResourceNameFromForm(formData: FormData, template: TemplateLike)
   const isProduct = rt === 'product';
 
   const val = isProduct
-    ? (formData['product-id'] ?? formData['productId'] ?? formData['identifier'] ?? '')
-    : (formData['identifier'] ?? formData['namespace'] ?? formData['name'] ?? formData['vendor'] ?? '');
+    ? (formData['product-id'] ?? formData['productId'] ?? formData['identifier'] ?? formData['id'] ?? '')
+    : (formData['identifier'] ??
+      formData['namespace'] ??
+      formData['id'] ??
+      formData['name'] ??
+      formData['vendor'] ??
+      '');
 
   return toStringTrim(val);
 }
@@ -1009,7 +1345,8 @@ async function processIssueEvent(
       context,
       { owner: params.owner, repo: params.repo },
       template,
-      parsedFormData
+      parsedFormData,
+      validatedNamespace
     );
 
     if (parentError) {
@@ -1023,9 +1360,31 @@ async function processIssueEvent(
     (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'parent chain check failed');
   }
 
+  const effectiveRequestType = resolveEffectiveRequestType(result.template || template, parsedFormData);
+
+  const gated = await maybeRequireParentOwnerApproval(
+    context,
+    params,
+    issue,
+    result.template || template,
+    validatedNamespace,
+    effectiveRequestType
+  );
+
+  if (DBG) {
+    log(
+      context,
+      'debug',
+      { issue: issue.number, target: validatedNamespace, requestType: effectiveRequestType, gated },
+      'parent-approval:gate-result'
+    );
+  }
+
+  if (gated) return;
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
-    requestType: resolveEffectiveRequestType(result.template || template, parsedFormData),
+    requestType: effectiveRequestType,
   });
 }
 
@@ -1155,7 +1514,8 @@ async function handleAuthorUpdateComment(
           context,
           { owner: params.owner, repo: params.repo },
           tpl,
-          parsedAfterUpdate
+          parsedAfterUpdate,
+          namespace
         );
         if (parentError) {
           await postOnce(context, params, `## Detected issues\n\n- ${parentError}`, {
@@ -1176,6 +1536,21 @@ async function handleAuthorUpdateComment(
           'closeOutdatedRequestPRs skipped'
         );
       }
+
+      const effectiveRequestType = resolveEffectiveRequestType(tpl, parsedAfterUpdate);
+
+      const gated = await maybeRequireParentOwnerApproval(context, params, issue, tpl, namespace, effectiveRequestType);
+
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          { issue: issue.number, target: namespace, requestType: effectiveRequestType, gated },
+          'parent-approval:gate-result(update)'
+        );
+      }
+
+      if (gated) return;
 
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
@@ -1200,13 +1575,19 @@ async function checkParentChainExistsInFlatStructure(
   context: BotContext<RequestEvents>,
   { owner, repo }: RepoInfo,
   template: TemplateLike,
-  formData: FormData
+  formData: FormData,
+  explicitResourceName?: string
 ): Promise<string | null> {
   const rootRaw = toStringTrim(template?._meta?.root);
   const STRUCT_ROOT = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
   if (!STRUCT_ROOT) return null;
 
-  const resourceName = extractResourceNameFromForm(formData, template);
+  const rt = toStringTrim(template?._meta?.requestType).toLowerCase();
+  const isNamespaceLike = rt.includes('namespace') || rt === 'subcontext' || rt === 'system' || rt === 'authority';
+
+  if (!isNamespaceLike) return null;
+
+  const resourceName = toStringTrim(explicitResourceName) || extractResourceNameFromForm(formData, template);
   const parts = toStringTrim(resourceName).split('.').filter(Boolean);
 
   // Needs at least 2 segments like "sap.cds"
@@ -1289,6 +1670,303 @@ async function tryLoadTemplateForLabels(
 const ROUTING_LOCK_READ_RE = /<!--\s*nsreq:routing-lock\s*=\s*({[\s\S]*?})\s*-->/i;
 const ROUTING_LOCK_STRIP_RE = /<!--\s*nsreq:routing-lock\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
 
+const PARENT_APPROVAL_READ_RE = /<!--\s*nsreq:parent-approval\s*=\s*({[\s\S]*?})\s*-->/i;
+const PARENT_APPROVAL_STRIP_RE = /<!--\s*nsreq:parent-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
+
+type ParentApprovalMeta = {
+  v: 1;
+  parent: string;
+  target: string;
+  owners: string[];
+  approvedBy?: string;
+  approvedAt?: string;
+};
+
+function stripParentApprovalFromBody(issueBody: unknown): string {
+  const body = String(issueBody || '');
+  return body.replace(PARENT_APPROVAL_STRIP_RE, '').trimEnd();
+}
+
+function readParentApprovalMeta(issueBody: unknown): ParentApprovalMeta | null {
+  const body = String(issueBody || '');
+  const m = body.match(PARENT_APPROVAL_READ_RE);
+  if (!m) return null;
+
+  try {
+    const raw = JSON.parse(String(m[1] || ''));
+    if (!isPlainObject(raw)) return null;
+    if (raw['v'] !== 1) return null;
+
+    const parent = toStringTrim(raw['parent']);
+    const target = toStringTrim(raw['target']);
+    const ownersRaw = raw['owners'];
+    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
+
+    const approvedBy = normalizeLogin(raw['approvedBy']);
+    const approvedAt = toStringTrim(raw['approvedAt']);
+
+    if (!parent || !target) return null;
+
+    const out: ParentApprovalMeta = { v: 1, parent, target, owners };
+    if (approvedBy) out.approvedBy = approvedBy;
+    if (approvedAt) out.approvedAt = approvedAt;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureParentApprovalMarker(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  meta: ParentApprovalMeta | null
+): Promise<boolean> {
+  const current = readParentApprovalMeta(issue.body);
+  const cleaned = stripParentApprovalFromBody(issue.body);
+
+  if (!meta) {
+    if (!current) return false;
+    try {
+      const nextBody = `${cleaned}\n`;
+      await context.octokit.issues.update({ ...params, body: nextBody });
+      issue.body = nextBody;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const next: ParentApprovalMeta = {
+    v: 1,
+    parent: toStringTrim(meta.parent),
+    target: toStringTrim(meta.target),
+    owners: uniqLogins(meta.owners || []),
+  };
+
+  const ab = normalizeLogin(meta.approvedBy);
+  const at = toStringTrim(meta.approvedAt);
+  if (ab) next.approvedBy = ab;
+  if (at) next.approvedAt = at;
+
+  if (!next.parent || !next.target) return false;
+
+  const same =
+    current &&
+    normalizeKey(current.parent) === normalizeKey(next.parent) &&
+    normalizeKey(current.target) === normalizeKey(next.target) &&
+    uniqLogins(current.owners).join('|').toLowerCase() === uniqLogins(next.owners).join('|').toLowerCase() &&
+    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
+    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
+
+  if (same) return false;
+
+  const metaStr = JSON.stringify(next);
+  const nextBody = `${cleaned}\n\n<!-- nsreq:parent-approval = ${metaStr} -->\n`;
+
+  try {
+    await context.octokit.issues.update({ ...params, body: nextBody });
+    issue.body = nextBody;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function maybeRequireParentOwnerApproval(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  validatedNamespace: string,
+  requestType: string
+): Promise<boolean> {
+  const rt = toStringTrim(requestType).toLowerCase();
+  if (!rt.includes('namespace')) {
+    await ensureParentApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const target = toStringTrim(validatedNamespace);
+  const parts = target
+    .split('.')
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 2) {
+    await ensureParentApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const requester = normalizeLogin(issue.user?.login);
+
+  const { parent, owners } = await resolveParentOwnerLoginsForTarget(context, params, template, target, requestType);
+
+  if (!parent || owners.length === 0) {
+    await ensureParentApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  if (requester && owners.some((o) => o.toLowerCase() === requester.toLowerCase())) {
+    if (DBG) {
+      log(
+        context,
+        'debug',
+        { issue: issue.number, requester, parent, target, owners },
+        'parent-approval:skip (requester is parent owner)'
+      );
+    }
+    await ensureParentApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const current = readParentApprovalMeta(issue.body);
+  const alreadyApproved =
+    current &&
+    normalizeKey(current.parent) === normalizeKey(parent) &&
+    normalizeKey(current.target) === normalizeKey(target) &&
+    Boolean(normalizeLogin(current.approvedBy));
+
+  if (alreadyApproved) return false;
+
+  await ensureParentApprovalMarker(context, params, issue, { v: 1, parent, target, owners });
+
+  const mentions = owners.map((o) => `@${o}`).join(' ');
+  const tag = `nsreq:parent-approval:${normalizeKey(parent)}:${normalizeKey(target)}`;
+
+  await postOnce(
+    context,
+    params,
+    `### 🔒 Parent owner approval required
+
+Sub-namespace request under \`${parent}\` (target: \`${target}\`).
+
+${mentions}
+
+Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
+    { minimizeTag: tag }
+  );
+
+  await setStateLabel(context, params, issue, 'author');
+  return true;
+}
+
+async function handleParentOwnerApprovalIfNeeded(
+  context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  commenter: string
+): Promise<boolean> {
+  const meta = readParentApprovalMeta(issue.body);
+  if (!meta) return false;
+  if (normalizeLogin(meta.approvedBy)) return false;
+
+  const commenterLogin = normalizeLogin(commenter);
+  const owners = uniqLogins(meta.owners || []);
+  const isOwner = owners.some((o) => o.toLowerCase() === commenterLogin.toLowerCase());
+
+  const tagBase = `nsreq:parent-approval:${normalizeKey(meta.parent)}:${normalizeKey(meta.target)}`;
+
+  if (!isOwner) {
+    const mentions = owners.map((o) => `@${o}`).join(' ');
+    await postOnce(
+      context,
+      params,
+      `Approval ignored: this request requires parent owner approval for \`${meta.parent}\` first.
+
+${mentions}`,
+      { minimizeTag: `${tagBase}:pending` }
+    );
+    return true;
+  }
+
+  const reval = await validateRequestIssue(context, params, issue, { template, formData: parsedFormData });
+  if (reval.errors?.length) {
+    const listFallback = (reval.errors || []).map((e) => `- ${e}`).join('\n');
+    const message =
+      reval.errorsFormattedSingle?.trim() ||
+      reval.errorsFormatted?.trim() ||
+      listFallback ||
+      'Unknown validation error.';
+    await postOnce(context, params, `## Detected issues\n\n${message}`, { minimizeTag: 'nsreq:validation' });
+    await setStateLabel(context, params, issue, 'author');
+    return true;
+  }
+
+  const tpl = reval.template || template;
+  const bodyStr = readIssueBodyForProcessing(issue.body);
+  const parsedNow = parseForm(bodyStr, tpl);
+  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
+  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
+
+  await ensureParentApprovalMarker(context, params, issue, {
+    v: 1,
+    parent: meta.parent,
+    target: meta.target,
+    owners,
+    approvedBy: commenterLogin,
+    approvedAt: new Date().toISOString(),
+  });
+
+  await postOnce(context, params, `Parent namespace approved by @${commenterLogin}. Continuing with standard review.`, {
+    minimizeTag: `${tagBase}:approved`,
+  });
+
+  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
+    snapshotHash,
+    requestType: effRt,
+  });
+
+  return true;
+}
+
+const ROUTING_LOCK_NOTICE_INFLIGHT = new Map<string, Promise<void>>();
+
+function routingNoticeKey(params: IssueParams): string {
+  return `${params.owner}/${params.repo}#${params.issue_number}`;
+}
+
+async function postRoutingLockNoticeOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  expected: string
+): Promise<void> {
+  const key = routingNoticeKey(params);
+  const existing = ROUTING_LOCK_NOTICE_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const p = (async (): Promise<void> => {
+    await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
+      minimizeTag: 'nsreq:routing-label-lock',
+    });
+  })().finally(() => {
+    ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
+  });
+
+  ROUTING_LOCK_NOTICE_INFLIGHT.set(key, p);
+  await p;
+}
+
+async function isRoutingLabelName(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  labelName: unknown
+): Promise<boolean> {
+  const name = toStringTrim(labelName);
+  if (!name) return false;
+  try {
+    return Boolean(await tryLoadTemplateForLabels(context, params, issue, [name]));
+  } catch {
+    return false;
+  }
+}
+
 type RoutingLockMeta = { v: 1; expected: string };
 
 function readRoutingLockExpected(issueBody: unknown): string {
@@ -1309,7 +1987,7 @@ function stripRoutingLockFromBody(issueBody: unknown): string {
 }
 
 function readIssueBodyForProcessing(issueBody: unknown): string {
-  return toStringTrim(stripRoutingLockFromBody(issueBody));
+  return toStringTrim(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody)));
 }
 
 async function detectRoutingLabels(
@@ -1375,7 +2053,8 @@ async function enforceRoutingLabelLock(
   context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
-  expectedLabel: string
+  expectedLabel: string,
+  opts?: { changedLabel?: string }
 ): Promise<boolean> {
   const expected = toStringTrim(expectedLabel);
   const expectedKey = normalizeKey(expected);
@@ -1410,9 +2089,17 @@ async function enforceRoutingLabelLock(
   }
 
   if (changed) {
-    await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
-      minimizeTag: 'nsreq:routing-label-lock',
-    });
+    const touchedLabel = toStringTrim(opts?.changedLabel);
+
+    // Only notify on routing-label events - avoid spamming on unrelated label changes.
+    const shouldNotify =
+      !touchedLabel ||
+      normalizeKey(touchedLabel) === expectedKey ||
+      (await isRoutingLabelName(context, params, issue, touchedLabel));
+
+    if (shouldNotify) {
+      await postRoutingLockNoticeOnce(context, params, expected);
+    }
   }
 
   return changed;
@@ -1776,7 +2463,7 @@ export default function requestHandler(app: Probot): void {
 
       // Enforce routing label lock. This closes swap/multi-label bypasses.
       if (expectedRouting) {
-        const enforced = await enforceRoutingLabelLock(context, params, issue, expectedRouting);
+        const enforced = await enforceRoutingLabelLock(context, params, issue, expectedRouting, { changedLabel });
         if (enforced) {
           try {
             labels = await fetchIssueLabels(context, params);
@@ -1993,6 +2680,16 @@ export default function requestHandler(app: Probot): void {
       const stripped = stripQuoteAndCode(comment.body || '');
       const isApproval = isApprovalComment(context, stripped);
       if (isApproval) {
+        const handled = await handleParentOwnerApprovalIfNeeded(
+          context,
+          params,
+          issue,
+          template,
+          parsedFormData,
+          commenter
+        );
+        if (handled) return;
+
         await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
         return;
       }
@@ -2116,24 +2813,45 @@ export default function requestHandler(app: Probot): void {
       const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
 
       if (!ownerLogin || !repoName) return;
+      const checkSuite = readCheckSuiteFromPayload(context.payload as unknown);
+      const prNumbers = await resolveCheckSuitePrNumbers(
+        context,
+        { owner: ownerLogin, repo: repoName },
+        checkSuite,
+        headShaStr
+      );
 
       if (DBG) {
-        log(context, 'debug', { ownerLogin, repoName, conclusion, headShaStr }, 'dbg:checks:context resolved');
+        log(
+          context,
+          'debug',
+          { ownerLogin, repoName, conclusion, headShaStr, prNumbers },
+          'dbg:checks:context resolved'
+        );
       }
 
-      // success -> keep existing auto-merge behavior
+      // success -> collapse old CI validation comments + keep existing auto-merge behavior
       if (conclusion === 'success') {
+        for (const prNumber of prNumbers) {
+          await collapseBotCommentsByPrefix(
+            context,
+            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
+            {
+              tagPrefix: 'nsreq:ci-validation:',
+              collapseBody: 'Validation issues resolved.',
+              classifier: 'RESOLVED',
+            }
+          );
+        }
+
         if (!headShaStr) return;
         await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, headShaStr);
         return;
       }
 
       // failure -> comment on PR if registry-validate annotations exist
-      const checkSuite = readCheckSuiteFromPayload(context.payload as unknown);
       const suiteId = readCheckSuiteId(checkSuite);
       if (!suiteId) return;
-
-      const prNumbers = readCheckSuitePrNumbers(checkSuite);
       if (!prNumbers.length) return;
 
       if (DBG) {
@@ -2211,6 +2929,21 @@ export default function requestHandler(app: Probot): void {
           const arr = byFile.get(file) ?? [];
           arr.push(msg);
           byFile.set(file, arr);
+        }
+
+        const currentCiTags = Array.from(byFile.keys()).map((file) => `nsreq:ci-validation:${normalizeKey(file)}`);
+
+        for (const prNumber of prNumbers) {
+          await collapseBotCommentsByPrefix(
+            context,
+            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
+            {
+              tagPrefix: 'nsreq:ci-validation:',
+              keepTags: currentCiTags,
+              collapseBody: 'Validation issues resolved.',
+              classifier: 'RESOLVED',
+            }
+          );
         }
 
         for (const [file, msgs] of byFile.entries()) {

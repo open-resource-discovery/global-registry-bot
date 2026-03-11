@@ -1,10 +1,25 @@
 const POST_ONCE_COMMENTS_CACHE = new Map<string, IssueCommentLike[]>();
 
+function clearPostOnceCacheForIssue(owner: string, repo: string, issueNumber: number): void {
+  const prefix = `${owner}/${repo}#${issueNumber}:`;
+  for (const key of POST_ONCE_COMMENTS_CACHE.keys()) {
+    if (key.startsWith(prefix)) POST_ONCE_COMMENTS_CACHE.delete(key);
+  }
+}
+
 export type ReportedContentClassifier = 'OUTDATED' | 'RESOLVED' | 'DUPLICATE' | 'OFF_TOPIC' | 'SPAM' | 'ABUSE';
 
 export type PostOnceOptions = {
   perPage?: number;
   minimizeTag?: string;
+  classifier?: ReportedContentClassifier;
+};
+
+export type CollapseBotCommentsByPrefixOptions = {
+  perPage?: number;
+  tagPrefix: string;
+  keepTags?: string[];
+  collapseBody?: string;
   classifier?: ReportedContentClassifier;
 };
 
@@ -111,6 +126,116 @@ mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
   }
 }
 `;
+
+function extractCommentMarkers(body: unknown): string[] {
+  const text = String(body || '');
+  const out = new Set<string>();
+  const re = /<!--\s*([^>]+?)\s*-->/g;
+
+  for (const m of text.matchAll(re)) {
+    const tag = toStringTrim(m[1]);
+    if (tag) out.add(tag);
+  }
+
+  return Array.from(out);
+}
+
+function resolveCommentTarget(
+  context: ContextLike,
+  params: PostOnceParams
+): { owner: string; repo: string; issueNumber: number | null } {
+  const owner = toStringTrim(params.owner ?? context.payload?.repository?.owner?.login);
+  const repo = toStringTrim(params.repo ?? context.payload?.repository?.name);
+  const issueNumber =
+    typeof (params.issue_number ?? params.pull_number) === 'number'
+      ? (params.issue_number ?? params.pull_number)!
+      : null;
+
+  return { owner, repo, issueNumber };
+}
+
+async function minimizeCommentByNodeId(
+  context: ContextLike,
+  nodeId: string,
+  classifier: ReportedContentClassifier
+): Promise<void> {
+  try {
+    await context.octokit.graphql(MINIMIZE_MUTATION, { subjectId: nodeId, classifier });
+  } catch (err: unknown) {
+    context.log?.warn?.({ err: getErrorMessage(err), nodeId }, 'minimizeComment failed');
+  }
+}
+
+export async function collapseBotCommentsByPrefix(
+  context: ContextLike,
+  params: PostOnceParams,
+  options: CollapseBotCommentsByPrefixOptions
+): Promise<void> {
+  const perPage = typeof options.perPage === 'number' ? options.perPage : 100;
+  const tagPrefix = toStringTrim(options.tagPrefix);
+  const keepTags = new Set(
+    (Array.isArray(options.keepTags) ? options.keepTags : []).map((x) => toStringTrim(x)).filter(Boolean)
+  );
+  const collapseBody = toStringTrim(options.collapseBody) || 'Validation issues resolved.';
+  const classifier: ReportedContentClassifier = options.classifier ?? 'RESOLVED';
+
+  if (!tagPrefix) return;
+
+  const { owner, repo, issueNumber } = resolveCommentTarget(context, params);
+  if (!owner || !repo || issueNumber === null) {
+    context.log?.warn?.({ owner, repo, issueNumber }, 'collapseBotCommentsByPrefix: missing owner/repo/issue_number');
+    return;
+  }
+
+  clearPostOnceCacheForIssue(owner, repo, issueNumber);
+
+  let comments: IssueCommentLike[] = [];
+  try {
+    const res = await context.octokit.issues.listComments({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: perPage,
+    });
+    comments = Array.isArray(res.data) ? res.data : [];
+  } catch (err: unknown) {
+    if (isSecondaryRateLimit(err)) {
+      context.log?.warn?.(
+        { err: getErrorMessage(err), owner, repo, issueNumber },
+        'collapseBotCommentsByPrefix:listComments hit secondary rate limit'
+      );
+      return;
+    }
+    throw err;
+  }
+
+  const tagsToCollapse = new Set<string>();
+
+  for (const c of comments) {
+    if (!isBotUser(c.user)) continue;
+
+    for (const marker of extractCommentMarkers(c.body)) {
+      if (!marker.startsWith(tagPrefix)) continue;
+      if (keepTags.has(marker)) continue;
+      tagsToCollapse.add(marker);
+    }
+  }
+
+  for (const tag of tagsToCollapse) {
+    const collapsed = await postOnce(context, { owner, repo, issue_number: issueNumber }, collapseBody, {
+      perPage,
+      minimizeTag: tag,
+      classifier,
+    });
+
+    const nodeId = toStringTrim(collapsed?.node_id);
+    if (nodeId) {
+      await minimizeCommentByNodeId(context, nodeId, classifier);
+    }
+  }
+
+  clearPostOnceCacheForIssue(owner, repo, issueNumber);
+}
 
 export async function postOnce(
   context: ContextLike,

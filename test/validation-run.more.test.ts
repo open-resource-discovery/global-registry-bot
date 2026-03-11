@@ -1371,7 +1371,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
       expect(requestType).toBe('product');
-      expect(resourceName).toBe('EXPLICIT-ID');
+      expect(resourceName).toBe('PROD-1');
 
       expect(form.requestType).toBe('product');
       expect(form.identifier).toBe('PROD-1');
@@ -1630,6 +1630,189 @@ describe('validation/run.ts extra coverage', () => {
     expect(res.errors.join('\n')).toMatch(/schema marks a primary identifier/i);
     expect(ctx.log.info.mock.calls.some((c: any[]) => c?.[1] === 'ns:schema-path')).toBe(true);
     expect(ctx.log.info.mock.calls.some((c: any[]) => c?.[1] === 'schema-input')).toBe(true);
+
+    restore();
+  });
+  it('runCustomValidateForRegistryCandidate: uses explicit resourceName and explicit normalized formData', async () => {
+    const { mod, restore } = await loadSubject();
+
+    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+      expect(requestType).toBe('product');
+      expect(resourceName).toBe('PROD-1');
+      expect(form).toEqual({
+        identifier: 'PROD-1',
+        namespace: 'PROD-1',
+        contact: 'a@x\nb@y',
+        correlationIds: 'c1\nc2',
+        description: '',
+        requestType: 'product',
+      });
+
+      return [];
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: { onValidate },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'product',
+        resourceName: 'EXPLICIT-ID',
+        schema: {},
+        candidate: { name: 'ignored' },
+        formData: {
+          identifier: 'PROD-1',
+          namespace: 'PROD-1',
+          contact: 'a@x\nb@y',
+          correlationIds: 'c1\nc2',
+        },
+      }
+    );
+
+    expect(msgs).toEqual([]);
+    expect(onValidate).toHaveBeenCalledTimes(1);
+
+    restore();
+  });
+
+  it('runCustomValidateForRegistryCandidate: falls back to candidate identifier for resourceName', async () => {
+    const { mod, restore } = await loadSubject();
+
+    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+      expect(requestType).toBe('product');
+      expect(resourceName).toBe('PROD-123');
+      expect(form.identifier).toBe('PROD-123');
+      expect(form.namespace).toBe('PROD-123');
+      expect(form.title).toBe('Some Product');
+      expect(form.requestType).toBe('product');
+      return [];
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: { onValidate },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'product',
+        schema: {},
+        candidate: { identifier: 'PROD-123', title: 'Some Product' },
+      }
+    );
+
+    expect(msgs).toEqual([]);
+    expect(onValidate).toHaveBeenCalledTimes(1);
+
+    restore();
+  });
+
+  it('runCustomValidateForRegistryCandidate: descriptor hooks use explicit resourceName and explicit formData', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.runHookInWorker.mockResolvedValueOnce({
+      found: true,
+      value: [{ field: 'identifier', message: 'bad id' }],
+      logs: [{ level: 'info', obj: { i: 1 }, msg: 'worker-info' }],
+    } as any);
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      resourceBotHooks: {
+        __type: 'registry-bot-hooks:esm',
+        __path: '.github/registry-bot/config.js',
+        __hash: 'h',
+        __code: 'export default {}',
+      },
+      resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
+      resourceBotHooksSource: 'repo:.github/registry-bot/config.js#h',
+    };
+
+    const msgs = await mod.runCustomValidateForRegistryCandidate(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'product',
+        resourceName: 'PROD-2',
+        schema: {},
+        candidate: { name: 'ignored' },
+        formData: {
+          identifier: 'PROD-2',
+          namespace: 'PROD-2',
+          contact: 'a@x\nb@y',
+        },
+      }
+    );
+
+    expect(mocks.runHookInWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fn: 'onValidate',
+        args: expect.objectContaining({
+          requestType: 'product',
+          resourceName: 'PROD-2',
+          form: expect.objectContaining({
+            identifier: 'PROD-2',
+            namespace: 'PROD-2',
+            contact: 'a@x\nb@y',
+          }),
+        }),
+      }),
+      expect.anything()
+    );
+
+    expect(msgs).toEqual(['identifier: bad id']);
+
+    restore();
+  });
+
+  it('validateRequestIssue: returns a schema error when no schema is configured for the request type', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          product: { folderName: 'data', schema: '', issueTemplate: 'x' },
+        },
+      },
+      source: 'repo:cfg',
+      hooks: null,
+      hooksSource: null,
+    } as any);
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const template: any = {
+      body: [{ id: 'identifier', validations: { required: true } }],
+      _meta: { requestType: 'product', schema: '', root: 'data' },
+    };
+
+    const res = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      { template, formData: { identifier: 'PROD-1' } }
+    );
+
+    expect(res.errors.join('\n')).toMatch(/No schema configured/i);
 
     restore();
   });

@@ -9,11 +9,20 @@ afterAll(() => {
   process.env.DEBUG_NS = PREV_DEBUG_NS;
 });
 
+type IssueParams = { owner: string; repo: string; issue_number: number };
 const setStateLabel = jest.fn(async () => {});
 const ensureAssigneesOnce = jest.fn(async () => {});
 type PostOnceFn = (ctx: any, params: any, body: string, options?: any) => Promise<void>;
 
 const postOnce = jest.fn<PostOnceFn>(async (_ctx, _params, _body, _options) => {});
+
+type CollapseBotCommentsByPrefix = (
+  ctx: unknown,
+  params: IssueParams,
+  opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
+) => Promise<void>;
+
+const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
 
 const loadTemplate = jest.fn(async () => ({}));
 const parseForm = jest.fn(() => ({}));
@@ -171,6 +180,29 @@ function mkCommentContext(args: {
   return ctx;
 }
 
+function mkIssuesContext(args: {
+  issue: any;
+  action: 'opened' | 'edited' | 'reopened';
+  sender?: any;
+  changes?: any;
+  withCachedConfig?: boolean;
+  config?: any;
+}) {
+  const ctx = mkBaseContext({
+    issue: args.issue,
+    withCachedConfig: args.withCachedConfig,
+    config: args.config,
+  });
+  ctx.name = 'issues';
+  ctx.payload = {
+    action: args.action,
+    issue: args.issue,
+    sender: args.sender ?? { type: 'User', login: 'someone' },
+    changes: args.changes ?? {},
+  };
+  return ctx;
+}
+
 function mkCheckSuiteContext(args: {
   event: 'check_suite.completed' | 'check_run.completed';
   conclusion: string;
@@ -236,6 +268,7 @@ beforeAll(async () => {
 
   await jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
     postOnce,
+    collapseBotCommentsByPrefix,
   }));
 
   await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
@@ -841,8 +874,9 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
       },
     ],
   });
+
   ctx.octokit.pulls.get.mockResolvedValueOnce({
-    data: { html_url: 'https://github.com/o1/r1/pull/42' },
+    data: { html_url: 'https://github.tools.sap/o1/r1/pull/42' },
   });
 
   await handler(ctx);
@@ -1033,4 +1067,266 @@ test('status ignored when state != success', async () => {
   await handler(ctx);
 
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
+});
+
+describe('parent owner approval gating', () => {
+  function b64(s: string): string {
+    return Buffer.from(s, 'utf8').toString('base64');
+  }
+
+  test('gates sub-namespace request and asks owners of the immediate parent namespace', async () => {
+    const { app, handlers: h } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar.foo';
+    const issue = {
+      number: 550,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'requester' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    const ctx = mkIssuesContext({ issue, action: 'opened' });
+
+    // Parent chain exists, but owners differ per level.
+    const topYaml = `contacts:\n  - "@topOwner"\n`;
+    const barYaml = `contacts:\n  - "@barOwner"\n`;
+
+    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return { data: { content: b64(topYaml), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.bar.yaml') {
+        return { data: { content: b64(barYaml), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await h['issues.opened'][0](ctx);
+
+    // Marker is written to the issue body.
+    expect(issue.body).toContain('nsreq:parent-approval');
+    expect(issue.body).toContain('"parent":"sap.css.bar"');
+    expect(issue.body).toContain(`"target":"${target}"`);
+
+    // Bot asks the *immediate* parent owners (sap.css.bar), not sap.css.
+    const posted = (postOnce as jest.Mock).mock.calls.map((c) => String(c[2] || '')).join('\n');
+    expect(posted).toContain('@barOwner');
+    expect(posted).not.toContain('@topOwner');
+
+    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+  });
+
+  test('does not gate when the requester is already an owner of the parent namespace', async () => {
+    const { app, handlers: h } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar';
+    const issue = {
+      number: 551,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'barOwner' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    const ctx = mkIssuesContext({ issue, action: 'opened' });
+    const parentYaml = `contacts:\n  - "@barOwner"\n`;
+
+    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return { data: { content: b64(parentYaml), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await h['issues.opened'][0](ctx);
+
+    const posted = (postOnce as jest.Mock).mock.calls.map((c) => String(c[2] || '')).join('\n');
+    expect(posted).not.toContain('Parent owner approval required');
+    expect(ensureAssigneesOnce).toHaveBeenCalled();
+    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+  });
+
+  test('ignores Approved comments from non-owners while gated', async () => {
+    const { app, handlers: h } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar.foo';
+    const issue = {
+      number: 552,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'requester' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    // Gate first
+    const openCtx = mkIssuesContext({ issue, action: 'opened' });
+    const topYaml = `contacts:\n  - "@topOwner"\n`;
+    const barYaml = `contacts:\n  - "@barOwner"\n`;
+    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
+      if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    await h['issues.opened'][0](openCtx);
+
+    // Now a random user tries to approve
+    (postOnce as jest.Mock).mockClear();
+    (ensureAssigneesOnce as jest.Mock).mockClear();
+
+    const commentCtx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { type: 'User', login: 'randomUser' } },
+    });
+
+    await h['issue_comment.created'][0](commentCtx);
+
+    const posted = (postOnce as jest.Mock).mock.calls.map((c) => String(c[2] || '')).join('\n');
+    expect(posted).toContain('Approval ignored');
+    expect(posted).toContain('@barOwner');
+    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+    expect(createRequestPr).not.toHaveBeenCalled();
+  });
+
+  test('accepts Approved comments from parent owners and then hands over to CPA review', async () => {
+    const { app, handlers: h } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar.foo';
+    const issue = {
+      number: 553,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'requester' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    // Gate first
+    const openCtx = mkIssuesContext({ issue, action: 'opened' });
+    const topYaml = `contacts:\n  - "@topOwner"\n`;
+    const barYaml = `contacts:\n  - "@barOwner"\n`;
+    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
+      if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    await h['issues.opened'][0](openCtx);
+
+    // Owner approves
+    (postOnce as jest.Mock).mockClear();
+    (ensureAssigneesOnce as jest.Mock).mockClear();
+    (setStateLabel as jest.Mock).mockClear();
+
+    const commentCtx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { type: 'User', login: 'barOwner' } },
+    });
+
+    await h['issue_comment.created'][0](commentCtx);
+
+    // Body marker should now be enriched with approvedBy
+    expect(issue.body).toContain('"approvedBy":"barOwner"');
+
+    const posted = (postOnce as jest.Mock).mock.calls.map((c) => String(c[2] || '')).join('\n');
+    expect(posted).toContain('Parent namespace approved by @barOwner');
+    expect(posted).toContain('Routing to an approver');
+
+    expect(ensureAssigneesOnce).toHaveBeenCalled();
+    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+    expect(createRequestPr).not.toHaveBeenCalled();
+  });
 });
