@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+- accept approval only for explicit approval commands
+- support configured approval keyword only as an exact command
+- stop matching approval keywords inside normal review sentences
+- require the issue to already be in real review state
+- do not auto-repair missing review labels during approval
+- revalidate the request before creating a PR
+- run parent-chain checks again before PR creation
+
 ## [[0.0.3](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/rel/0.0.3)] - 2026-03-11
 
 ## Added

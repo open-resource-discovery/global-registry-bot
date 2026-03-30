@@ -436,9 +436,9 @@ test('issue_comment: approval ignored when review label missing after auto-add a
 
   await handler(ctx);
 
-  expect(ctx.octokit.issues.addLabels).toHaveBeenCalled();
+  expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
   expect(postOnce).toHaveBeenCalled();
-  expect(String(postOnce.mock.calls[0][2])).toContain('Approval ignored: review label missing');
+  expect(String(postOnce.mock.calls[0][2])).toContain('Approval ignored: request is not in review state.');
 });
 
 test('issue_comment: approval ignored for non-approver when approvers configured', async () => {
@@ -517,7 +517,7 @@ test('issue_comment: approval keyword from config triggers approval detection', 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
     issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
-    comment: { body: '> quote\n\nShip it please', user: { login: 'alice' } },
+    comment: { body: '> quote\n\nShip it', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
   });
@@ -1328,5 +1328,243 @@ describe('parent owner approval gating', () => {
     expect(ensureAssigneesOnce).toHaveBeenCalled();
     expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
     expect(createRequestPr).not.toHaveBeenCalled();
+  });
+  test('issue_comment: review feedback mentioning approved does not trigger approval', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 1,
+      title: 'System Namespace: sap.0sac',
+      body: `### Namespace
+
+  sap.0sac
+
+  ### System Description
+
+  \`\`\`text
+  SAP Analytics Cloud applications leveraging Datasphere-integrated SAC models & shared dimensions to support planning and analytics use cases
+  \`\`\`
+
+  ### Contacts
+
+  \`\`\`text
+   someone.else@sap.com
+  \`\`\`
+
+  ### CLD System Role
+
+  _No response_
+
+  ### STC Service ID
+
+  _No response_
+
+  ### PPMS Product Object Number
+
+  _No response_
+
+  ### Visibility
+
+  public
+
+  <!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: {
+        body: `The problem is in the leading digit in the namespace. Currently it's allowed for system namespace to start with a digit character. What is the motivation behind such a name? Can't it be just sap.sac?
+  Please add one more contact.
+  If you create a request on behalf of someone else, that person should give their consent here by posting "Approved" as a comment to this request.`,
+        user: { login: 'alice' },
+      },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handler(ctx);
+
+    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.stringContaining('Opened PR'),
+      expect.anything()
+    );
+    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: expect.arrayContaining(['Approved']),
+      })
+    );
+  });
+  test('issue_comment: explicit approved does not create PR when validation still fails', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 2,
+      title: 'System Namespace: sap.0sac',
+      body: `### Namespace
+
+  sap.0sac
+
+  ### System Description
+
+  \`\`\`text
+  SAP Analytics Cloud applications leveraging Datasphere-integrated SAC models & shared dimensions to support planning and analytics use cases
+  \`\`\`
+
+  ### Contacts
+
+  \`\`\`text
+  someone.else@sap.com
+  \`\`\`
+
+  ### CLD System Role
+
+  _No response_
+
+  ### STC Service ID
+
+  _No response_
+
+  ### PPMS Product Object Number
+
+  _No response_
+
+  ### Visibility
+
+  public
+
+  <!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: ['leading digit not allowed'],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '- leading digit not allowed',
+      namespace: 'sap.0sac',
+      nsType: 'product',
+    });
+
+    await handler(ctx);
+
+    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(postOnce).toHaveBeenCalled();
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Detected issues'))).toBe(true);
+    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+  });
+  test('issue_comment: explicit approved creates PR only after request is valid', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 3,
+      title: 'System Namespace: sap.sac',
+      body: `### Namespace
+
+  sap.sac
+
+  ### System Description
+
+  \`\`\`text
+  SAP Analytics Cloud applications leveraging Datasphere-integrated SAC models & shared dimensions to support planning and analytics use cases
+  \`\`\`
+
+  ### Contacts
+
+  \`\`\`text
+  someone.else@sap.com
+  someone.else@sap.com
+  \`\`\`
+
+  ### CLD System Role
+
+  _No response_
+
+  ### STC Service ID
+
+  _No response_
+
+  ### PPMS Product Object Number
+
+  _No response_
+
+  ### Visibility
+
+  public
+
+  <!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    createRequestPr.mockResolvedValueOnce({ number: 123 });
+
+    await handler(ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #123'))).toBe(
+      true
+    );
   });
 });
