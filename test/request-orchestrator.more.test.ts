@@ -1355,13 +1355,13 @@ describe('parent owner approval gating', () => {
   ### System Description
 
   \`\`\`text
-  SAP Analytics Cloud applications leveraging Datasphere-integrated SAC models & shared dimensions to support planning and analytics use cases
+  Example system namespace used for testing request validation behavior
   \`\`\`
 
   ### Contacts
 
   \`\`\`text
-   someone.else@sap.com
+  someone.else@sap.com
   \`\`\`
 
   ### CLD System Role
@@ -1389,9 +1389,9 @@ describe('parent owner approval gating', () => {
       event: 'issue_comment.created',
       issue,
       comment: {
-        body: `The problem is in the leading digit in the namespace. Currently it's allowed for system namespace to start with a digit character. What is the motivation behind such a name? Can't it be just sap.sac?
-  Please add one more contact.
-  If you create a request on behalf of someone else, that person should give their consent here by posting "Approved" as a comment to this request.`,
+        body: `Thanks for the update.
+  Please review the remaining details and align them with the expected naming rules.
+  After all requested changes are completed, the responsible reviewer can post "Approved" as a separate comment.`,
         user: { login: 'alice' },
       },
       withCachedConfig: true,
@@ -1413,6 +1413,7 @@ describe('parent owner approval gating', () => {
       })
     );
   });
+
   test('issue_comment: explicit approved does not create PR when validation still fails', async () => {
     const cfg = {
       workflow: {
@@ -1439,7 +1440,7 @@ describe('parent owner approval gating', () => {
   ### System Description
 
   \`\`\`text
-  SAP Analytics Cloud applications leveraging Datasphere-integrated SAC models & shared dimensions to support planning and analytics use cases
+  Example system namespace used for testing request validation behavior
   \`\`\`
 
   ### Contacts
@@ -1478,10 +1479,10 @@ describe('parent owner approval gating', () => {
     });
 
     validateRequestIssue.mockResolvedValueOnce({
-      errors: ['leading digit not allowed'],
+      errors: ['namespace format is invalid'],
       errorsGrouped: null,
       errorsFormatted: '',
-      errorsFormattedSingle: '- leading digit not allowed',
+      errorsFormattedSingle: '- namespace format is invalid',
       namespace: 'sap.0sac',
       nsType: 'product',
     });
@@ -1493,6 +1494,7 @@ describe('parent owner approval gating', () => {
     expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Detected issues'))).toBe(true);
     expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
   });
+
   test('issue_comment: explicit approved creates PR only after request is valid', async () => {
     const cfg = {
       workflow: {
@@ -1519,14 +1521,14 @@ describe('parent owner approval gating', () => {
   ### System Description
 
   \`\`\`text
-  SAP Analytics Cloud applications leveraging Datasphere-integrated SAC models & shared dimensions to support planning and analytics use cases
+  Example system namespace used for testing request validation behavior
   \`\`\`
 
   ### Contacts
 
   \`\`\`text
   someone.else@sap.com
-  someone.else@sap.com
+  another.person@sap.com
   \`\`\`
 
   ### CLD System Role
