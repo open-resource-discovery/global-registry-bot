@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.0.4](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/rel/0.0.4)] - 2026-03-31
+
 - accept approval only for explicit approval commands
 - support configured approval keyword only as an exact command
 - stop matching approval keywords inside normal review sentences
