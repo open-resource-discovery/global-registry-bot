@@ -541,7 +541,7 @@ describe('request-orchestrator additional coverage', () => {
     expect(warnCalls).toContain('parent chain check failed');
   });
 
-  test('issue_comment: approval auto-add review labels failure is logged and approval is ignored', async () => {
+  test('issue_comment: approval ignored when request is not in review state', async () => {
     const { app, handlers } = mkApp();
     requestHandler(app as unknown as Probot);
 
@@ -568,7 +568,6 @@ describe('request-orchestrator additional coverage', () => {
     const sender: Sender = { type: 'User', login: 'approver' };
 
     const octokit = mkOctokit();
-    octokit.issues.addLabels.mockRejectedValueOnce(httpError(500, 'labels add failed'));
     octokit.issues.get.mockResolvedValueOnce({ data: { ...issue, labels: [] } });
 
     const ctx = mkCtx({
@@ -581,11 +580,13 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['issue_comment.created']?.(ctx)).resolves.toBeUndefined();
 
+    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+
     const warnMsgs = ctx.log.warn.mock.calls.map((c) => String(c[1] ?? '')).join('\n');
-    expect(warnMsgs).toContain('failed to auto-add review labels on approval');
+    expect(warnMsgs).not.toContain('failed to auto-add review labels on approval');
 
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
-    expect(bodies).toContain('Approval ignored');
+    expect(bodies).toContain('Approval ignored: request is not in review state.');
   });
 
   test('issue_comment: approval removes pending/progress/rejected labels and logs on removeLabel failures', async () => {
@@ -618,10 +619,11 @@ describe('request-orchestrator additional coverage', () => {
     const octokit = mkOctokit();
 
     octokit.issues.get
-      .mockResolvedValueOnce({ data: { ...issue, labels: ['Approved', 'needs-review'] } })
+      .mockResolvedValueOnce({ data: { ...issue, labels: ['needs-review'] } }) // review state check
+      .mockResolvedValueOnce({ data: { ...issue, labels: ['Approved', 'needs-review'] } }) // pending label cleanup
       .mockResolvedValueOnce({
         data: { ...issue, labels: ['Approved', 'Requester Action', 'Review Pending', 'Rejected'] },
-      });
+      }); // progress/rejected cleanup
 
     octokit.issues.removeLabel.mockImplementation(async ({ name }) => {
       // Add a dummy await to satisfy lint rule

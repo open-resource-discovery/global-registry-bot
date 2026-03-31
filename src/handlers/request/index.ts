@@ -715,6 +715,36 @@ const isBotSender = (sender: SenderLike | undefined | null): boolean =>
 
 const head = (s: unknown): string => toStringTrim(s).split(':')[0].trim();
 
+function normalizeApprovalCommandToken(value: unknown): string {
+  let s = toStringTrim(value).replace(/^\/+/, '').trim().toLowerCase();
+
+  const leadingTrimChars = new Set(['"', "'", '`', '(', '[', '{', '<']);
+  const trailingTrimChars = new Set(['"', "'", '`', ')', ']', '}', '>', '.', ',', '!', '?', ';', ':']);
+
+  while (s && leadingTrimChars.has(s[0])) s = s.slice(1).trim();
+  while (s && trailingTrimChars.has(s[s.length - 1])) s = s.slice(0, -1).trim();
+
+  return s;
+}
+
+function isExplicitApprovalCommand(text: unknown, configuredKeyword?: string): boolean {
+  const lines = toStringTrim(text)
+    .split(/\r?\n/)
+    .map((line) => toStringTrim(line))
+    .filter(Boolean);
+
+  if (!lines.length) return false;
+
+  const allowed = new Set<string>(['approved', 'approve', 'lgtm']);
+  const cfg = normalizeApprovalCommandToken(configuredKeyword);
+  if (cfg) allowed.add(cfg);
+
+  return lines.some((line) => {
+    const normalized = normalizeApprovalCommandToken(line);
+    return Boolean(normalized) && allowed.has(normalized);
+  });
+}
+
 const resolveEffectiveConstants = (context: BotContext<RequestEvents>): EffectiveConstants => {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
   const wf = cfg?.workflow ?? {};
@@ -1058,42 +1088,16 @@ async function ensureReviewLabelsPresentOnIssue(
   const cfgKeys = (eff.reviewRequestedLabels || []).map(normalizeKey);
   if (!cfgKeys.length) return true;
 
-  const issueLabels = Array.isArray(issue.labels) ? issue.labels : [];
-  const hasReviewLabel = issueLabels.some((l) => {
-    const k = normalizeKey(labelName(l));
-    return cfgKeys.some((ck) => k === ck || k.includes(ck) || ck.includes(k));
-  });
+  let labels = toLabelNames(issue.labels);
 
-  if (hasReviewLabel) return true;
-
-  const reviewLabels = eff.reviewRequestedLabels || [];
-  if (reviewLabels.length) {
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: reviewLabels,
-      });
-    } catch (e: unknown) {
-      log(
-        context,
-        'warn',
-        { err: e instanceof Error ? e.message : String(e) },
-        'failed to auto-add review labels on approval'
-      );
-    }
+  try {
+    labels = await fetchIssueLabels(context, params);
+  } catch {
+    // keep payload labels as fallback
   }
 
-  const refreshed = await context.octokit.issues.get({
-    owner: params.owner,
-    repo: params.repo,
-    issue_number: params.issue_number,
-  });
-
-  const refreshedIssue = refreshed.data as unknown as IssueLike;
-  const refreshedLabels = Array.isArray(refreshedIssue.labels) ? refreshedIssue.labels : [];
-
-  return refreshedLabels.some((l) => {
-    const k = normalizeKey(labelName(l));
+  return labels.some((l) => {
+    const k = normalizeKey(l);
     return cfgKeys.some((ck) => k === ck || k.includes(ck) || ck.includes(k));
   });
 }
@@ -1409,7 +1413,7 @@ async function handleApprovalComment(
     await postOnce(
       context,
       params,
-      'Approval ignored: review label missing on the issue. Please ensure the request is marked for review.',
+      'Approval ignored: request is not in review state. Please resolve validation issues and let the bot route it back to review first.',
       { minimizeTag: 'nsreq:approval-info' }
     );
     return;
@@ -1424,6 +1428,51 @@ async function handleApprovalComment(
 
     await postOnce(context, params, reason, { minimizeTag: 'nsreq:approval-info' });
     return;
+  }
+
+  const reval = await validateRequestIssue(context, params, issue, {
+    template,
+    formData: parsedFormData,
+  });
+
+  if (reval.errors?.length) {
+    const listFallback = (reval.errors || []).map((e) => `- ${e}`).join('\n');
+    const message =
+      reval.errorsFormattedSingle?.trim() ||
+      reval.errorsFormatted?.trim() ||
+      listFallback ||
+      'Unknown validation error.';
+
+    await postOnce(context, params, `## Detected issues\n\n${message}`, {
+      minimizeTag: 'nsreq:validation',
+    });
+    await setStateLabel(context, params, issue, 'author');
+    return;
+  }
+
+  try {
+    const parentError = await checkParentChainExistsInFlatStructure(
+      context,
+      { owner: params.owner, repo: params.repo },
+      reval.template || template,
+      parsedFormData,
+      reval.namespace
+    );
+
+    if (parentError) {
+      await postOnce(context, params, `## Detected issues\n\n- ${parentError}`, {
+        minimizeTag: 'nsreq:validation',
+      });
+      await setStateLabel(context, params, issue, 'author');
+      return;
+    }
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      { err: e instanceof Error ? e.message : String(e) },
+      'parent chain check failed during approval'
+    );
   }
 
   const resourceName = extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
@@ -1449,6 +1498,7 @@ async function handleApprovalComment(
     const pr = await createRequestPr(context, { owner: params.owner, repo: params.repo }, issue, parsedFormData, {
       template,
     });
+
     try {
       if (eff.labelOnApproved) {
         await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
@@ -1456,9 +1506,9 @@ async function handleApprovalComment(
     } catch {
       // ignore
     }
+
     await removeReviewPendingLabelsAfterApproval(context, params, eff);
 
-    // If the issue is now in a terminal "Approved" state, remove the in-progress status labels.
     try {
       const labelsAfter = await fetchIssueLabels(context, params);
       const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
@@ -2293,17 +2343,11 @@ export default function requestHandler(app: Probot): void {
     const approvalSuccessful = labelsCfg['approvalSuccessful'];
     let approvalKeyword = '';
     if (Array.isArray(approvalSuccessful)) approvalKeyword = toStringTrim(approvalSuccessful[0]);
-    else if (approvalSuccessful !== undefined && approvalSuccessful !== null)
+    else if (approvalSuccessful !== undefined && approvalSuccessful !== null) {
       approvalKeyword = toStringTrim(approvalSuccessful);
-
-    const lowered = toStringTrim(strippedText).toLowerCase();
-
-    if (approvalKeyword) {
-      const kw = String(approvalKeyword).toLowerCase();
-      if (kw && lowered.includes(kw)) return true;
     }
 
-    return /\b(approved|approve[ds]?|lgtm)\b/i.test(strippedText || '');
+    return isExplicitApprovalCommand(strippedText, approvalKeyword);
   };
 
   // moved to outer scope
