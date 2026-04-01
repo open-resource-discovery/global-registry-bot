@@ -1248,6 +1248,13 @@ function isAuthorizedApprover(
   return Boolean(commenterLc && commenterLc !== issueAuthorLc);
 }
 
+function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {
+  const who = normalizeLogin(login).toLowerCase();
+  if (!who) return false;
+
+  return (allowedApprovers || []).some((u) => normalizeLogin(u).toLowerCase() === who);
+}
+
 async function processIssueEvent(
   app: Probot,
   context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
@@ -2518,17 +2525,17 @@ export default function requestHandler(app: Probot): void {
       }
 
       // 2) Load template
-      if (!hasRoutingLock) {
-        let template: TemplateLike | null = null;
-        try {
-          template = await loadTemplateWithLabelRefresh(context, params, issue);
-        } catch {
-          return;
-        }
+      let template: TemplateLike | null = null;
+      let parsedFormData: FormData = {};
 
-        const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-        if (!isRequestIssue(context, template, parsedFormData)) return;
+      try {
+        template = await loadTemplateWithLabelRefresh(context, params, issue);
+        parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+      } catch {
+        if (!hasRoutingLock) return;
       }
+
+      if (!hasRoutingLock && !isRequestIssue(context, template, parsedFormData)) return;
 
       const eff = resolveEffectiveConstants(context);
 
@@ -2551,6 +2558,25 @@ export default function requestHandler(app: Probot): void {
 
       const lockedKeys = resolveLockedWorkflowLabelKeys(context);
       const changedKey = normalizeKey(changedLabel);
+
+      const effectiveRequestType = template ? resolveEffectiveRequestType(template, parsedFormData) : '';
+      const configuredApprovers = effectiveRequestType
+        ? resolveApproversForRequestType(context, effectiveRequestType, eff.approverUsernames)
+        : eff.approverUsernames;
+
+      const senderIsConfiguredApprover = isConfiguredApprover(sender?.login, configuredApprovers);
+
+      const managedWorkflowKeys = new Set<string>(Array.from(lockedKeys));
+      for (const label of [authorActionLabel, approverActionLabel, approvedLabel, REQUEST_STATUS_LABEL_REJECTED]) {
+        const key = normalizeKey(label);
+        if (key) managedWorkflowKeys.add(key);
+      }
+
+      // Configured approvers may manage workflow labels manually
+      // Keep routing-label lock logic above intact
+      if (senderIsConfiguredApprover && changedKey && managedWorkflowKeys.has(changedKey)) {
+        return;
+      }
 
       if (changedKey && lockedKeys.has(changedKey) && !isProgressStateLabel(changedKey)) {
         // Let the existing "Approved label" guard handle manual approval attempts.
