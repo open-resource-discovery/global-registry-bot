@@ -1,6 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
 import { describe, it, expect, jest } from '@jest/globals';
+import Ajv2020 from 'ajv/dist/2020.js';
+import ajvErrors from 'ajv-errors';
+import { validateRequestIssue } from '../src/handlers/request/validation/run.js';
+import { STATIC_CONFIG_SCHEMA } from '../src/handlers/request/constants.js';
 
 type MockedAsync<Args extends unknown[], Result> = jest.MockedFunction<(...args: Args) => Promise<Result>>;
 
@@ -804,6 +808,12 @@ describe('validation/run.ts extra coverage', () => {
             folderName: 'data',
             schema: 'local.schema.json',
             issueTemplate: 'system.yml',
+            allowedVendorRoots: ['sap'],
+          },
+          vendor: {
+            folderName: 'data/vendors',
+            schema: 'vendor.schema.json',
+            issueTemplate: 'vendor.yml',
           },
         },
       },
@@ -812,12 +822,27 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     mocks.parseForm.mockReturnValue({
-      identifier: 'acme.sys',
+      identifier: 'sap.sys',
       title: 'valid title',
     });
 
-    // repo always 404 -> fallback to loadSchemaLocal()
-    const getContent = jest.fn(async () => {
+    // schema still 404 in repo -> fallback to loadSchemaLocal()
+    // but vendor root "sap" exists, so vendor governance stays neutral
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return {
+          data: {
+            content: b64json({
+              type: 'vendor',
+              name: 'sap',
+              title: 'SAP',
+              description: 'SAP vendor root',
+            }),
+            encoding: 'base64',
+          },
+        };
+      }
+
       throw httpErr(404);
     });
 
@@ -1100,6 +1125,11 @@ describe('validation/run.ts extra coverage', () => {
             schema: '/schema.json',
             issueTemplate: 'x',
           },
+          vendor: {
+            folderName: '/data/vendors',
+            schema: '/vendor.schema.json',
+            issueTemplate: 'vendor.yml',
+          },
         },
       },
       hooks: null,
@@ -1124,8 +1154,23 @@ describe('validation/run.ts extra coverage', () => {
       if (path === 'schema.json') {
         return { data: { content: b64json(schemaObj), encoding: 'base64' } };
       }
-      // registry existence check path:
+
+      if (path === 'data/vendors/sap.yaml') {
+        return {
+          data: {
+            content: b64json({
+              type: 'vendor',
+              name: 'sap',
+              title: 'SAP',
+              description: 'SAP vendor root',
+            }),
+            encoding: 'base64',
+          },
+        };
+      }
+
       if (path === 'data/namespaces/sap.cds.ai.yaml') throw httpErr(404);
+
       throw httpErr(404);
     });
 
@@ -1815,5 +1860,346 @@ describe('validation/run.ts extra coverage', () => {
     expect(res.errors.join('\n')).toMatch(/No schema configured/i);
 
     restore();
+  });
+});
+
+describe('vendor governance', () => {
+  const SYSTEM_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['type', 'name', 'description', 'contact'],
+    properties: {
+      type: { const: 'system' },
+      name: { 'type': 'string', 'x-form-field': 'identifier', 'pattern': '^[a-z]+\\.[a-z]+$' },
+      description: { type: 'string', minLength: 3 },
+      contact: { type: 'array', minItems: 1, items: { type: 'string' } },
+      visibility: { type: 'string' },
+    },
+  };
+
+  const SUBCONTEXT_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['type', 'name', 'description', 'contact'],
+    properties: {
+      type: { const: 'subContext' },
+      name: { 'type': 'string', 'x-form-field': 'identifier', 'pattern': '^[a-z]+\\.[a-z]+\\.[a-z]+$' },
+      description: { type: 'string', minLength: 3 },
+      contact: { type: 'array', minItems: 1, items: { type: 'string' } },
+    },
+  };
+
+  const VENDOR_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['type', 'name', 'title', 'description'],
+    properties: {
+      type: { const: 'vendor' },
+      name: { type: 'string' },
+      title: { type: 'string' },
+      description: { type: 'string' },
+    },
+  };
+
+  const http404 = (): Error & { status: number } => {
+    const err = new Error('Not Found') as Error & { status: number };
+    err.status = 404;
+    return err;
+  };
+
+  const toFileResponse = (obj: unknown) => ({
+    data: {
+      content: Buffer.from(JSON.stringify(obj), 'utf8').toString('base64'),
+      encoding: 'base64',
+    },
+  });
+
+  function mkValidationContext(files: Record<string, unknown>, configOverrides: Record<string, unknown> = {}) {
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (Object.prototype.hasOwnProperty.call(files, path)) {
+        return toFileResponse(files[path]);
+      }
+      throw http404();
+    });
+
+    return {
+      octokit: {
+        repos: { getContent },
+        issues: {
+          get: jest.fn(),
+          listForRepo: jest.fn(),
+          update: jest.fn(),
+          create: jest.fn(),
+          createComment: jest.fn(),
+          addLabels: jest.fn(),
+          removeLabel: jest.fn(),
+        },
+      },
+      log: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+      resourceBotConfig: {
+        requests: {
+          systemNamespace: {
+            folderName: '/data/namespaces',
+            schema: '/schemas/system-namespace.schema.json',
+            issueTemplate: '/.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+          },
+          subContextNamespace: {
+            folderName: '/data/namespaces',
+            schema: '/schemas/sub-context-namespace.schema.json',
+            issueTemplate: '/.github/ISSUE_TEMPLATE/2-sub-context-namespace-request.yaml',
+          },
+          vendor: {
+            folderName: '/data/namespaces',
+            schema: '/schemas/vendor.schema.json',
+            issueTemplate: '/.github/ISSUE_TEMPLATE/6-vendor.yaml',
+          },
+        },
+        ...configOverrides,
+      },
+      resourceBotHooks: null,
+      resourceBotHooksSource: null,
+    };
+  }
+
+  function mkTemplate(requestType: string, schema: string) {
+    return {
+      _meta: {
+        requestType,
+        root: 'data/namespaces',
+        schema,
+        path: '.github/ISSUE_TEMPLATE/x.yml',
+      },
+      body: [{ id: 'identifier', validations: { required: true } }],
+      labels: [],
+      name: 'Request',
+      title: 'Request',
+    };
+  }
+
+  test('blocks namespace-like request when vendor root is not registered', async () => {
+    const ctx = mkValidationContext({
+      'schemas/system-namespace.schema.json': SYSTEM_SCHEMA,
+      'schemas/sub-context-namespace.schema.json': SUBCONTEXT_SCHEMA,
+      'schemas/vendor.schema.json': VENDOR_SCHEMA,
+    });
+
+    const result = await validateRequestIssue(
+      ctx as never,
+      { owner: 'o', repo: 'r' },
+      { body: '', title: 't', labels: [] },
+      {
+        template: mkTemplate('systemNamespace', '/schemas/system-namespace.schema.json'),
+        formData: {
+          identifier: 'google.foobar',
+          description: 'Example system namespace',
+          contact: 'owner@example.com',
+          visibility: 'public',
+        },
+      }
+    );
+
+    expect(result.errors).toContain(
+      "Vendor 'google' is not registered. Please register 'google' first before requesting 'google.foobar'."
+    );
+  });
+
+  test('system namespace uses default allowlist and blocks non-sap vendor roots', async () => {
+    const ctx = mkValidationContext({
+      'schemas/system-namespace.schema.json': SYSTEM_SCHEMA,
+      'schemas/sub-context-namespace.schema.json': SUBCONTEXT_SCHEMA,
+      'schemas/vendor.schema.json': VENDOR_SCHEMA,
+      'data/namespaces/customer.yaml': {
+        type: 'vendor',
+        name: 'customer',
+        title: 'Customer',
+        description: 'Reserved customer vendor root',
+      },
+    });
+
+    const result = await validateRequestIssue(
+      ctx as never,
+      { owner: 'o', repo: 'r' },
+      { body: '', title: 't', labels: [] },
+      {
+        template: mkTemplate('systemNamespace', '/schemas/system-namespace.schema.json'),
+        formData: {
+          identifier: 'customer.portal',
+          description: 'Example customer system namespace',
+          contact: 'owner@example.com',
+          visibility: 'public',
+        },
+      }
+    );
+
+    expect(result.errors).toContain(
+      "System namespaces are only allowed for vendor roots: sap. Requested vendor root: 'customer'."
+    );
+  });
+
+  test('system namespace is allowed when vendor exists and is explicitly allowlisted', async () => {
+    const ctx = mkValidationContext(
+      {
+        'schemas/system-namespace.schema.json': SYSTEM_SCHEMA,
+        'schemas/sub-context-namespace.schema.json': SUBCONTEXT_SCHEMA,
+        'schemas/vendor.schema.json': VENDOR_SCHEMA,
+        'data/namespaces/customer.yaml': {
+          type: 'vendor',
+          name: 'customer',
+          title: 'Customer',
+          description: 'Reserved customer vendor root',
+        },
+      },
+      {
+        requests: {
+          systemNamespace: {
+            folderName: '/data/namespaces',
+            schema: '/schemas/system-namespace.schema.json',
+            issueTemplate: '/.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+            allowedVendorRoots: ['sap', 'ord', 'customer'],
+          },
+          subContextNamespace: {
+            folderName: '/data/namespaces',
+            schema: '/schemas/sub-context-namespace.schema.json',
+            issueTemplate: '/.github/ISSUE_TEMPLATE/2-sub-context-namespace-request.yaml',
+          },
+          vendor: {
+            folderName: '/data/namespaces',
+            schema: '/schemas/vendor.schema.json',
+            issueTemplate: '/.github/ISSUE_TEMPLATE/6-vendor.yaml',
+          },
+        },
+      }
+    );
+
+    const result = await validateRequestIssue(
+      ctx as never,
+      { owner: 'o', repo: 'r' },
+      { body: '', title: 't', labels: [] },
+      {
+        template: mkTemplate('systemNamespace', '/schemas/system-namespace.schema.json'),
+        formData: {
+          identifier: 'customer.portal',
+          description: 'Example customer system namespace',
+          contact: 'owner@example.com',
+          visibility: 'public',
+        },
+      }
+    );
+
+    expect(result.errors).toEqual([]);
+  });
+
+  test('sub-context namespace only requires vendor registration, not system allowlist membership', async () => {
+    const ctx = mkValidationContext({
+      'schemas/system-namespace.schema.json': SYSTEM_SCHEMA,
+      'schemas/sub-context-namespace.schema.json': SUBCONTEXT_SCHEMA,
+      'schemas/vendor.schema.json': VENDOR_SCHEMA,
+      'data/namespaces/customer.yaml': {
+        type: 'vendor',
+        name: 'customer',
+        title: 'Customer',
+        description: 'Reserved customer vendor root',
+      },
+    });
+
+    const result = await validateRequestIssue(
+      ctx as never,
+      { owner: 'o', repo: 'r' },
+      { body: '', title: 't', labels: [] },
+      {
+        template: mkTemplate('subContextNamespace', '/schemas/sub-context-namespace.schema.json'),
+        formData: {
+          identifier: 'customer.portal.reporting',
+          description: 'Example reporting sub-context',
+          contact: 'owner@example.com',
+        },
+      }
+    );
+
+    expect(result.errors).toEqual([]);
+  });
+
+  test('vendor request itself is not blocked by vendor-root governance', async () => {
+    const ctx = mkValidationContext({
+      'schemas/system-namespace.schema.json': SYSTEM_SCHEMA,
+      'schemas/sub-context-namespace.schema.json': SUBCONTEXT_SCHEMA,
+      'schemas/vendor.schema.json': VENDOR_SCHEMA,
+    });
+
+    const result = await validateRequestIssue(
+      ctx as never,
+      { owner: 'o', repo: 'r' },
+      { body: '', title: 't', labels: [] },
+      {
+        template: {
+          _meta: {
+            requestType: 'vendor',
+            root: 'data/namespaces',
+            schema: '/schemas/vendor.schema.json',
+            path: '.github/ISSUE_TEMPLATE/6-vendor.yaml',
+          },
+          body: [],
+          labels: [],
+          name: 'Vendor',
+          title: 'Vendor',
+        },
+        formData: {
+          name: 'google',
+          title: 'Google',
+          description: 'Vendor entry',
+        },
+      }
+    );
+
+    expect(result.errors).toEqual([]);
+  });
+});
+
+describe('STATIC_CONFIG_SCHEMA allowedVendorRoots', () => {
+  test('accepts allowedVendorRoots as optional array on request entries', () => {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    ajvErrors(ajv);
+
+    const validate = ajv.compile(STATIC_CONFIG_SCHEMA);
+
+    const cfg = {
+      requests: {
+        systemNamespace: {
+          folderName: '/data/namespaces',
+          schema: './request-schemas/system-namespace.schema.json',
+          issueTemplate: '../ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+          allowedVendorRoots: ['sap', 'ord', 'customer'],
+        },
+      },
+    };
+
+    expect(validate(cfg)).toBe(true);
+  });
+
+  test('rejects non-array allowedVendorRoots', () => {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    ajvErrors(ajv);
+
+    const validate = ajv.compile(STATIC_CONFIG_SCHEMA);
+
+    const cfg = {
+      requests: {
+        systemNamespace: {
+          folderName: '/data/namespaces',
+          schema: './request-schemas/system-namespace.schema.json',
+          issueTemplate: '../ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+          allowedVendorRoots: 'sap',
+        },
+      },
+    };
+
+    expect(validate(cfg)).toBe(false);
   });
 });

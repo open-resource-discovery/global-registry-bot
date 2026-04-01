@@ -34,6 +34,7 @@ export interface RequestConfigEntry {
   schema: string | null;
   issueTemplate: string | null;
   approvers?: string[] | null;
+  allowedVendorRoots?: string[] | null;
 }
 
 export interface PrAutoMergeConfig {
@@ -221,6 +222,17 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
                 minItems: 'requests[*].approvers must contain at least one approver when configured.',
               },
             },
+            allowedVendorRoots: {
+              type: ['array', 'null'],
+              items: { type: 'string' },
+              minItems: 1,
+              description:
+                'Optional allowlist of vendor roots that may be used for this request type (e.g. systemNamespace).',
+              errorMessage: {
+                type: 'requests[*].allowedVendorRoots must be an array of strings.',
+                minItems: 'requests[*].allowedVendorRoots must contain at least one vendor root when configured.',
+              },
+            },
           },
           errorMessage: {
             required: {
@@ -229,7 +241,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
               issueTemplate: "Each requests entry must define 'issueTemplate'.",
             },
             additionalProperties:
-              "Only 'folderName', 'schema', 'issueTemplate' and 'approvers' are allowed inside each requests entry.",
+              "Only 'folderName', 'schema', 'issueTemplate', 'approvers' and 'allowedVendorRoots' are allowed inside each requests entry.",
           },
         },
       },
@@ -285,7 +297,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
               enum: ['merge', 'squash', 'rebase', 'MERGE', 'SQUASH', 'REBASE', null],
               errorMessage: {
                 type: 'pr.autoMerge.method must be a string.',
-                enum: 'pr.autoMerge.method must be one of: merge, squash, rebase, MERGE, SQUASH, REBASE, or null.',
+                enum: 'pr.autoMerge.method must be one of: merge, squash, rebase.',
               },
             },
           },
@@ -428,7 +440,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
       },
       errorMessage: {
         type: 'workflow must be an object when provided.',
-        additionalProperties: "Only 'labels', 'approvers' and 'links' are allowed inside workflow.",
+        additionalProperties: "Only 'labels', 'approvers', 'links' and 'assignees' are allowed inside workflow.",
       },
     },
   },
