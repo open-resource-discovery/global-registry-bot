@@ -1570,3 +1570,398 @@ describe('parent owner approval gating', () => {
     );
   });
 });
+
+describe('agent namespace auto-approval', () => {
+  test('issues.opened: auto-approves valid agent system namespace request and skips manual review flow', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+          global: ['registry-bot'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const tpl = {
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: 'data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    };
+
+    loadTemplate.mockResolvedValueOnce(tpl);
+    parseForm.mockReturnValueOnce({
+      'namespace': 'sap.agtfabric',
+      'system-description': 'Agent namespace',
+      'contacts': 'owner@sap.com',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.agtfabric',
+      nsType: 'system',
+      template: tpl,
+      formData: {
+        'namespace': 'sap.agtfabric',
+        'system-description': 'Agent namespace',
+        'contacts': 'owner@sap.com',
+      },
+    });
+
+    createRequestPr.mockResolvedValueOnce({ number: 321 });
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 321,
+      title: 'System Namespace',
+      body: '### Namespace\nsap.agtfabric',
+      state: 'open',
+      labels: [],
+      user: { login: 'agent-fabric-serviceuser' },
+    };
+
+    const ctx = mkIssuesContext({
+      issue,
+      action: 'opened',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain('Automatically approved agent namespace request');
+    expect(bodies).not.toContain('Routing to an approver');
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: ['Approved'],
+      })
+    );
+  });
+
+  test('issues.opened: agent auto-approval failure falls back to standard review flow', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+          global: ['registry-bot'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const tpl = {
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: 'data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    };
+
+    loadTemplate.mockResolvedValueOnce(tpl);
+    parseForm.mockReturnValueOnce({
+      'namespace': 'sap.agtfabric',
+      'system-description': 'Agent namespace',
+      'contacts': 'owner@sap.com',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.agtfabric',
+      nsType: 'system',
+      template: tpl,
+      formData: {
+        'namespace': 'sap.agtfabric',
+        'system-description': 'Agent namespace',
+        'contacts': 'owner@sap.com',
+      },
+    });
+
+    createRequestPr.mockRejectedValueOnce(new Error('boom'));
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 322,
+      title: 'System Namespace',
+      body: '### Namespace\nsap.agtfabric',
+      state: 'open',
+      labels: [],
+      user: { login: 'agent-fabric-serviceuser' },
+    };
+
+    const ctx = mkIssuesContext({
+      issue,
+      action: 'opened',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(ensureAssigneesOnce).toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain('Automatic agent namespace approval failed: boom');
+    expect(bodies).toContain('Routing to an approver');
+  });
+
+  test('issues.opened: non-service user still follows standard review flow for sap.agt namespace', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+          global: ['registry-bot'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const tpl = {
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: 'data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    };
+
+    loadTemplate.mockResolvedValueOnce(tpl);
+    parseForm.mockReturnValueOnce({
+      'namespace': 'sap.agtfabric',
+      'system-description': 'Agent namespace',
+      'contacts': 'owner@sap.com',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.agtfabric',
+      nsType: 'system',
+      template: tpl,
+      formData: {
+        'namespace': 'sap.agtfabric',
+        'system-description': 'Agent namespace',
+        'contacts': 'owner@sap.com',
+      },
+    });
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 323,
+      title: 'System Namespace',
+      body: '### Namespace\nsap.agtfabric',
+      state: 'open',
+      labels: [],
+      user: { login: 'someone-else' },
+    };
+
+    const ctx = mkIssuesContext({
+      issue,
+      action: 'opened',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(ensureAssigneesOnce).toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).not.toContain('Automatically approved agent namespace request');
+    expect(bodies).toContain('Routing to an approver');
+  });
+
+  test('issues.opened: service user with non-agent namespace prefix still follows standard review flow', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+          global: ['registry-bot'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const tpl = {
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: 'data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    };
+
+    loadTemplate.mockResolvedValueOnce(tpl);
+    parseForm.mockReturnValueOnce({
+      'namespace': 'sap.foo',
+      'system-description': 'Standard namespace',
+      'contacts': 'owner@sap.com',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.foo',
+      nsType: 'system',
+      template: tpl,
+      formData: {
+        'namespace': 'sap.foo',
+        'system-description': 'Standard namespace',
+        'contacts': 'owner@sap.com',
+      },
+    });
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 324,
+      title: 'System Namespace',
+      body: '### Namespace\nsap.foo',
+      state: 'open',
+      labels: [],
+      user: { login: 'agent-fabric-serviceuser' },
+    };
+
+    const ctx = mkIssuesContext({
+      issue,
+      action: 'opened',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(ensureAssigneesOnce).toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).not.toContain('Automatically approved agent namespace request');
+    expect(bodies).toContain('Routing to an approver');
+  });
+
+  test('issue_comment: author update auto-approves valid agent system namespace request after revalidation', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+          global: ['registry-bot'],
+        },
+        approvers: ['alice'],
+      },
+    };
+
+    const tpl = {
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: 'data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    };
+
+    loadTemplate.mockResolvedValueOnce(tpl);
+    parseForm.mockReturnValue({
+      'namespace': 'sap.agtfabric',
+      'system-description': 'Agent namespace',
+      'contacts': 'owner@sap.com',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.agtfabric',
+      nsType: 'system',
+      template: tpl,
+      formData: {
+        'namespace': 'sap.agtfabric',
+        'system-description': 'Agent namespace',
+        'contacts': 'owner@sap.com',
+      },
+    });
+
+    createRequestPr.mockResolvedValueOnce({ number: 325 });
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 325,
+      title: 'System Namespace',
+      body: '### Namespace\nsap.agtfabric',
+      state: 'open',
+      labels: [],
+      user: { login: 'agent-fabric-serviceuser' },
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'updated', user: { login: 'agent-fabric-serviceuser' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain('Automatically approved agent namespace request');
+    expect(bodies).not.toContain('Routing to an approver');
+  });
+});

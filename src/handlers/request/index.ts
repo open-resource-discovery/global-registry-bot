@@ -723,7 +723,7 @@ function normalizeApprovalCommandToken(value: unknown): string {
   const trailingTrimChars = new Set(['"', "'", '`', ')', ']', '}', '>', '.', ',', '!', '?', ';', ':']);
 
   while (s && leadingTrimChars.has(s[0])) s = s.slice(1).trim();
-  while (s && trailingTrimChars.has(s[s.length - 1])) s = s.slice(0, -1).trim();
+  while (s && trailingTrimChars.has(s.at(-1)!)) s = s.slice(0, -1).trim();
 
   return s;
 }
@@ -746,7 +746,199 @@ function isExplicitApprovalCommand(text: unknown, configuredKeyword?: string): b
   });
 }
 
-const resolveEffectiveConstants = (context: BotContext<RequestEvents>): EffectiveConstants => {
+// Typed wrappers around JS modules
+type SetStateLabelFn = (
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  state: 'author' | 'review'
+) => Promise<void>;
+
+type EnsureAssigneesOnceFn = (
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  assignees: string[]
+) => Promise<void>;
+
+type PostOnceFn = (
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  body: string,
+  options?: PostOnceOptions
+) => Promise<void>;
+
+type CollapseBotCommentsByPrefixFn = (
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  options: CollapseBotCommentsByPrefixOptions
+) => Promise<void>;
+
+type LoadTemplateFn = (
+  context: BotContext<RequestEvents>,
+  opts: {
+    owner: string;
+    repo: string;
+    templatePath?: string;
+    issueLabels?: unknown;
+    issueTitle?: string;
+  }
+) => Promise<TemplateLike>;
+
+type ParseFormFn = (body: string, template: TemplateLike) => FormData;
+
+type ValidateRequestIssueFn = (
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  options?: { template?: TemplateLike; formData?: FormData }
+) => Promise<ValidateRequestIssueResult>;
+
+type CalcSnapshotHashFn = (formData: FormData, template: TemplateLike, rawBody: string) => string;
+
+type ExtractHashFromPrBodyFn = (body: string) => string;
+
+type FindOpenIssuePrsFn = (
+  context: BotContext<RequestEvents>,
+  repo: RepoInfo,
+  issueNumber: number
+) => Promise<PullRequestLike[]>;
+
+type CreateRequestPrFn = (
+  context: BotContext<RequestEvents>,
+  repo: RepoInfo,
+  issue: IssueLike,
+  formData: FormData,
+  options?: { template?: TemplateLike }
+) => Promise<{ number: number }>;
+
+type TryMergeIfGreenFn = (
+  context: BotContext<RequestEvents>,
+  args: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    mergeMethod: MergeMethod;
+    prData: PullRequestLike;
+  }
+) => Promise<void>;
+
+const setStateLabel = setStateLabelRaw as unknown as SetStateLabelFn;
+const ensureAssigneesOnce = ensureAssigneesOnceRaw as unknown as EnsureAssigneesOnceFn;
+const postOnce = postOnceRaw as unknown as PostOnceFn;
+const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as CollapseBotCommentsByPrefixFn;
+const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
+const parseForm = parseFormRaw as unknown as ParseFormFn;
+const validateRequestIssue = validateRequestIssueRaw as unknown as ValidateRequestIssueFn;
+const calcSnapshotHash = calcSnapshotHashRaw as unknown as CalcSnapshotHashFn;
+const extractHashFromPrBody = extractHashFromPRBodyRaw as unknown as ExtractHashFromPrBodyFn;
+const findOpenIssuePrs = findOpenIssuePRsRaw as unknown as FindOpenIssuePrsFn;
+const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
+const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
+
+const AGENT_NAMESPACE_AUTO_APPROVAL_LOGIN = 'agent-fabric-serviceuser';
+const AGENT_NAMESPACE_AUTO_APPROVAL_PREFIX = 'sap.agt';
+
+function isAgentNamespaceAutoApprovalCandidate(
+  issue: IssueLike,
+  requestType: string | undefined | null,
+  validatedNamespace: string | undefined | null
+): boolean {
+  const requester = normalizeLogin(issue.user?.login).toLowerCase();
+  if (requester !== AGENT_NAMESPACE_AUTO_APPROVAL_LOGIN) return false;
+
+  const rt = toStringTrim(requestType)
+    .replace(/[\s_-]/g, '')
+    .toLowerCase();
+  if (rt !== 'systemnamespace' && rt !== 'system') return false;
+
+  const ns = toStringTrim(validatedNamespace).replaceAll('\u00a0', ' ').trim().toLowerCase();
+  return Boolean(ns) && ns.startsWith(AGENT_NAMESPACE_AUTO_APPROVAL_PREFIX);
+}
+
+async function maybeAutoApproveAgentNamespaceRequest(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  validatedNamespace: string,
+  requestType: string
+): Promise<boolean> {
+  if (!isAgentNamespaceAutoApprovalCandidate(issue, requestType, validatedNamespace)) return false;
+
+  const eff = resolveEffectiveConstants(context);
+  const requester = normalizeLogin(issue.user?.login) || AGENT_NAMESPACE_AUTO_APPROVAL_LOGIN;
+  const resourceName =
+    toStringTrim(validatedNamespace) ||
+    extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
+
+  if (!resourceName) return false;
+
+  const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
+  if (existing.length) {
+    await postOnce(
+      context,
+      params,
+      `Automatically approved agent namespace request for @${requester}. PR already open: #${existing[0].number}`,
+      { minimizeTag: 'nsreq:auto-approval-info' }
+    );
+    return true;
+  }
+
+  let prNumber = 0;
+
+  try {
+    const pr = await createRequestPr(context, { owner: params.owner, repo: params.repo }, issue, parsedFormData, {
+      template,
+    });
+    prNumber = pr.number;
+
+    try {
+      if (eff.labelOnApproved) {
+        await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
+      }
+    } catch {
+      // ignore
+    }
+
+    await removeReviewPendingLabelsAfterApproval(context, params, eff);
+
+    try {
+      const labelsAfter = await fetchIssueLabels(context, params);
+      const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+      if (labelsMatching(labelsAfter, approvedLabel).length) {
+        await removeProgressStatusLabels(context, params, labelsAfter);
+        await removeRejectedStatusLabel(context, params, labelsAfter);
+      }
+    } catch {
+      // ignore
+    }
+  } catch (e: unknown) {
+    await postOnce(
+      context,
+      params,
+      `Automatic agent namespace approval failed: ${e instanceof Error ? e.message : String(e)}. Falling back to standard review flow.`,
+      { minimizeTag: 'nsreq:auto-approval-info' }
+    );
+    return false;
+  }
+
+  try {
+    await postOnce(
+      context,
+      params,
+      `Automatically approved agent namespace request for @${requester}. Opened PR: #${prNumber}`,
+      { minimizeTag: 'nsreq:auto-approval-info' }
+    );
+  } catch {
+    // ignore
+  }
+
+  return true;
+}
+
+function resolveEffectiveConstants(context: BotContext<RequestEvents>): EffectiveConstants {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
   const wf = cfg?.workflow ?? {};
   let labels: Record<string, unknown> = {};
@@ -789,7 +981,7 @@ const resolveEffectiveConstants = (context: BotContext<RequestEvents>): Effectiv
     approverUsernames: uniqLogins(approverUsernames.map((x) => x.trim()).filter(Boolean)),
     approverPoolUsernames: uniqLogins(approverPoolUsernames.map((x) => x.trim()).filter(Boolean)),
   };
-};
+}
 
 function resolveLockedWorkflowLabelKeys(context: BotContext<RequestEvents>): Set<string> {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
@@ -963,96 +1155,6 @@ function isRequestIssue(
 
   return isReq;
 }
-
-// Typed wrappers around JS modules
-type SetStateLabelFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  state: 'author' | 'review'
-) => Promise<void>;
-
-type EnsureAssigneesOnceFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  assignees: string[]
-) => Promise<void>;
-
-type PostOnceFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  body: string,
-  options?: PostOnceOptions
-) => Promise<void>;
-
-type CollapseBotCommentsByPrefixFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  options: CollapseBotCommentsByPrefixOptions
-) => Promise<void>;
-
-type LoadTemplateFn = (
-  context: BotContext<RequestEvents>,
-  opts: {
-    owner: string;
-    repo: string;
-    templatePath?: string;
-    issueLabels?: unknown;
-    issueTitle?: string;
-  }
-) => Promise<TemplateLike>;
-
-type ParseFormFn = (body: string, template: TemplateLike) => FormData;
-
-type ValidateRequestIssueFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  options?: { template?: TemplateLike; formData?: FormData }
-) => Promise<ValidateRequestIssueResult>;
-
-type CalcSnapshotHashFn = (formData: FormData, template: TemplateLike, rawBody: string) => string;
-
-type ExtractHashFromPrBodyFn = (body: string) => string;
-
-type FindOpenIssuePrsFn = (
-  context: BotContext<RequestEvents>,
-  repo: RepoInfo,
-  issueNumber: number
-) => Promise<PullRequestLike[]>;
-
-type CreateRequestPrFn = (
-  context: BotContext<RequestEvents>,
-  repo: RepoInfo,
-  issue: IssueLike,
-  formData: FormData,
-  options?: { template?: TemplateLike }
-) => Promise<{ number: number }>;
-
-type TryMergeIfGreenFn = (
-  context: BotContext<RequestEvents>,
-  args: {
-    owner: string;
-    repo: string;
-    prNumber: number;
-    mergeMethod: MergeMethod;
-    prData: PullRequestLike;
-  }
-) => Promise<void>;
-
-const setStateLabel = setStateLabelRaw as unknown as SetStateLabelFn;
-const ensureAssigneesOnce = ensureAssigneesOnceRaw as unknown as EnsureAssigneesOnceFn;
-const postOnce = postOnceRaw as unknown as PostOnceFn;
-const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as CollapseBotCommentsByPrefixFn;
-const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
-const parseForm = parseFormRaw as unknown as ParseFormFn;
-const validateRequestIssue = validateRequestIssueRaw as unknown as ValidateRequestIssueFn;
-const calcSnapshotHash = calcSnapshotHashRaw as unknown as CalcSnapshotHashFn;
-const extractHashFromPrBody = extractHashFromPRBodyRaw as unknown as ExtractHashFromPrBodyFn;
-const findOpenIssuePrs = findOpenIssuePRsRaw as unknown as FindOpenIssuePrsFn;
-const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
-const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
 
 // Helpers moved to outer scope to satisfy linting
 function extractResourceNameFromForm(formData: FormData, template: TemplateLike): string {
@@ -1235,7 +1337,7 @@ const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
 const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
 const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
 
-const labelsMatching = (labels: string[], expected: string): string[] => {
+function labelsMatching(labels: string[], expected: string): string[] {
   const expectedKey = normalizeKey(expected);
   if (!expectedKey) return [];
 
@@ -1243,7 +1345,7 @@ const labelsMatching = (labels: string[], expected: string): string[] => {
     const k = normalizeKey(l);
     return k === expectedKey || k.includes(expectedKey) || expectedKey.includes(k);
   });
-};
+}
 
 async function removeExactLabelsFromIssue(
   context: BotContext<RequestEvents>,
@@ -1473,6 +1575,18 @@ async function processIssueEvent(
 
   if (gated) return;
 
+  const autoApproved = await maybeAutoApproveAgentNamespaceRequest(
+    context,
+    params,
+    issue,
+    result.template || template,
+    parsedFormData,
+    validatedNamespace,
+    effectiveRequestType
+  );
+
+  if (autoApproved) return;
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
@@ -1689,6 +1803,18 @@ async function handleAuthorUpdateComment(
       }
 
       if (gated) return;
+
+      const autoApproved = await maybeAutoApproveAgentNamespaceRequest(
+        context,
+        params,
+        issue,
+        tpl,
+        parsedAfterUpdate,
+        namespace,
+        effectiveRequestType
+      );
+
+      if (autoApproved) return;
 
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
