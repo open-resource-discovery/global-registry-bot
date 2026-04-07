@@ -131,6 +131,7 @@ type EffectiveConstants = {
   labelOnApproved: string | null;
   labelAutoMergeCandidate: string | null;
   approverUsernames: string[];
+  approverPoolUsernames: string[];
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -768,9 +769,16 @@ const resolveEffectiveConstants = (context: BotContext<RequestEvents>): Effectiv
   const labelAutoMergeCandidate = autoMergeCandidateArr.length ? autoMergeCandidateArr[0] : null;
 
   let approverUsernames: string[] = [];
+  let approverPoolUsernames: string[] = [];
+
   if (isPlainObject(wf)) {
-    const raw = (wf as Record<string, unknown>)['approvers'];
-    if (Array.isArray(raw)) approverUsernames = raw.map((x) => toStringTrim(x)).filter(Boolean);
+    const rawApprovers = (wf as Record<string, unknown>)['approvers'];
+    if (Array.isArray(rawApprovers)) approverUsernames = rawApprovers.map((x) => toStringTrim(x)).filter(Boolean);
+
+    const rawApproversPool = (wf as Record<string, unknown>)['approversPool'];
+    if (Array.isArray(rawApproversPool)) {
+      approverPoolUsernames = rawApproversPool.map((x) => toStringTrim(x)).filter(Boolean);
+    }
   }
 
   return {
@@ -778,7 +786,8 @@ const resolveEffectiveConstants = (context: BotContext<RequestEvents>): Effectiv
     reviewRequestedLabels: reviewRequestedLabels.map((x) => x.trim()).filter(Boolean),
     labelOnApproved: labelOnApproved ? String(labelOnApproved).trim() : null,
     labelAutoMergeCandidate: labelAutoMergeCandidate ? String(labelAutoMergeCandidate).trim() : null,
-    approverUsernames: approverUsernames.map((x) => x.trim()).filter(Boolean),
+    approverUsernames: uniqLogins(approverUsernames.map((x) => x.trim()).filter(Boolean)),
+    approverPoolUsernames: uniqLogins(approverPoolUsernames.map((x) => x.trim()).filter(Boolean)),
   };
 };
 
@@ -801,18 +810,35 @@ function resolveLockedWorkflowLabelKeys(context: BotContext<RequestEvents>): Set
   return new Set(labels.map(normalizeKey).filter(Boolean));
 }
 
-function resolveApproversForRequestType(
+function resolveApproverRoutingForRequestType(
   context: BotContext<RequestEvents>,
   requestType: string | undefined | null,
-  fallbackApprovers: string[]
-): string[] {
+  fallbackApprovers: string[],
+  fallbackApproversPool: string[]
+): {
+  approvalUsernames: string[];
+  autoAssigneePoolUsernames: string[];
+} {
+  const fallbackApprovalUsernames = uniqLogins([...(fallbackApprovers || []), ...(fallbackApproversPool || [])]);
+  const fallbackPoolUsernames = uniqLogins(fallbackApproversPool || []);
+
   const rt = toStringTrim(requestType);
-  if (!rt) return fallbackApprovers;
+  if (!rt) {
+    return {
+      approvalUsernames: fallbackApprovalUsernames,
+      autoAssigneePoolUsernames: fallbackPoolUsernames,
+    };
+  }
 
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
   const reqs = cfg?.requests;
 
-  if (!reqs || typeof reqs !== 'object') return fallbackApprovers;
+  if (!reqs || typeof reqs !== 'object') {
+    return {
+      approvalUsernames: fallbackApprovalUsernames,
+      autoAssigneePoolUsernames: fallbackPoolUsernames,
+    };
+  }
 
   const asRec = reqs as unknown as Record<string, unknown>;
   const direct = asRec[rt];
@@ -831,12 +857,55 @@ function resolveApproversForRequestType(
     }
   }
 
-  if (!entry) return fallbackApprovers;
+  if (!entry) {
+    return {
+      approvalUsernames: fallbackApprovalUsernames,
+      autoAssigneePoolUsernames: fallbackPoolUsernames,
+    };
+  }
 
-  const raw = entry['approvers'];
-  if (!Array.isArray(raw) || raw.length === 0) return fallbackApprovers;
+  const hasOwnApprovers = Array.isArray(entry['approvers']);
+  const hasOwnApproversPool = Array.isArray(entry['approversPool']);
 
-  return raw.map((x) => toStringTrim(x)).filter(Boolean);
+  if (!hasOwnApprovers && !hasOwnApproversPool) {
+    return {
+      approvalUsernames: fallbackApprovalUsernames,
+      autoAssigneePoolUsernames: fallbackPoolUsernames,
+    };
+  }
+
+  const ownApprovers = hasOwnApprovers
+    ? (entry['approvers'] as unknown[]).map((x) => toStringTrim(x)).filter(Boolean)
+    : [];
+
+  const ownApproversPool = hasOwnApproversPool
+    ? (entry['approversPool'] as unknown[]).map((x) => toStringTrim(x)).filter(Boolean)
+    : [];
+
+  return {
+    approvalUsernames: uniqLogins([...ownApprovers, ...ownApproversPool]),
+    autoAssigneePoolUsernames: uniqLogins(ownApproversPool),
+  };
+}
+
+function resolveApproversForRequestType(
+  context: BotContext<RequestEvents>,
+  requestType: string | undefined | null,
+  fallbackApprovers: string[],
+  fallbackApproversPool: string[] = []
+): string[] {
+  return resolveApproverRoutingForRequestType(context, requestType, fallbackApprovers, fallbackApproversPool)
+    .approvalUsernames;
+}
+
+function pickAutoAssigneeFromPool(issue: IssueLike, approversPool: string[]): string[] {
+  const users = uniqLogins(approversPool || []).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  if (!users.length) return [];
+
+  const issueNumber = typeof issue?.number === 'number' && Number.isFinite(issue.number) ? issue.number : 1;
+  const idx = (Math.max(issueNumber, 1) - 1) % users.length;
+
+  return [users[idx]];
 }
 
 const buildTemplateLoadErrorMessage = (errMsg: unknown): string => {
@@ -1038,8 +1107,19 @@ async function handoverToCpa(
   const eff = resolveEffectiveConstants(context);
 
   await setStateLabel(context, params, issue, 'review');
-  const approversForType = resolveApproversForRequestType(context, options.requestType, eff.approverUsernames);
-  await ensureAssigneesOnce(context, params, issue, approversForType);
+
+  const approverRouting = resolveApproverRoutingForRequestType(
+    context,
+    options.requestType,
+    eff.approverUsernames,
+    eff.approverPoolUsernames
+  );
+
+  const assigneesForType = approverRouting.autoAssigneePoolUsernames.length
+    ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
+    : approverRouting.approvalUsernames;
+
+  await ensureAssigneesOnce(context, params, issue, assigneesForType);
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
@@ -1412,7 +1492,8 @@ async function handleApprovalComment(
   const allowedApprovers = resolveApproversForRequestType(
     context,
     resolveEffectiveRequestType(template, parsedFormData),
-    eff.approverUsernames
+    eff.approverUsernames,
+    eff.approverPoolUsernames
   );
 
   const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, issue, eff);
@@ -2560,11 +2641,19 @@ export default function requestHandler(app: Probot): void {
       const changedKey = normalizeKey(changedLabel);
 
       const effectiveRequestType = template ? resolveEffectiveRequestType(template, parsedFormData) : '';
-      const configuredApprovers = effectiveRequestType
-        ? resolveApproversForRequestType(context, effectiveRequestType, eff.approverUsernames)
-        : eff.approverUsernames;
+      const approverRouting = effectiveRequestType
+        ? resolveApproverRoutingForRequestType(
+            context,
+            effectiveRequestType,
+            eff.approverUsernames,
+            eff.approverPoolUsernames
+          )
+        : {
+            approvalUsernames: uniqLogins([...(eff.approverUsernames || []), ...(eff.approverPoolUsernames || [])]),
+            autoAssigneePoolUsernames: uniqLogins(eff.approverPoolUsernames || []),
+          };
 
-      const senderIsConfiguredApprover = isConfiguredApprover(sender?.login, configuredApprovers);
+      const senderIsConfiguredApprover = isConfiguredApprover(sender?.login, approverRouting.approvalUsernames);
 
       const managedWorkflowKeys = new Set<string>(Array.from(lockedKeys));
       for (const label of [authorActionLabel, approverActionLabel, approvedLabel, REQUEST_STATUS_LABEL_REJECTED]) {
