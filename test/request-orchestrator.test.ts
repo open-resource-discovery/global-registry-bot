@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { jest } from '@jest/globals';
+import { test, expect, beforeAll, beforeEach, jest } from '@jest/globals';
 
 process.env.DEBUG_NS = '0';
 
@@ -12,8 +12,8 @@ type CollapseBotCommentsByPrefix = (
 ) => Promise<void>;
 
 const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
-const setStateLabel = jest.fn(async () => {});
-const ensureAssigneesOnce = jest.fn(async () => {});
+const setStateLabel = jest.fn(async (_ctx: any, _param1: any, _param2: any, _param3: any) => {});
+const ensureAssigneesOnce = jest.fn(async (_ctx: any, _param1: any, _param2: any, _param3: any) => {});
 const postOnce = jest.fn(async (..._args: any[]) => {});
 
 const loadTemplate = jest.fn(async () => ({}));

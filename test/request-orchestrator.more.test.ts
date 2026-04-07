@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { jest } from '@jest/globals';
+import { afterAll, beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 
 const PREV_DEBUG_NS = process.env.DEBUG_NS;
 process.env.DEBUG_NS = '1';
@@ -10,7 +10,7 @@ afterAll(() => {
 });
 
 type IssueParams = { owner: string; repo: string; issue_number: number };
-const setStateLabel = jest.fn(async () => {});
+const setStateLabel = jest.fn(async (_ctx: any, _params: any, _body: any, _author: any) => {});
 const ensureAssigneesOnce = jest.fn(async () => {});
 type PostOnceFn = (ctx: any, params: any, body: string, options?: any) => Promise<void>;
 
@@ -38,7 +38,7 @@ type FindOpenIssuePrsFn = (
 const findOpenIssuePrs = jest.fn<FindOpenIssuePrsFn>(async () => []);
 
 const createRequestPr = jest.fn(async () => ({ number: 10 }));
-const tryMergeIfGreen = jest.fn(async () => {});
+const tryMergeIfGreen = jest.fn(async (_ctx: any, _params: any) => {});
 const loadStaticConfig = jest.fn(async () => ({}));
 const getDocLinksFromConfig = jest.fn(() => '');
 
