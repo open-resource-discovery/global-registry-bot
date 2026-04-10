@@ -8,21 +8,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [unreleased]
 
 ## Added
+
 - onApproval hook support for request and direct PR flows
 - automatic PR approval for direct PRs when onApproval returns approved
 - machine-readable metadata in PR validation comments
 
 ## Changed
+
 - unified error structure (`field` + `message`) across hooks and validation
 - approval flow now prioritizes onApproval over default reviewer assignment
 - improved consistency between issue and PR validation outputs
 
 ## Behavior
+
 - approved → auto-approve + merge flow continues
 - rejected → PR/issue closed with structured feedback
 - no decision → fallback to existing manual review flow
 
 ## Notes
+
 - fully backward compatible if onApproval is not configured
 - no changes to existing validation, routing, or CI logic
 
