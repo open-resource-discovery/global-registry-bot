@@ -7,16 +7,22 @@ function ymd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function expectDate(value: Date | null): Date {
+  expect(value).not.toBeNull();
+  if (value === null) {
+    throw new Error('Expected a Date instance');
+  }
+  return value;
+}
+
 test('parseYmdUtc parses a valid YYYY-MM-DD as UTC date', () => {
   const dt = parseYmdUtc('2024-01-05');
-  expect(dt).not.toBeNull();
-  expect(ymd(dt!)).toBe('2024-01-05');
+  expect(ymd(expectDate(dt))).toBe('2024-01-05');
 });
 
 test('parseYmdUtc trims whitespace', () => {
   const dt = parseYmdUtc('  2024-01-05  ');
-  expect(dt).not.toBeNull();
-  expect(ymd(dt!)).toBe('2024-01-05');
+  expect(ymd(expectDate(dt))).toBe('2024-01-05');
 });
 
 test('parseYmdUtc returns null for invalid format', () => {
@@ -32,8 +38,7 @@ test('parseYmdUtc returns null for invalid calendar date', () => {
 
 test('parseYmdUtc accepts leap day', () => {
   const dt = parseYmdUtc('2024-02-29');
-  expect(dt).not.toBeNull();
-  expect(ymd(dt!)).toBe('2024-02-29');
+  expect(ymd(expectDate(dt))).toBe('2024-02-29');
 });
 
 test('addMonthsUtc adds months in UTC and preserves day when possible', () => {

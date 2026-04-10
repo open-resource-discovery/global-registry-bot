@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { jest } from '@jest/globals';
+import { beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
 
 process.env.DEBUG_NS = '1';
 
@@ -20,7 +20,6 @@ function httpErr(status: number): Error & { status: number } {
 }
 
 /* mocks wired into run.ts */
-
 type LoadStaticConfigFn = (...args: any[]) => Promise<{
   config: any;
   source: string;
@@ -279,7 +278,10 @@ test('adds required-field messages and returns "Cannot resolve primary identifie
     { template: tpl as any, formData: {} as any }
   );
 
-  expect(res.errors).toEqual(['Cannot resolve primary identifier from template']);
+  expect(res.errors).toEqual([
+    'Required field is missing in form: Identifier',
+    'Cannot resolve primary identifier from template',
+  ]);
   expect(res.errorsFormatted).toMatch(/Required field is missing/i);
 });
 

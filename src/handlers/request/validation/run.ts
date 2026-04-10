@@ -1,8 +1,8 @@
 import { parseForm as parseFormRaw, loadTemplate as loadTemplateRaw } from '../template.js';
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { loadStaticConfig } from '../../../config.js';
+import { loadStaticConfig, type RegistryBotHooks as StaticRegistryBotHooks } from '../../../config.js';
 import { loadSecrets } from '../../../utils/secrets.js';
 import { createHookApi as createHookApiRaw } from './hook-api.js';
 import Ajv2020Module from 'ajv/dist/2020.js';
@@ -11,12 +11,16 @@ import { runHookInWorker } from './hook-pool.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
 
-import meta2020_12 from 'ajv/dist/refs/json-schema-2020-12/schema.json' with { type: 'json' };
-
 const META_2020_12_ID = 'https://json-schema.org/draft/2020-12/schema';
 
-const fileName = fileURLToPath(import.meta.url);
-const dirName = dirname(fileName);
+const defaultModuleFileName = resolve(process.cwd(), 'src', 'handlers', 'request', 'validation', 'run.ts');
+let moduleFileName = defaultModuleFileName;
+if (typeof __filename === 'string') {
+  moduleFileName = __filename;
+}
+const moduleRequire = createRequire(moduleFileName);
+const meta202012Schema = moduleRequire('ajv/dist/refs/json-schema-2020-12/schema.json');
+const dirName = dirname(moduleFileName);
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -135,6 +139,65 @@ type CustomValidateArgs = Readonly<{
   log?: LoggerLike | undefined;
 }>;
 
+export type ApprovalHookStatus = 'approved' | 'rejected' | 'unknown';
+
+export type ApprovalHookDecision = Readonly<{
+  status?: ApprovalHookStatus;
+  path?: string;
+  reason?: string;
+  comment?: string;
+  message?: string;
+  error?: readonly {
+    field?: string;
+    message?: string;
+  }[];
+  errors?: readonly {
+    field?: string;
+    message?: string;
+  }[];
+}>;
+
+type ApprovalHookResult =
+  | ApprovalHookStatus
+  | boolean
+  | {
+      status?: unknown;
+      path?: unknown;
+      reason?: unknown;
+      comment?: unknown;
+      message?: unknown;
+      error?: unknown;
+      errors?: unknown;
+      approved?: unknown;
+    }
+  | undefined
+  | void;
+
+type OnApprovalArgs = Readonly<{
+  requestType: string;
+  namespace: string;
+  resourceName: string;
+  form: FormData;
+  data: Readonly<Record<string, unknown>>;
+  requestAuthor: Readonly<{
+    id: string;
+    email: string;
+  }>;
+  config: Readonly<{
+    raw: Readonly<Record<string, unknown>>;
+    approvers: string[];
+  }>;
+  issue: Readonly<{
+    number: number;
+    title: string;
+    body: string;
+    state: string;
+    author: string;
+    labels: string[];
+  }>;
+  log?: LoggerLike | undefined;
+}>;
+
 type AjvPluginsArgs = Readonly<{
   ajv: unknown;
   context: ValidationContext;
@@ -156,6 +219,8 @@ type ResourceBotHooks = {
   customValidate?: (args: CustomValidateArgs) => HookValidationResult | Promise<HookValidationResult>;
 
   onValidate?: (args: CustomValidateArgs) => HookValidationResult | Promise<HookValidationResult>;
+
+  onApproval?: (args: OnApprovalArgs) => ApprovalHookResult | Promise<ApprovalHookResult>;
 
   [k: string]: unknown;
 };
@@ -184,14 +249,17 @@ type ValidationContext = {
   issue: () => IssueRef;
 
   resourceBotConfig?: ResourceBotConfig;
-  resourceBotHooks?: ResourceBotHooks | null;
+  resourceBotHooks?: ResourceBotHooks | StaticRegistryBotHooks | null;
   resourceBotHooksSource?: string | null;
 };
 
 type IssueLike = {
+  number?: number;
   body?: string | null;
   title?: string | null;
+  state?: string | null;
   labels?: (string | { name?: string | null })[] | null;
+  user?: { login?: string | null } | null;
 };
 
 type TemplateField = {
@@ -228,6 +296,11 @@ type ValidationBuckets = {
   schema: string[];
 };
 
+export type ValidationIssue = Readonly<{
+  message: string;
+  path: string;
+}>;
+
 type ValidateRequestIssueOptions = Readonly<{
   mode?: 'request' | 'modify';
   template?: TemplateLike;
@@ -261,6 +334,7 @@ export type ValidateRequestIssueResult = Readonly<{
   errorsGrouped: ValidationBuckets;
   errorsFormatted: string;
   errorsFormattedSingle: string;
+  validationIssues: ValidationIssue[];
   formData: FormData;
   template: TemplateLike | null;
   namespace: string;
@@ -395,6 +469,250 @@ function normalizeHookErrors(value: unknown): string[] {
   return out;
 }
 
+function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
+  if (value === true) return { status: 'approved' };
+  if (value === false || value === undefined || value === null) return {};
+
+  const token = toStringSafe(value).toLowerCase();
+  if (token === 'approved' || token === 'rejected' || token === 'unknown') {
+    return { status: token as ApprovalHookStatus };
+  }
+
+  if (!isPlainObject(value)) return {};
+
+  if (value['approved'] === true) {
+    const comment = toStringSafe(value['comment']);
+    const message = toStringSafe(value['message']);
+
+    return {
+      status: 'approved',
+      ...(comment ? { comment } : {}),
+      ...(message ? { message } : {}),
+    };
+  }
+
+  const status = toStringSafe(value['status']).toLowerCase();
+  const path = toStringSafe(value['path']);
+  const reason = toStringSafe(value['reason']);
+  const comment = toStringSafe(value['comment']);
+  const message = toStringSafe(value['message']);
+  const errors = normalizeApprovalHookErrors(value['errors'] ?? value['error']);
+
+  if (status === 'approved' || status === 'rejected' || status === 'unknown') {
+    return {
+      status: status as ApprovalHookStatus,
+      ...(path ? { path } : {}),
+      ...(reason ? { reason } : {}),
+      ...(comment ? { comment } : {}),
+      ...(message ? { message } : {}),
+      ...(errors.length ? { errors } : {}),
+    };
+  }
+
+  return {};
+}
+
+function approvalIssueLabelName(value: unknown): string {
+  if (typeof value === 'string') return toStringSafe(value);
+  if (isPlainObject(value)) return toStringSafe(value['name']);
+  return '';
+}
+
+function toApprovalIssueLabelNames(labels: IssueLike['labels']): string[] {
+  const items = Array.isArray(labels) ? labels : [];
+  return items.map((label) => approvalIssueLabelName(label)).filter(Boolean);
+}
+
+function normalizeApprovalHookErrors(value: unknown): readonly {
+  field?: string;
+  message?: string;
+}[] {
+  if (!Array.isArray(value)) return [];
+
+  const out: { field?: string; message?: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value) {
+    if (!isPlainObject(item)) continue;
+
+    const field = toStringSafe(item['field']);
+    const message = toStringSafe(item['message']);
+    if (!message) continue;
+
+    const key = `${field}\u0000${message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      ...(field ? { field } : {}),
+      message,
+    });
+  }
+
+  return out;
+}
+
+function getApprovalHookApprovers(context: ValidationContext, requestType: string): string[] {
+  const cfg = context.resourceBotConfig ?? {};
+  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
+  const entry = isPlainObject(reqs[requestType]) ? (reqs[requestType] as Record<string, unknown>) : null;
+
+  const localApprovers = Array.isArray(entry?.['approvers'])
+    ? entry['approvers'].map((v) => toStringSafe(v)).filter(Boolean)
+    : [];
+
+  if (localApprovers.length) return localApprovers;
+
+  const workflow = isPlainObject(cfg.workflow) ? cfg.workflow : {};
+  return Array.isArray(workflow['approvers']) ? workflow['approvers'].map((v) => toStringSafe(v)).filter(Boolean) : [];
+}
+
+function buildApprovalHookData(
+  args: {
+    namespace?: string | null;
+    resourceName?: string | null;
+    formData: FormData;
+  },
+  namespace: string,
+  resourceName: string
+): Readonly<Record<string, unknown>> {
+  return {
+    ...args.formData,
+    name: resourceName || namespace,
+    identifier: toStringSafe(args.formData['identifier']) || resourceName || namespace,
+    namespace: toStringSafe(args.formData['namespace']) || namespace || resourceName,
+  };
+}
+
+function toMachineReadablePath(value: unknown, fallback = 'general'): string {
+  const path = toStringSafe(value);
+  return path || fallback;
+}
+
+function makeValidationIssue(path: unknown, message: unknown, fallbackPath = 'general'): ValidationIssue | null {
+  const msg = toStringSafe(message);
+  if (!msg) return null;
+
+  return {
+    path: toMachineReadablePath(path, fallbackPath),
+    message: msg,
+  };
+}
+
+function dedupeValidationIssues(issues: ValidationIssue[]): ValidationIssue[] {
+  const out: ValidationIssue[] = [];
+  const seen = new Set<string>();
+
+  for (const issue of issues) {
+    const key = `${issue.path}\u0000${issue.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(issue);
+  }
+
+  return out;
+}
+
+function buildLabelToFieldIdMap(template: TemplateLike): Map<string, string> {
+  const out = new Map<string, string>();
+  const fields = Array.isArray(template?.body) ? template.body : [];
+
+  for (const field of fields) {
+    const id = toStringSafe(field?.id);
+    if (!id) continue;
+
+    const label = toStringSafe(field?.attributes?.label);
+    if (label) out.set(label.toLowerCase(), id);
+
+    const humanized = humanizeKey(id);
+    if (humanized) out.set(humanized.toLowerCase(), id);
+  }
+
+  return out;
+}
+
+function parseRuleValidationIssue(raw: string): ValidationIssue | null {
+  const m = /^([A-Za-z0-9_.-]+)\s*:\s*(.+)$/.exec(raw);
+  if (!m?.[1] || !m?.[2]) return null;
+
+  return makeValidationIssue(m[1], m[2], 'rules');
+}
+
+function buildMachineReadableValidationIssues(
+  buckets: ValidationBuckets,
+  template: TemplateLike,
+  ajvErrors: AjvErrorLike[] = []
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const labelToFieldId = buildLabelToFieldIdMap(template);
+  const { idToLabel } = buildTemplateLabelMaps(template);
+  const primaryFieldId = guessPrimaryFieldId(template) || 'identifier';
+  const primaryLabel = idToLabel.get(primaryFieldId) || humanizeKey(primaryFieldId);
+  const ajvMessages = new Set<string>();
+
+  for (const err of Array.isArray(ajvErrors) ? ajvErrors : []) {
+    const msg = normalizeAjvMessage(err?.message);
+    if (!msg) continue;
+
+    ajvMessages.add(msg);
+
+    const fieldIds = fieldIdsFromAjvError(err);
+    if (fieldIds.length) {
+      for (const fieldId of fieldIds) {
+        const issue = makeValidationIssue(fieldId, msg, 'schema');
+        if (issue) issues.push(issue);
+      }
+      continue;
+    }
+
+    const instancePath = toStringSafe(err?.instancePath).replace(/^\/+/, '');
+    const issue = makeValidationIssue(instancePath || 'schema', msg, 'schema');
+    if (issue) issues.push(issue);
+  }
+
+  for (const raw of dedupe(buckets.form || [])) {
+    const requiredMatch = /^Required field is missing in form:\s*(.+)$/i.exec(raw);
+    if (requiredMatch?.[1]) {
+      const label = toStringSafe(requiredMatch[1]).toLowerCase();
+      const fieldId = labelToFieldId.get(label) || primaryFieldId;
+      const issue = makeValidationIssue(fieldId, 'Required field is missing.', 'form');
+      if (issue) issues.push(issue);
+      continue;
+    }
+
+    const issue = makeValidationIssue('form', raw, 'form');
+    if (issue) issues.push(issue);
+  }
+
+  for (const raw of dedupe(buckets.rules || [])) {
+    const structured = parseRuleValidationIssue(raw);
+    if (structured) {
+      issues.push(structured);
+      continue;
+    }
+
+    const inferredLabel = inferFieldLabelFromRuleMsg(raw, primaryLabel, idToLabel);
+    const inferredFieldId = inferredLabel ? labelToFieldId.get(inferredLabel.toLowerCase()) || 'rules' : 'rules';
+    const issue = makeValidationIssue(inferredFieldId, raw, 'rules');
+    if (issue) issues.push(issue);
+  }
+
+  for (const raw of dedupe(buckets.registry || [])) {
+    const issue = makeValidationIssue(primaryFieldId, raw, primaryFieldId);
+    if (issue) issues.push(issue);
+  }
+
+  for (const raw of dedupe(buckets.schema || [])) {
+    const normalized = normalizeAjvMessage(raw);
+    if (ajvMessages.has(normalized)) continue;
+
+    const issue = makeValidationIssue('schema', raw, 'schema');
+    if (issue) issues.push(issue);
+  }
+
+  return dedupeValidationIssues(issues);
+}
+
 function formatBuckets(b: ValidationBuckets): string {
   const sections: string[] = [];
   if (b.registry.length)
@@ -467,8 +785,12 @@ function addGrouped(grouped: Map<string, string[]>, key: unknown, msg: unknown):
   const m = toStringSafe(msg);
   if (!m) return;
 
-  if (!grouped.has(k)) grouped.set(k, []);
-  grouped.get(k)!.push(m);
+  let items = grouped.get(k);
+  if (!items) {
+    items = [];
+    grouped.set(k, items);
+  }
+  items.push(m);
 }
 
 function fieldIdFromAjvError(e: unknown): string {
@@ -828,80 +1150,100 @@ function normalizePrimaryResourceToken(v: unknown): string {
     .toLowerCase();
 }
 
+const PRIMARY_RESOURCE_FIELDS = new Set(['identifier', 'namespace', 'productid', 'id', 'name', 'vendor']);
+
 function isPrimaryResourceField(v: unknown): boolean {
-  const t = normalizePrimaryResourceToken(v);
-  return t === 'identifier' || t === 'namespace' || t === 'productid' || t === 'id' || t === 'name' || t === 'vendor';
+  return PRIMARY_RESOURCE_FIELDS.has(normalizePrimaryResourceToken(v));
+}
+
+function readFirstPrimaryValue(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = toStringSafe(record[key]).replaceAll('\u00a0', ' ').trim();
+    if (value) return value;
+  }
+
+  return '';
+}
+
+function readPrimaryValueFromSchemaFields(
+  schemaProps: Record<string, unknown>,
+  record: Record<string, unknown>
+): string {
+  for (const [propName, propDef] of Object.entries(schemaProps)) {
+    if (!isPlainObject(propDef)) continue;
+
+    const formField = toStringSafe(propDef['x-form-field']);
+    if (!isPrimaryResourceField(formField)) continue;
+
+    const match = readFirstPrimaryValue(record, [formField, propName]);
+    if (match) return match;
+  }
+
+  return '';
+}
+
+function readPrimaryValueFromSchemaPropertyNames(
+  schemaProps: Record<string, unknown>,
+  record: Record<string, unknown>
+): string {
+  for (const propName of Object.keys(schemaProps)) {
+    if (!isPrimaryResourceField(propName)) continue;
+
+    const value = readFirstPrimaryValue(record, [propName]);
+    if (value) return value;
+  }
+
+  return '';
 }
 
 function resolvePrimaryIdFromRecord(schemaObj: unknown, record: Record<string, unknown>): string {
-  const asTrimmed = (v: unknown): string => toStringSafe(v).replaceAll('\u00a0', ' ').trim();
-
   const directKeys = ['identifier', 'namespace', 'product-id', 'productId', 'id', 'name', 'vendor'];
-  for (const key of directKeys) {
-    const value = asTrimmed(record[key]);
-    if (value) return value;
-  }
+  const directValue = readFirstPrimaryValue(record, directKeys);
+  if (directValue) return directValue;
 
   const schemaProps = getObjectProp(schemaObj, 'properties');
   if (!schemaProps) return '';
 
-  for (const [propName, propDef] of Object.entries(schemaProps)) {
-    if (!isPlainObject(propDef)) continue;
+  const schemaFieldValue = readPrimaryValueFromSchemaFields(schemaProps, record);
+  if (schemaFieldValue) return schemaFieldValue;
 
-    const ff = toStringSafe(propDef['x-form-field']);
-    if (!isPrimaryResourceField(ff)) continue;
-
-    const viaField = asTrimmed(record[ff]);
-    if (viaField) return viaField;
-
-    const viaProp = asTrimmed(record[propName]);
-    if (viaProp) return viaProp;
-  }
-
-  for (const propName of Object.keys(schemaProps)) {
-    if (!isPrimaryResourceField(propName)) continue;
-
-    const viaProp = asTrimmed(record[propName]);
-    if (viaProp) return viaProp;
-  }
-
-  return '';
+  return readPrimaryValueFromSchemaPropertyNames(schemaProps, record);
 }
 
 export function resolvePrimaryIdFromCandidate(candidate: Record<string, unknown>, schemaObj: unknown): string {
   return resolvePrimaryIdFromRecord(schemaObj, candidate);
 }
 
-export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: FormData, schemaObj: unknown): string {
-  if (!template) return '';
-  const asTrimmed = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+function readDirectPrimaryIdFromForm(formData: FormData): string {
+  return readFirstPrimaryValue(formData as Record<string, unknown>, [
+    'identifier',
+    'namespace',
+    'product-id',
+    'productId',
+  ]);
+}
 
-  const directIdentifier = asTrimmed(formData.identifier);
-  if (directIdentifier) return directIdentifier;
-
-  const directNamespace = asTrimmed(formData.namespace);
-  if (directNamespace) return directNamespace;
-
-  const directProductId = asTrimmed(formData['product-id'] || formData.productId);
-  if (directProductId) return directProductId;
-
+function readIdentifierMappedSchemaValue(formData: FormData, schemaObj: unknown): string {
   const schemaProps = getObjectProp(schemaObj, 'properties');
-  if (schemaProps) {
-    for (const [propName, propDef] of Object.entries(schemaProps)) {
-      if (isPlainObject(propDef) && propDef['x-form-field'] === 'identifier') {
-        const viaIdentifier = asTrimmed(formData.identifier);
-        if (viaIdentifier) return viaIdentifier;
-        const viaProp = asTrimmed((formData as Record<string, unknown>)[propName]);
-        if (viaProp) return viaProp;
-        break;
-      }
-    }
+  if (!schemaProps) return '';
+
+  for (const [propName, propDef] of Object.entries(schemaProps)) {
+    if (!isPlainObject(propDef) || propDef['x-form-field'] !== 'identifier') continue;
+    return readFirstPrimaryValue(formData as Record<string, unknown>, ['identifier', propName]);
   }
 
-  const viaGeneric = resolvePrimaryIdFromRecord(schemaObj, formData as Record<string, unknown>);
-  if (viaGeneric) return viaGeneric;
+  return '';
+}
 
-  return pickIdentifierFromFields(template, formData);
+export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: FormData, schemaObj: unknown): string {
+  if (!template) return '';
+
+  return (
+    readDirectPrimaryIdFromForm(formData) ||
+    readIdentifierMappedSchemaValue(formData, schemaObj) ||
+    resolvePrimaryIdFromRecord(schemaObj, formData as Record<string, unknown>) ||
+    pickIdentifierFromFields(template, formData)
+  );
 }
 
 function resolvePrimaryIdFromSchemaAndForm(formData: FormData, schemaObj: unknown): string {
@@ -971,6 +1313,34 @@ async function stringifyCandidateValueForForm(v: unknown): Promise<string> {
   }
 }
 
+async function writeSerializedFormValue(target: FormData, key: string, value: unknown): Promise<string> {
+  if (value === undefined || value === null || target[key]) return '';
+
+  const serialized = await stringifyCandidateValueForForm(value);
+  if (serialized) target[key] = serialized;
+  return serialized;
+}
+
+async function mapSchemaCandidatePropsToForm(
+  out: FormData,
+  props: Record<string, unknown>,
+  candidateRec: Record<string, unknown>
+): Promise<void> {
+  for (const [propName, propDef] of Object.entries(props)) {
+    const serialized = await writeSerializedFormValue(out, propName, getRecordProp(candidateRec, propName));
+    if (!serialized) continue;
+
+    const ff = isPlainObject(propDef) ? toStringSafe(propDef['x-form-field']).trim() : '';
+    if (ff && !out[ff]) out[ff] = serialized;
+  }
+}
+
+async function mapRemainingCandidatePropsToForm(out: FormData, candidateRec: Record<string, unknown>): Promise<void> {
+  for (const [k, v] of Object.entries(candidateRec)) {
+    await writeSerializedFormValue(out, k, v);
+  }
+}
+
 async function buildFormDataForHookValidationFromCandidate(
   requestType: string,
   schemaObj: unknown,
@@ -980,27 +1350,8 @@ async function buildFormDataForHookValidationFromCandidate(
   const props = getObjectProp(schemaObj, 'properties') || {};
   const candidateRec = isPlainObject(candidate) ? candidate : {};
 
-  for (const [propName, propDef] of Object.entries(props)) {
-    const raw = getRecordProp(candidateRec, propName);
-    if (raw === undefined || raw === null) continue;
-
-    const serialized = await stringifyCandidateValueForForm(raw);
-    if (!serialized) continue;
-
-    const ff = isPlainObject(propDef) ? toStringSafe(propDef['x-form-field']).trim() : '';
-
-    if (ff && !out[ff]) out[ff] = serialized;
-    if (!out[propName]) out[propName] = serialized;
-  }
-
-  for (const [k, v] of Object.entries(candidateRec)) {
-    if (v === undefined || v === null) continue;
-    if (out[k]) continue;
-
-    const serialized = await stringifyCandidateValueForForm(v);
-    if (!serialized) continue;
-    out[k] = serialized;
-  }
+  await mapSchemaCandidatePropsToForm(out, props, candidateRec);
+  await mapRemainingCandidatePropsToForm(out, candidateRec);
 
   return normalizeFormDataForHookValidation(requestType, out, schemaObj, null);
 }
@@ -1014,7 +1365,7 @@ function initAjvInstance(ajv: AjvInstance, context: ValidationContext): void {
   // Ensure draft 2020-12 meta-schema is present so "$schema: .../2020-12/schema" works.
   try {
     if (!ajv.getSchema(META_2020_12_ID)) {
-      ajv.addMetaSchema(meta2020_12);
+      ajv.addMetaSchema(meta202012Schema);
       ajv.defaultMeta = META_2020_12_ID;
     }
   } catch {
@@ -1034,6 +1385,176 @@ function initAjvInstance(ajv: AjvInstance, context: ValidationContext): void {
         { err: err instanceof Error ? err.message : String(err) },
         'resource-bot hooks.ajvPlugins failed'
       );
+    }
+  }
+}
+
+function buildValidateRequestIssueResult(
+  errors: string[],
+  buckets: ValidationBuckets,
+  template: TemplateLike,
+  ajvErrorsForUnifiedFormat: AjvErrorLike[],
+  formData: FormData,
+  namespace: string,
+  nsType: string
+): ValidateRequestIssueResult {
+  const unified = formatUnifiedIssues(buckets, template, ajvErrorsForUnifiedFormat);
+  const validationIssues = buildMachineReadableValidationIssues(buckets, template, ajvErrorsForUnifiedFormat);
+
+  return {
+    errors,
+    errorsGrouped: buckets,
+    errorsFormatted: unified || formatBuckets(buckets),
+    errorsFormattedSingle: unified || formatFirstBucket(buckets),
+    validationIssues,
+    formData,
+    template,
+    namespace,
+    nsType,
+  };
+}
+
+function buildValidateRequestIssueErrorResult(
+  errors: string[],
+  buckets: ValidationBuckets,
+  template: TemplateLike,
+  message: string,
+  targetBucket: string[]
+): ValidateRequestIssueResult {
+  targetBucket.push(message);
+  errors.push(message);
+
+  return buildValidateRequestIssueResult(errors, buckets, template, [], {}, '', '');
+}
+
+function resolveTemplateAndRequestType(
+  context: ValidationContext,
+  template: TemplateLike,
+  formData: FormData,
+  errors: string[],
+  buckets: ValidationBuckets
+):
+  | { template: TemplateLike; requestType: string; requestCfg: RequestConfigEntry }
+  | { result: ValidateRequestIssueResult } {
+  let requestType = String(template?._meta?.requestType || '').trim();
+
+  if (requestType && requestType.toLowerCase() === 'partnernamespace') {
+    const selected =
+      (formData as Record<string, unknown>)['requestType'] ?? (formData as Record<string, unknown>)['request-type'];
+
+    const mapped = mapPartnerNamespaceRequestTypeToConfigKey(selected);
+    if (!mapped) {
+      return {
+        result: buildValidateRequestIssueErrorResult(
+          errors,
+          buckets,
+          template,
+          `Invalid Partner Namespace 'Request Type' selection '${toStringSafe(selected) || ''}'. Expected one of: authority, system, subContext.`,
+          buckets.form
+        ),
+      };
+    }
+
+    const mappedCfg = getRequestConfig(context, mapped);
+    if (!mappedCfg) {
+      return {
+        result: buildValidateRequestIssueErrorResult(
+          errors,
+          buckets,
+          template,
+          `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests has no such entry.`,
+          buckets.schema
+        ),
+      };
+    }
+
+    const mappedSchema = toStringSafe(mappedCfg.schema);
+    if (!mappedSchema) {
+      return {
+        result: buildValidateRequestIssueErrorResult(
+          errors,
+          buckets,
+          template,
+          `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests['${mapped}'].schema is empty.`,
+          buckets.schema
+        ),
+      };
+    }
+
+    const nextMeta = template._meta
+      ? {
+          ...template._meta,
+          requestType: mapped,
+          schema: mappedSchema,
+          root: toStringSafe(mappedCfg.folderName),
+        }
+      : {
+          requestType: mapped,
+          schema: mappedSchema,
+          root: toStringSafe(mappedCfg.folderName),
+        };
+
+    template = { ...template };
+    template._meta = nextMeta;
+
+    requestType = mapped;
+  }
+
+  if (!requestType) {
+    return {
+      result: buildValidateRequestIssueErrorResult(
+        errors,
+        buckets,
+        template,
+        'Configuration error: template missing _meta.requestType (expected cfg.requests mapping via loadTemplate).',
+        buckets.schema
+      ),
+    };
+  }
+
+  const requestCfg = getRequestConfig(context, requestType);
+  if (!requestCfg) {
+    return {
+      result: buildValidateRequestIssueErrorResult(
+        errors,
+        buckets,
+        template,
+        `Configuration error: unknown requestType '${requestType}' (missing cfg.requests entry).`,
+        buckets.schema
+      ),
+    };
+  }
+
+  return { template, requestType, requestCfg };
+}
+
+async function checkRegistryDuplicate(
+  context: ValidationContext,
+  repoInfo: { owner: string; repo: string },
+  template: TemplateLike,
+  requestCfg: RequestConfigEntry,
+  normalizedFormData: FormData,
+  buckets: ValidationBuckets,
+  errors: string[]
+): Promise<void> {
+  const namespace = String(normalizedFormData.namespace || '').trim();
+  if (!namespace) return;
+
+  const resourceName = String(normalizedFormData.identifier || normalizedFormData.namespace || '').trim();
+  if (!resourceName) return;
+
+  try {
+    const structRoot = resolveRegistryRootForTemplate(context, template, requestCfg);
+    const filePath = `${structRoot}/${resourceName}.yaml`;
+
+    await context.octokit.repos.getContent({ owner: repoInfo.owner, repo: repoInfo.repo, path: filePath });
+
+    const msg = `Resource '${resourceName}' already exists in registry`;
+    buckets.registry.push(msg);
+    errors.push(msg);
+  } catch (e: unknown) {
+    if (getHttpStatus(e) !== 404) {
+      context.log?.warn?.({ err: e instanceof Error ? e.message : String(e) }, 'registry existence check failed');
     }
   }
 }
@@ -1486,6 +2007,7 @@ function buildMissingTemplateResult(msg: unknown): ValidateRequestIssueResult {
     errorsGrouped: buckets,
     errorsFormatted: `### Form\n- ${m}`,
     errorsFormattedSingle: `### Form\n- ${m}`,
+    validationIssues: [{ path: 'template', message: m }],
     formData: {},
     template: null,
     namespace: '',
@@ -1567,122 +2089,11 @@ export async function validateRequestIssue(
   // 3) form
   const formData = givenFormData || parseForm(String(issue.body || ''), template);
 
-  // 4) requestType & cfg are authoritative from template._meta (injected via cfg.requests)
-  let requestType = String(template?._meta?.requestType || '').trim();
+  const resolvedTemplate = resolveTemplateAndRequestType(context, template, formData, errors, buckets);
+  if ('result' in resolvedTemplate) return resolvedTemplate.result;
 
-  // Partner Namespace template can target multiple request types via the form enum `requestType`.
-  if (requestType && requestType.toLowerCase() === 'partnernamespace') {
-    const selected =
-      (formData as Record<string, unknown>)['requestType'] ?? (formData as Record<string, unknown>)['request-type'];
-
-    const mapped = mapPartnerNamespaceRequestTypeToConfigKey(selected);
-    if (!mapped) {
-      const msg = `Invalid Partner Namespace 'Request Type' selection '${toStringSafe(selected) || ''}'. Expected one of: authority, system, subContext.`;
-      buckets.form.push(msg);
-      errors.push(msg);
-
-      const unified = formatUnifiedIssues(buckets, template, []);
-      return {
-        errors,
-        errorsGrouped: buckets,
-        errorsFormatted: unified || formatBuckets(buckets),
-        errorsFormattedSingle: unified || formatFirstBucket(buckets),
-        formData: {},
-        template,
-        namespace: '',
-        nsType: '',
-      };
-    }
-
-    const mappedCfg = getRequestConfig(context, mapped);
-    if (!mappedCfg) {
-      const msg = `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests has no such entry.`;
-      buckets.schema.push(msg);
-      errors.push(msg);
-
-      const unified = formatUnifiedIssues(buckets, template, []);
-      return {
-        errors,
-        errorsGrouped: buckets,
-        errorsFormatted: unified || formatBuckets(buckets),
-        errorsFormattedSingle: unified || formatFirstBucket(buckets),
-        formData: {},
-        template,
-        namespace: '',
-        nsType: '',
-      };
-    }
-
-    const mappedSchema = toStringSafe(mappedCfg.schema);
-    if (!mappedSchema) {
-      const msg = `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests['${mapped}'].schema is empty.`;
-      buckets.schema.push(msg);
-      errors.push(msg);
-
-      const unified = formatUnifiedIssues(buckets, template, []);
-      return {
-        errors,
-        errorsGrouped: buckets,
-        errorsFormatted: unified || formatBuckets(buckets),
-        errorsFormattedSingle: unified || formatFirstBucket(buckets),
-        formData: {},
-        template,
-        namespace: '',
-        nsType: '',
-      };
-    }
-
-    // Clone template meta to avoid mutating cached templates across issues.
-    template = {
-      ...template,
-      _meta: {
-        ...(template._meta || {}),
-        requestType: mapped,
-        schema: mappedSchema,
-        root: toStringSafe(mappedCfg.folderName),
-      },
-    };
-
-    requestType = mapped;
-  }
-  const requestCfg = getRequestConfig(context, requestType);
-
-  if (!requestType) {
-    const msg =
-      'Configuration error: template missing _meta.requestType (expected cfg.requests mapping via loadTemplate).';
-    buckets.schema.push(msg);
-    errors.push(msg);
-
-    const unified = formatUnifiedIssues(buckets, template, []);
-    return {
-      errors,
-      errorsGrouped: buckets,
-      errorsFormatted: unified || formatBuckets(buckets),
-      errorsFormattedSingle: unified || formatFirstBucket(buckets),
-      formData: {},
-      template,
-      namespace: '',
-      nsType: '',
-    };
-  }
-
-  if (!requestCfg) {
-    const msg = `Configuration error: unknown requestType '${requestType}' (missing cfg.requests entry).`;
-    buckets.schema.push(msg);
-    errors.push(msg);
-
-    const unified = formatUnifiedIssues(buckets, template, []);
-    return {
-      errors,
-      errorsGrouped: buckets,
-      errorsFormatted: unified || formatBuckets(buckets),
-      errorsFormattedSingle: unified || formatFirstBucket(buckets),
-      formData: {},
-      template,
-      namespace: '',
-      nsType: '',
-    };
-  }
+  template = resolvedTemplate.template;
+  const { requestType, requestCfg } = resolvedTemplate;
 
   if (DBG && context.log?.info) context.log.info({ formData }, 'ns:parsedFormData');
 
@@ -1789,17 +2200,9 @@ export async function validateRequestIssue(
   if (!rawIdOrNs) {
     const msg = 'Cannot resolve primary identifier from template';
     buckets.form.push(msg);
-    const unified = formatUnifiedIssues(buckets, template, []);
-    return {
-      errors: [msg],
-      errorsGrouped: buckets,
-      errorsFormatted: unified || formatBuckets(buckets),
-      errorsFormattedSingle: unified || formatFirstBucket(buckets),
-      formData: {},
-      template,
-      namespace: '',
-      nsType: '',
-    };
+    errors.push(msg);
+
+    return buildValidateRequestIssueResult(errors, buckets, template, [], {}, '', '');
   }
 
   // 7) Normalize formData
@@ -2020,47 +2423,195 @@ export async function validateRequestIssue(
     errors.push(msg);
   }
 
-  // 9) registry existence check
   const namespace = String(normalizedFormData.namespace || '').trim();
-
-  if (namespace) {
-    const resourceName = String(normalizedFormData.identifier || normalizedFormData.namespace || '').trim();
-
-    if (resourceName) {
-      try {
-        const structRoot = resolveRegistryRootForTemplate(context, template, requestCfg);
-        const filePath = `${structRoot}/${resourceName}.yaml`;
-
-        await context.octokit.repos.getContent({ owner, repo, path: filePath });
-
-        const msg = `Resource '${resourceName}' already exists in registry`;
-        buckets.registry.push(msg);
-        errors.push(msg);
-      } catch (e: unknown) {
-        if (getHttpStatus(e) !== 404) {
-          context.log?.warn?.({ err: e instanceof Error ? e.message : String(e) }, 'registry existence check failed');
-        }
-      }
-    }
-  }
+  await checkRegistryDuplicate(context, { owner, repo }, template, requestCfg, normalizedFormData, buckets, errors);
 
   const nsType = inferNsType(requestType);
 
-  // 10) output formatting
-  const unified = formatUnifiedIssues(buckets, template, ajvErrorsForUnifiedFormat);
-  const errorsFormatted = unified || formatBuckets(buckets);
-  const errorsFormattedSingle = unified || formatFirstBucket(buckets);
+  return buildValidateRequestIssueResult(
+    errors,
+    buckets,
+    template,
+    ajvErrorsForUnifiedFormat,
+    normalizedFormData,
+    namespace,
+    nsType
+  );
+}
+
+function logApprovalHookMessages(
+  context: ValidationContext,
+  logs: { level: 'debug' | 'info' | 'warn' | 'error'; obj: unknown; msg?: string }[] | undefined
+): void {
+  if (!logs?.length) return;
+
+  for (const entry of logs) {
+    const msg = entry.msg || 'hook:onApproval';
+    if (entry.level === 'error') context.log?.error?.(entry.obj, msg);
+    else if (entry.level === 'warn') context.log?.warn?.(entry.obj, msg);
+    else if (entry.level === 'debug') context.log?.debug?.(entry.obj, msg);
+    else context.log?.info?.(entry.obj, msg);
+  }
+}
+
+function getApprovalAllowedHosts(context: ValidationContext): string[] {
+  return Array.isArray(context.resourceBotConfig?.hooks?.allowedHosts)
+    ? context.resourceBotConfig.hooks.allowedHosts
+    : [];
+}
+
+function resolveApprovalNamespace(args: {
+  namespace?: string | null;
+  resourceName?: string | null;
+  formData: FormData;
+}): string {
+  return (
+    toStringSafe(args.namespace) ||
+    toStringSafe(args.formData['namespace']) ||
+    toStringSafe(args.formData['identifier']) ||
+    toStringSafe(args.resourceName)
+  );
+}
+
+function resolveApprovalResourceName(
+  args: {
+    namespace?: string | null;
+    resourceName?: string | null;
+    formData: FormData;
+  },
+  namespace: string
+): string {
+  return (
+    toStringSafe(args.resourceName) ||
+    toStringSafe(args.formData['identifier']) ||
+    toStringSafe(args.formData['namespace']) ||
+    namespace
+  );
+}
+
+function buildApprovalHookArgs(
+  context: ValidationContext,
+  args: {
+    requestType: string;
+    namespace?: string | null;
+    resourceName?: string | null;
+    formData: FormData;
+    issue: IssueLike;
+  }
+): OnApprovalArgs {
+  const namespace = resolveApprovalNamespace(args);
+  const resourceName = resolveApprovalResourceName(args, namespace);
+  const requesterId = toStringSafe(args.issue?.user?.login);
 
   return {
-    errors,
-    errorsGrouped: buckets,
-    errorsFormatted,
-    errorsFormattedSingle,
-    formData: normalizedFormData,
-    template,
+    requestType: toStringSafe(args.requestType),
     namespace,
-    nsType,
+    resourceName,
+    form: args.formData,
+    data: buildApprovalHookData(args, namespace, resourceName),
+    requestAuthor: {
+      id: requesterId,
+      email: '',
+    },
+    config: {
+      raw: isPlainObject(context.resourceBotConfig) ? context.resourceBotConfig : {},
+      approvers: getApprovalHookApprovers(context, toStringSafe(args.requestType)),
+    },
+    issue: {
+      number: typeof args.issue?.number === 'number' ? args.issue.number : 0,
+      title: toStringSafe(args.issue?.title),
+      body: toStringSafe(args.issue?.body),
+      state: toStringSafe(args.issue?.state),
+      author: requesterId,
+      labels: toApprovalIssueLabelNames(args.issue?.labels),
+    },
+    log: undefined,
   };
+}
+
+async function runApprovalHookDescriptor(
+  context: ValidationContext,
+  repoInfo: { owner: string; repo: string },
+  hooks: HookDescriptor,
+  hookArgs: OnApprovalArgs,
+  allowedHosts: string[]
+): Promise<ApprovalHookDecision> {
+  const workerSecrets = pickHookSecretsForWorker(coreSecrets.HOOK_SECRETS || {});
+  const res = await runHookInWorker(
+    {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      path: hooks.__path,
+      hash: hooks.__hash,
+      code: hooks.__code,
+      fn: 'onApproval',
+      args: hookArgs,
+      allowedHosts,
+      secrets: workerSecrets,
+    },
+    { timeoutMs: 8000 }
+  );
+
+  logApprovalHookMessages(context, res.logs);
+
+  const hookErr = getStringProp(res.value, '__hookError');
+  if (hookErr) {
+    context.log?.warn?.({ err: hookErr }, 'resource-bot hooks.onApproval failed');
+    return {};
+  }
+
+  if (!res.found) return {};
+  return normalizeApprovalHookResult(res.value);
+}
+
+async function runApprovalHookInProcess(
+  context: ValidationContext,
+  hooks: ResourceBotHooks,
+  hookArgs: OnApprovalArgs
+): Promise<ApprovalHookDecision> {
+  const onApprovalHook = hooks.onApproval;
+  if (typeof onApprovalHook !== 'function') return {};
+
+  try {
+    const ret = await onApprovalHook({
+      ...hookArgs,
+      log: getHookLogger(context.log),
+    });
+
+    return normalizeApprovalHookResult(ret);
+  } catch (err: unknown) {
+    context.log?.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'resource-bot hooks.onApproval failed'
+    );
+    return {};
+  }
+}
+
+export async function runApprovalHook(
+  context: ValidationContext,
+  repoInfo: { owner: string; repo: string },
+  args: {
+    requestType: string;
+    namespace?: string | null;
+    resourceName?: string | null;
+    formData: FormData;
+    issue: IssueLike;
+  }
+): Promise<ApprovalHookDecision> {
+  await ensureStaticConfigLoaded(context);
+
+  const hooks = getResourceBotHooks(context);
+  if (!hooks) return {};
+
+  const allowedHosts = getApprovalAllowedHosts(context);
+  const hookArgs = buildApprovalHookArgs(context, args);
+
+  if (isHookDescriptor(hooks)) {
+    return runApprovalHookDescriptor(context, repoInfo, hooks, hookArgs, allowedHosts);
+  }
+
+  return runApprovalHookInProcess(context, hooks, hookArgs);
 }
 
 // CI helper: run the same onValidate hook pipeline the bot uses,
