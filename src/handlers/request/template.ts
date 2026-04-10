@@ -377,6 +377,8 @@ export async function loadTemplate(
     throw new Error('Configuration error: owner/repo are required to load templates.');
   }
 
+  const octokit = context.octokit;
+
   const labels = toLabelStrings(issueLabels);
 
   if (DBG && context.log?.debug) {
@@ -402,7 +404,7 @@ export async function loadTemplate(
       return fh.data;
     }
 
-    const { data } = await context.octokit!.repos.getContent({ owner, repo, path });
+    const { data } = await octokit.repos.getContent({ owner, repo, path });
 
     type RepoFile = { content?: unknown; encoding?: unknown } & Record<string, unknown>;
     const file = data as RepoFile;
