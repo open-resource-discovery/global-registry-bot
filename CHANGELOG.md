@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.0.5](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/rel/0.0.5)] - 2026-04-10
+
 ## Added
 
 - onApproval hook support for request and direct PR flows
