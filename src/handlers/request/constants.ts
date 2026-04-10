@@ -285,7 +285,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
               enum: ['merge', 'squash', 'rebase', 'MERGE', 'SQUASH', 'REBASE', null],
               errorMessage: {
                 type: 'pr.autoMerge.method must be a string.',
-                enum: 'pr.autoMerge.method must be one of: merge, squash, rebase, MERGE, SQUASH, REBASE, or null.',
+                enum: 'pr.autoMerge.method must be one of: merge, squash, rebase.',
               },
             },
           },
@@ -428,7 +428,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
       },
       errorMessage: {
         type: 'workflow must be an object when provided.',
-        additionalProperties: "Only 'labels', 'approvers' and 'links' are allowed inside workflow.",
+        additionalProperties: "Only 'labels', 'approvers', 'links' and 'assignees' are allowed inside workflow.",
       },
     },
   },

@@ -1,6 +1,6 @@
 {
   "name": "global-registry-bot",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "description": "A configurable GitHub App bot to validate and automate registry-related requests",
   "author": "SAP SE",
