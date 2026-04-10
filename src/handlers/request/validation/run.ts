@@ -1,7 +1,7 @@
 import { parseForm as parseFormRaw, loadTemplate as loadTemplateRaw } from '../template.js';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadStaticConfig, type RegistryBotHooks as StaticRegistryBotHooks } from '../../../config.js';
 import { loadSecrets } from '../../../utils/secrets.js';
 import { createHookApi as createHookApiRaw } from './hook-api.js';
@@ -11,15 +11,7 @@ import { runHookInWorker } from './hook-pool.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
 
-const META_2020_12_ID = 'https://json-schema.org/draft/2020-12/schema';
-
-const defaultModuleFileName = resolve(process.cwd(), 'src', 'handlers', 'request', 'validation', 'run.ts');
-let moduleFileName = defaultModuleFileName;
-if (typeof __filename === 'string') {
-  moduleFileName = __filename;
-}
-const moduleRequire = createRequire(moduleFileName);
-const meta202012Schema = moduleRequire('ajv/dist/refs/json-schema-2020-12/schema.json');
+const moduleFileName = fileURLToPath(import.meta.url);
 const dirName = dirname(moduleFileName);
 
 const DBG = process.env.DEBUG_NS === '1';
@@ -1362,16 +1354,6 @@ const AJV_CACHE = new Map<string, AjvInstance>();
 const REPO_SCHEMA_CACHE = new Map<string, unknown>();
 
 function initAjvInstance(ajv: AjvInstance, context: ValidationContext): void {
-  // Ensure draft 2020-12 meta-schema is present so "$schema: .../2020-12/schema" works.
-  try {
-    if (!ajv.getSchema(META_2020_12_ID)) {
-      ajv.addMetaSchema(meta202012Schema);
-      ajv.defaultMeta = META_2020_12_ID;
-    }
-  } catch {
-    // ignore
-  }
-
   // ajv-formats + ajv-errors are applied to the instance
   addFormats(ajv);
   ajvErrors(ajv);
