@@ -1686,34 +1686,38 @@ async function resolvePullRequestRequestAuthorId(
   let page = 1;
   let lastCommitter = '';
 
-  while (true) {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        listCommits: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          per_page?: number;
-          page?: number;
-        }) => Promise<{ data?: PullRequestCommitLike[] }>;
-      }
-    ).listCommits({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: pr.number,
-      per_page: 100,
-      page,
-    });
+  try {
+    while (true) {
+      const res = await (
+        context.octokit.pulls as unknown as {
+          listCommits: (args: {
+            owner: string;
+            repo: string;
+            pull_number: number;
+            per_page?: number;
+            page?: number;
+          }) => Promise<{ data?: PullRequestCommitLike[] }>;
+        }
+      ).listCommits({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        pull_number: pr.number,
+        per_page: 100,
+        page,
+      });
 
-    const commits = Array.isArray(res?.data) ? res.data : [];
-    if (!commits.length) break;
+      const commits = Array.isArray(res?.data) ? res.data : [];
+      if (!commits.length) break;
 
-    const last = commits.at(-1);
-    lastCommitter = normalizeLogin(last?.committer?.login) || normalizeLogin(last?.author?.login) || lastCommitter;
+      const last = commits.at(-1);
+      lastCommitter = normalizeLogin(last?.committer?.login) || normalizeLogin(last?.author?.login) || lastCommitter;
 
-    if (commits.length < 100) break;
-    page += 1;
-    if (page > 20) break;
+      if (commits.length < 100) break;
+      page += 1;
+      if (page > 20) break;
+    }
+  } catch {
+    return lastCommitter || normalizeLogin(pr.user?.login);
   }
 
   return lastCommitter || normalizeLogin(pr.user?.login);
