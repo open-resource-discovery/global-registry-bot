@@ -373,11 +373,11 @@ export async function loadTemplate(
   if (!context?.octokit) {
     throw new Error('Configuration error: octokit is not available in context.');
   }
+
+  const octokit = context.octokit;
   if (!owner || !repo) {
     throw new Error('Configuration error: owner/repo are required to load templates.');
   }
-
-  const octokit = context.octokit;
 
   const labels = toLabelStrings(issueLabels);
 
