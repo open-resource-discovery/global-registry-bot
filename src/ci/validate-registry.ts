@@ -119,14 +119,49 @@ function pickMode(): Mode {
     .toLowerCase();
   if (forced === 'pr' || forced === 'main') return forced;
 
-  const eventName = String(process.env.GITHUB_EVENT_NAME ?? '').trim();
-  return eventName === 'pull_request' ? 'pr' : 'main';
+  const eventName = String(process.env.GITHUB_EVENT_NAME ?? '')
+    .trim()
+    .toLowerCase();
+
+  return eventName === 'pull_request' || eventName === 'pull_request_target' ? 'pr' : 'main';
 }
 
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var ${name}`);
   return v;
+}
+
+async function repoPathExists(repoPath: string): Promise<boolean> {
+  const rel = normalizeRepoPath(repoPath);
+  if (!rel) return false;
+
+  try {
+    await access(rel);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveMergeBase(baseRef: string, headRef = 'HEAD'): Promise<string> {
+  const lhs = String(baseRef ?? '').trim();
+  const rhs = String(headRef ?? '').trim() || 'HEAD';
+
+  if (!lhs) {
+    throw new Error('Missing base ref for merge-base calculation');
+  }
+
+  const { stdout } = await execFileAsync('git', ['merge-base', lhs, rhs], {
+    maxBuffer: 1024 * 1024,
+  });
+
+  const mergeBase = String(stdout ?? '').trim();
+  if (!mergeBase) {
+    throw new Error(`Failed to resolve merge-base for '${lhs}' and '${rhs}'`);
+  }
+
+  return mergeBase;
 }
 
 async function readTextFromGitRevision(revision: string, repoPath: string): Promise<string | null> {
@@ -249,11 +284,30 @@ async function getChangedFiles(baseSha: string, headRef = 'HEAD'): Promise<strin
       .map((s) => s.replace(/\\/g, '/'));
   };
 
+  const diffAgainstWorkspace = async (rhs: string): Promise<string[]> => {
+    const mergeBase = await resolveMergeBase(baseSha, rhs);
+    const changed = await run(mergeBase, rhs);
+
+    const existing = await Promise.all(
+      changed.map(async (filePath) => ({
+        filePath,
+        exists: await repoPathExists(filePath),
+      }))
+    );
+
+    return existing.filter((x) => x.exists).map((x) => x.filePath);
+  };
+
+  const rhs = String(headRef ?? '').trim() || 'HEAD';
+
   try {
-    return await run(baseSha, headRef);
+    return await diffAgainstWorkspace(rhs);
   } catch {
-    if (headRef !== 'HEAD') return await run(baseSha, 'HEAD');
-    throw new Error(`Failed to diff changed files for base '${baseSha}' and head '${headRef}'`);
+    if (rhs !== 'HEAD') {
+      return await diffAgainstWorkspace('HEAD');
+    }
+
+    throw new Error(`Failed to diff changed files for base '${baseSha}' against workspace '${rhs}'`);
   }
 }
 
@@ -847,9 +901,7 @@ async function main(): Promise<void> {
 
   if (mode === 'pr') {
     const baseSha = requireEnv('PR_BASE_SHA');
-    const headRef = isForkPr ? 'HEAD' : requireEnv('PR_HEAD_SHA');
-
-    const changed = await getChangedFiles(baseSha, headRef);
+    const changed = await getChangedFiles(baseSha, 'HEAD');
 
     targets = changed
       .filter(isYamlPath)
@@ -935,8 +987,25 @@ async function main(): Promise<void> {
 
 export const TEST_UTILS = {
   normalizeRepoPath,
+  pickMode,
+  repoPathExists,
+  resolveMergeBase,
+  readTextFromGitRevision,
+  readTrustedRepoFileText,
+  loadValidationConfig,
   extractSchemaTypeConst,
   matchRequestTypesForFile,
+  getChangedFiles,
+  getAllTrackedFilesUnder,
+  formatAjvErrors,
+  readDocType,
+  getSchemaEntry,
+  scoreErrors,
+  pickBestTry,
+  ghAnnotateError,
+  readRepoInfoFromEnv,
+  createLocalOctokit,
+  loadLocalHooksDescriptor,
   validateOneFile,
   buildAjv,
 };
