@@ -58,6 +58,7 @@ type StaticConfig = {
   workflow?: {
     labels?: Record<string, unknown>;
     approvers?: unknown;
+    approversPool?: unknown;
   };
   requests?: Record<string, unknown>;
 };
@@ -191,7 +192,9 @@ const DEFAULT_CONFIG: StaticConfig = {
     labels: {
       approvalSuccessful: ['Approved'],
     },
+    approvers: [],
   },
+
   requests: {},
 };
 
@@ -386,6 +389,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
       labelName: 'Review Pending',
       config: {
         workflow: {
+          approvers: [],
           labels: { approvalSuccessful: ['Approved'], approvalRequested: ['Review Pending'] },
         },
         requests: {},
@@ -406,6 +410,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     const cfg: StaticConfig = {
       workflow: {
+        approvers: [],
         labels: {
           authorAction: 'Requester Action',
           approverAction: 'Review Pending',
@@ -460,6 +465,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     const cfg: StaticConfig = {
       workflow: {
+        approvers: [],
         labels: {
           approvalRequested: ['Needs Review'],
           approvalSuccessful: ['Approved'],
@@ -511,6 +517,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     const cfg: StaticConfig = {
       workflow: {
+        approvers: [],
         labels: {
           approvalSuccessful: ['Approved'],
           approvalRequested: ['Needs Review'],
@@ -593,6 +600,92 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     expect(octokit.issues.addLabels).not.toHaveBeenCalled();
     expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+    expect(setStateLabel).not.toHaveBeenCalled();
+  });
+
+  test('issues.unlabeled: global approversPool user may remove Approved label without bot rollback', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const cfg: StaticConfig = {
+      workflow: {
+        approversPool: ['alice'],
+        labels: {
+          approvalSuccessful: ['Approved'],
+          approvalRequested: ['Needs Review'],
+        },
+      },
+      requests: {},
+    };
+
+    const octokit = mkOctokit();
+    const ctx = mkCtx({
+      eventName: 'issues.unlabeled',
+      action: 'unlabeled',
+      issue: {
+        number: 45,
+        title: 'T',
+        body: 'B',
+        state: 'open',
+        labels: [{ name: 'Needs Review' }],
+        user: { login: 'requester' },
+      },
+      sender: { type: 'User', login: 'alice' },
+      labelName: 'Approved',
+      config: cfg,
+      octokit,
+    });
+
+    await handlers['issues.unlabeled']?.[0]?.(ctx);
+
+    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+    expect(setStateLabel).not.toHaveBeenCalled();
+  });
+
+  test('issues.labeled: request-type approversPool user may add Approved label without bot rollback', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const cfg: StaticConfig = {
+      workflow: {
+        approvers: ['bob'],
+        labels: {
+          approvalSuccessful: ['Approved'],
+          approvalRequested: ['Needs Review'],
+        },
+      },
+      requests: {
+        systemNamespace: {
+          approversPool: ['alice'],
+        },
+      },
+    };
+
+    const octokit = mkOctokit();
+    const ctx = mkCtx({
+      eventName: 'issues.labeled',
+      action: 'labeled',
+      issue: {
+        number: 46,
+        title: 'T',
+        body: 'B',
+        state: 'open',
+        labels: [{ name: 'Approved' }, { name: 'Needs Review' }],
+        user: { login: 'requester' },
+      },
+      sender: { type: 'User', login: 'alice' },
+      labelName: 'Approved',
+      config: cfg,
+      octokit,
+    });
+
+    await handlers['issues.labeled']?.[0]?.(ctx);
+
+    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(setStateLabel).not.toHaveBeenCalled();
   });
@@ -757,7 +850,10 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     requestHandler(app as unknown as Probot);
 
     const cfg: StaticConfig = {
-      workflow: { labels: { approvalSuccessful: ['Approved'] } },
+      workflow: {
+        approvers: [],
+        labels: { approvalSuccessful: ['Approved'] },
+      },
       requests: {},
     };
 
