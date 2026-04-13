@@ -1727,6 +1727,41 @@ function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
   return out;
 }
 
+function isChangedYamlCandidate(file: PullRequestFileLike): string {
+  const filename = normalizeRepoPath(file?.filename);
+  const status = toStringTrim(file?.status).toLowerCase();
+
+  if (!filename || !isYamlPath(filename) || status === 'removed') return '';
+  return filename;
+}
+
+async function listChangedYamlFilesPage(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number,
+  page: number
+): Promise<PullRequestFileLike[]> {
+  const res = await (
+    context.octokit.pulls as unknown as {
+      listFiles: (args: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        per_page?: number;
+        page?: number;
+      }) => Promise<{ data?: PullRequestFileLike[] }>;
+    }
+  ).listFiles({
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    pull_number: prNumber,
+    per_page: 100,
+    page,
+  });
+
+  return Array.isArray(res?.data) ? res.data : [];
+}
+
 async function listChangedYamlFilesForPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -1736,36 +1771,12 @@ async function listChangedYamlFilesForPr(
   let page = 1;
 
   while (true) {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        listFiles: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          per_page?: number;
-          page?: number;
-        }) => Promise<{ data?: PullRequestFileLike[] }>;
-      }
-    ).listFiles({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: prNumber,
-      per_page: 100,
-      page,
-    });
-
-    const files = Array.isArray(res?.data) ? res.data : [];
+    const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
     if (!files.length) break;
 
     for (const file of files) {
-      const filename = normalizeRepoPath(file?.filename);
-      const status = toStringTrim(file?.status).toLowerCase();
-
-      if (!filename) continue;
-      if (!isYamlPath(filename)) continue;
-      if (status === 'removed') continue;
-
-      out.push(filename);
+      const filename = isChangedYamlCandidate(file);
+      if (filename) out.push(filename);
     }
 
     if (files.length < 100) break;
@@ -1808,6 +1819,56 @@ async function readRepoFileTextAtRef(
   }
 }
 
+async function readRegistryDocForApproval(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  filePath: string,
+  ref: string
+): Promise<Record<string, unknown> | null> {
+  const raw = await readRepoFileTextAtRef(context, repoInfo, filePath, ref);
+  if (!raw) return null;
+
+  try {
+    const parsed = YAML.parse(raw) as unknown;
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function evaluateChangedResourceApproval(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  filePath: string
+): Promise<ApprovalDecision> {
+  const parsed = await readRegistryDocForApproval(context, repoInfo, filePath, pr.head.ref);
+  if (!parsed) return { status: 'unknown' };
+
+  const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
+  if (!requestType) return { status: 'unknown' };
+
+  const resourceName = toStringTrim(parsed['name']);
+  if (!resourceName) return { status: 'unknown' };
+
+  return normalizeApprovalDecision(
+    await runApprovalHook(context, repoInfo, {
+      requestType,
+      namespace: resourceName,
+      resourceName,
+      formData: buildFormDataFromRegistryDoc(parsed),
+      issue: {
+        number: pr.number,
+        title: pr.title,
+        body: pr.body,
+        state: pr.state,
+        user: pr.user,
+        labels: [],
+      },
+    })
+  );
+}
+
 async function evaluateDirectPrOnApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -1821,55 +1882,7 @@ async function evaluateDirectPrOnApproval(
   let approvedComment = '';
 
   for (const filePath of changedFiles) {
-    const raw = await readRepoFileTextAtRef(context, repoInfo, filePath, pr.head.ref);
-    if (!raw) {
-      sawUnknown = true;
-      continue;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = YAML.parse(raw);
-    } catch {
-      sawUnknown = true;
-      continue;
-    }
-
-    if (!isPlainObject(parsed)) {
-      sawUnknown = true;
-      continue;
-    }
-
-    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
-    if (!requestType) {
-      sawUnknown = true;
-      continue;
-    }
-
-    const resourceName = toStringTrim(parsed['name']);
-    if (!resourceName) {
-      sawUnknown = true;
-      continue;
-    }
-
-    const formData = buildFormDataFromRegistryDoc(parsed);
-
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(context, repoInfo, {
-        requestType,
-        namespace: resourceName,
-        resourceName,
-        formData,
-        issue: {
-          number: pr.number,
-          title: pr.title,
-          body: pr.body,
-          state: pr.state,
-          user: pr.user,
-          labels: [],
-        },
-      })
-    );
+    const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath);
 
     if (decision.status === 'rejected') {
       return decision;
@@ -2026,9 +2039,7 @@ async function finalizeApprovedRequest(
   }
 
   try {
-    const pr = await createRequestPr(context, { owner: params.owner, repo: params.repo }, issue, parsedFormData, {
-      template,
-    });
+    const pr = await createRequestPrWithRecovery(context, params, issue, parsedFormData, template, resourceName);
 
     await applyApprovedRequestState(context, params, eff);
 
@@ -2147,6 +2158,244 @@ async function maybeHandleDirectPrApprovalForMerge(
   }
 
   return 'continue';
+}
+
+function buildSafeResourceSlug(resourceName: unknown): string {
+  return toStringTrim(resourceName)
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]/g, '-')
+    .replace(/-+/g, '-');
+}
+
+function resolveStructuredRootForTemplate(template: TemplateLike): string {
+  return toStringTrim(template?._meta?.root).replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function renderConfiguredRequestBranchName(
+  context: BotContext<RequestEvents>,
+  issue: IssueLike,
+  resourceName: string
+): string {
+  const cfg = (context.resourceBotConfig ?? DEFAULT_CONFIG) as unknown as {
+    pr?: { branchNameTemplate?: unknown } | null;
+  };
+
+  const branchTemplate = toStringTrim(cfg?.pr?.branchNameTemplate) || 'feat/resource-{resource}-issue-{issue}';
+
+  return String(branchTemplate)
+    .replace('{resource}', buildSafeResourceSlug(resourceName))
+    .replace('{issue}', String(issue.number || ''));
+}
+
+function extractCreatePrFailureMessage(error: unknown): string {
+  const raw = (error instanceof Error ? error.message : String(error)).trim();
+  const withoutUrl = raw.replace(/\s*-\s*https?:\/\/\S+$/i, '').trim();
+
+  const marker = 'Validation Failed:';
+  const idx = withoutUrl.indexOf(marker);
+
+  if (idx >= 0) {
+    const tail = withoutUrl.slice(idx + marker.length).trim();
+
+    try {
+      const parsed = JSON.parse(tail) as Record<string, unknown>;
+      const msg = toStringTrim(parsed['message']);
+      if (msg) return msg;
+    } catch {
+      // ignore
+    }
+
+    return tail || withoutUrl;
+  }
+
+  return withoutUrl;
+}
+
+function parseNoCommitsHeadBranchFromCreatePrError(error: unknown): string {
+  const raw = extractCreatePrFailureMessage(error);
+  const m = /No commits between [^ ]+ and ([^"\s]+)/i.exec(raw);
+  return m?.[1] ? toStringTrim(m[1]).replace(/^refs\/heads\//, '') : '';
+}
+
+function isResourceAlreadyExistsDuringPrCreation(error: unknown): boolean {
+  const msg = extractCreatePrFailureMessage(error);
+  return /Resource ['"`][^'"`]+['"`] already exists at /i.test(msg);
+}
+
+async function registryResourceExistsOnDefaultBranch(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  template: TemplateLike,
+  resourceName: string
+): Promise<boolean> {
+  const structRoot = resolveStructuredRootForTemplate(template);
+  if (!structRoot || !resourceName) return false;
+
+  for (const ext of ['yaml', 'yml']) {
+    try {
+      await context.octokit.repos.getContent({
+        owner: params.owner,
+        repo: params.repo,
+        path: `${structRoot}/${resourceName}.${ext}`,
+      });
+      return true;
+    } catch (e: unknown) {
+      if (getHttpStatus(e) === 404) continue;
+      throw e;
+    }
+  }
+
+  return false;
+}
+
+async function deleteBranchRefIfPresent(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  branchName: string
+): Promise<void> {
+  const branch = toStringTrim(branchName).replace(/^refs\/heads\//, '');
+  if (!branch) return;
+
+  try {
+    await context.octokit.git.deleteRef({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      ref: `heads/${branch}`,
+    });
+  } catch (e: unknown) {
+    if (getHttpStatus(e) !== 404) throw e;
+  }
+}
+
+function formatCreateRequestFailureForUser(error: unknown, branchName = '', resourceName = ''): string {
+  const msg = extractCreatePrFailureMessage(error);
+  const parsedBranch = parseNoCommitsHeadBranchFromCreatePrError(error) || toStringTrim(branchName);
+
+  if (/^No commits between\b/i.test(msg)) {
+    const suffix = parsedBranch ? ` '${parsedBranch}'` : '';
+    return `Failed to create PR automatically: stale request branch${suffix} blocked PR creation. Please retry approval.`;
+  }
+
+  if (isResourceAlreadyExistsDuringPrCreation(error)) {
+    const suffix = resourceName ? ` '${resourceName}'` : '';
+    return `Failed to create PR automatically: a stale request branch already contains${suffix}. Please retry approval.`;
+  }
+
+  return `Failed to create PR automatically: ${msg}`;
+}
+
+async function runCreateRequestPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  issue: IssueLike,
+  parsedFormData: FormData,
+  template: TemplateLike
+): Promise<{ number: number }> {
+  return await createRequestPr(context, repoInfo, issue, parsedFormData, { template });
+}
+
+async function retryCreatePrAfterBranchCleanup(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  branchName: string,
+  issue: IssueLike,
+  parsedFormData: FormData,
+  template: TemplateLike
+): Promise<{ number: number }> {
+  await deleteBranchRefIfPresent(context, repoInfo, branchName);
+  return await runCreateRequestPr(context, repoInfo, issue, parsedFormData, template);
+}
+
+async function handleNoCommitsCreatePrFailure(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  branchName: string,
+  issue: IssueLike,
+  parsedFormData: FormData,
+  template: TemplateLike,
+  resourceName: string
+): Promise<{ number: number }> {
+  try {
+    return await retryCreatePrAfterBranchCleanup(context, repoInfo, branchName, issue, parsedFormData, template);
+  } catch (retryError: unknown) {
+    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
+  }
+}
+
+async function handleAlreadyExistsCreatePrFailure(
+  context: BotContext<RequestEvents>,
+  args: {
+    params: IssueParams;
+    repoInfo: RepoInfo;
+    issue: IssueLike;
+    parsedFormData: FormData;
+    template: TemplateLike;
+    resourceName: string;
+    branchName: string;
+  }
+): Promise<{ number: number }> {
+  const { params, repoInfo, issue, parsedFormData, template, resourceName, branchName } = args;
+
+  try {
+    const existsOnDefaultBranch = await registryResourceExistsOnDefaultBranch(context, params, template, resourceName);
+
+    if (existsOnDefaultBranch) {
+      throw new Error(`Failed to create PR automatically: Resource '${resourceName}' already exists in the registry.`);
+    }
+
+    return await retryCreatePrAfterBranchCleanup(context, repoInfo, branchName, issue, parsedFormData, template);
+  } catch (retryError: unknown) {
+    if (retryError instanceof Error && retryError.message.startsWith('Failed to create PR automatically:')) {
+      throw retryError;
+    }
+
+    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
+  }
+}
+
+async function createRequestPrWithRecovery(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  parsedFormData: FormData,
+  template: TemplateLike,
+  resourceName: string
+): Promise<{ number: number }> {
+  const repoInfo: RepoInfo = { owner: params.owner, repo: params.repo };
+  const fallbackBranchName = renderConfiguredRequestBranchName(context, issue, resourceName);
+
+  try {
+    return await runCreateRequestPr(context, repoInfo, issue, parsedFormData, template);
+  } catch (error: unknown) {
+    const staleNoCommitsBranch = parseNoCommitsHeadBranchFromCreatePrError(error) || fallbackBranchName;
+    const failureMessage = extractCreatePrFailureMessage(error);
+
+    if (/^No commits between\b/i.test(failureMessage)) {
+      return await handleNoCommitsCreatePrFailure(
+        context,
+        repoInfo,
+        staleNoCommitsBranch,
+        issue,
+        parsedFormData,
+        template,
+        resourceName
+      );
+    }
+
+    if (isResourceAlreadyExistsDuringPrCreation(error)) {
+      return await handleAlreadyExistsCreatePrFailure(context, {
+        params,
+        repoInfo,
+        issue,
+        parsedFormData,
+        template,
+        resourceName,
+        branchName: fallbackBranchName,
+      });
+    }
+
+    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName));
+  }
 }
 
 function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {

@@ -1507,6 +1507,466 @@ describe('parent owner approval gating', () => {
     expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Detected issues'))).toBe(true);
     expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
   });
+  test('issue_comment: approval recovers from stale request branch when PR creation fails with no commits between', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+  sap.aiadm
+
+  ### System Description
+
+  \`\`\`text
+  Example description
+  \`\`\`
+
+  ### Contacts
+
+  \`\`\`text
+  owner@sap.com
+  \`\`\`
+
+  ### Visibility
+
+  public
+
+  <!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr
+      .mockRejectedValueOnce(
+        new Error(
+          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
+        )
+      )
+      .mockResolvedValueOnce({ number: 999 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      ref: 'heads/feat/resource-sap.aiadm-issue-176',
+    });
+
+    expect(createRequestPr).toHaveBeenCalledTimes(2);
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #999'))).toBe(
+      true
+    );
+    expect(
+      postOnce.mock.calls.some((c) =>
+        String(c[2] ?? '').includes('No commits between main and feat/resource-sap.aiadm-issue-176')
+      )
+    ).toBe(false);
+  });
+
+  test('issue_comment: approval recovers from stale branch when PR creation reports resource already exists only on request branch', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+sap.aiadm
+
+### System Description
+
+\`\`\`text
+Example description
+\`\`\`
+
+### Contacts
+
+\`\`\`text
+owner@sap.com
+\`\`\`
+
+### Visibility
+
+public
+
+<!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr
+      .mockRejectedValueOnce(new Error("Resource 'sap.aiadm' already exists at data/namespaces"))
+      .mockResolvedValueOnce({ number: 1001 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (String(path) === 'data/namespaces/sap.aiadm.yaml') {
+        const err: any = new Error('Not Found');
+        err.status = 404;
+        throw err;
+      }
+      const err: any = new Error('Not Found');
+      err.status = 404;
+      throw err;
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      ref: 'heads/feat/resource-sap.aiadm-issue-176',
+    });
+
+    expect(createRequestPr).toHaveBeenCalledTimes(2);
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #1001'))).toBe(
+      true
+    );
+  });
+
+  test('issue_comment: approval shows human-readable exists message when resource already exists on default branch', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+sap.aiadm
+
+### System Description
+
+\`\`\`text
+Example description
+\`\`\`
+
+### Contacts
+
+\`\`\`text
+owner@sap.com
+\`\`\`
+
+### Visibility
+
+public
+
+<!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr.mockRejectedValueOnce(new Error("Resource 'sap.aiadm' already exists at data/namespaces"));
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({ data: { content: 'x', encoding: 'base64' } });
+
+    await handler(ctx);
+
+    expect(createRequestPr).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.git.deleteRef).not.toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain("Failed to create PR automatically: Resource 'sap.aiadm' already exists in the registry.");
+  });
+
+  test('issue_comment: approval shows human-readable stale branch message when retry after no-commits also fails', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+sap.aiadm
+
+### System Description
+
+\`\`\`text
+Example description
+\`\`\`
+
+### Contacts
+
+\`\`\`text
+owner@sap.com
+\`\`\`
+
+### Visibility
+
+public
+
+<!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr
+      .mockRejectedValueOnce(
+        new Error(
+          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
+        )
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
+        )
+      );
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      ref: 'heads/feat/resource-sap.aiadm-issue-176',
+    });
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain(
+      "Failed to create PR automatically: stale request branch 'feat/resource-sap.aiadm-issue-176' blocked PR creation. Please retry approval."
+    );
+    expect(bodies).not.toContain('Validation Failed: {"resource":"PullRequest"');
+    expect(bodies).not.toContain('https://docs.github.com/');
+  });
 
   test('issue_comment: explicit approved creates PR only after request is valid', async () => {
     const cfg = {
