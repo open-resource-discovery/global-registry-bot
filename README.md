@@ -1,9 +1,5 @@
 # Registry Bot
 
-[![CI](../../actions/workflows/ci-check.yml/badge.svg)](../../actions/workflows/ci-check.yml)
-[![REUSE status](https://api.reuse.software/badge/github.com/open-resource-discovery/global-registry-bot)](https://api.reuse.software/info/github.com/open-resource-discovery/global-registry-bot)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
 Registry Bot is a configuration-driven GitHub App built with Probot.
 It automates registry requests in a target repository.
 A user opens an issue based on a repo template.
@@ -26,6 +22,7 @@ All behavior is defined per repository:
 - The bot parses the issue body into form data.
 - Validation uses JSON Schema draft 2020-12 with AJV.
 - Optional hooks can change form data and add extra validation rules.
+- Optional approval hooks can auto-approve requests after validation.
 - Hook HTTP calls are restricted. HTTPS only. Host allowlist. Timeouts.
 - The bot blocks duplicates. It checks if the YAML entry already exists.
 - For valid requests, it creates a branch, writes a YAML file, and opens a pull request.
@@ -50,8 +47,8 @@ All behavior is defined per repository:
 The bot is designed to operate against a dedicated **registry repository** that stores structured YAML entries such as namespaces, products, or vendors.
 A preconfigured testing setup is available for local development and integration testing:
 
-- [`registry-bot`](https://github.com/open-resource-discovery/global-registry-bot) → GitHub App source code (this repository)
-- [`example-registry`](https://github.com/open-resource-discovery/example-registry) → sample registry repository used for validation, PR creation, and schema testing
+- [`registry-bot`](https://github.tools.sap/ORD/github-registry-bot) → GitHub App source code (this repository)
+- [`example-registry`](https://github.tools.sap/cpa-namespace-registry-bot/example-registry) → sample registry repository used for validation, PR creation, and schema testing
 
 ⚠️ **Important:**
 Because this is a GitHub App, it must be **installed on the target repository** to receive webhook events.
@@ -84,6 +81,7 @@ Without installation, events like `issues.opened`, `issue_comment.created`, or `
 ### Review and merge
 
 - Review and approve the pull request.
+- Optionally, `onApproval` can auto-approve eligible requests after validation.
 - With auto-merge enabled, GitHub merges when all checks pass.
 - If auto-merge is not enabled, the bot adds a merge-candidate label.
 
@@ -259,6 +257,11 @@ Use it for repo-specific rules or external lookups.
   - Receives `requestType`, `form`, and `log` (plus other context values).
   - Must return an array of validation errors.
   - Return `[]` if everything is fine.
+- `onApproval(args)`
+  - Runs after validation and parent checks passed.
+  - Receives request context similar to `onValidate`.
+  - Can return an approval decision for automatic approval handling.
+  - If omitted, the normal manual review flow stays unchanged.
 
 #### Example (product lookup)
 
@@ -288,7 +291,21 @@ export async function onValidate({ requestType, log, ...rest }) {
   }
 }
 
-export default { onValidate };
+export async function onApproval({ requestType, log, ...rest }) {
+  try {
+    switch (requestType) {
+      case 'product':
+        return { approved: false };
+      default:
+        return { approved: false };
+    }
+  } catch (e) {
+    log.error({ err: e?.message ?? String(e) }, 'hook:onApproval:error');
+    return { approved: false };
+  }
+}
+
+export default { onValidate, onApproval };
 ```
 
 If config.js is missing, the bot runs with built-in validation only.
@@ -316,29 +333,6 @@ Shows the happy path call sequence.
 ![Sequence v0](docs/Sequence%20v0.svg)
 
 > Source file: [docs/Sequence v0.svg](docs/Sequence%20v0.svg)
-
-## Communication, Feedback & FAQ
-
-If you have feedback, questions, or problems, please open a GitHub issue in this repository.
-
-## Ownership and Governance
-
-This project is part of the Open Resource Discovery (ORD) ecosystem.
-ORD is governed under neutral governance by the Linux Foundation / NeoNephos.
-For governance details, see the ORD steering committee information.
-
-## License
-
-This project is licensed under Apache 2.0. See [LICENSE](LICENSE).
-Detailed third-party licensing and copyright information is available via the REUSE metadata.
-
-## Security
-
-For security-related topics, please see [SECURITY.md](SECURITY.md).
-
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Acknowledgements
 

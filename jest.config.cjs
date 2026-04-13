@@ -13,6 +13,9 @@ module.exports = {
       {
         useESM: true,
         tsconfig: '<rootDir>/tsconfig.test.json',
+        diagnostics: {
+          ignoreCodes: [2823, 1343],
+        },
       },
     ],
   },
