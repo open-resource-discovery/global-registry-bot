@@ -190,7 +190,7 @@ function buildMachineReadableMetadataBlock(issues: MachineReadableIssue[]): stri
   if (!normalized.length) return '';
 
   return `
-
+##
 <details>
 <summary>Show as JSON (Robots Friendly)</summary>
 
@@ -2800,7 +2800,6 @@ async function handleApprovalComment(
     const normalizedIssues = (reval.validationIssues || []).map((issue) => ({
       field: toStringTrim(issue.path) || 'details',
       message: toStringTrim(issue.message),
-      ...(issue.path ? { filePath: toStringTrim(issue.path) } : {}),
     }));
 
     await postOnce(
@@ -2955,7 +2954,6 @@ async function handleAuthorUpdateComment(
           (reval.validationIssues || []).map((validationIssue) => ({
             field: toStringTrim(validationIssue.path) || 'details',
             message: toStringTrim(validationIssue.message),
-            ...(validationIssue.path ? { filePath: toStringTrim(validationIssue.path) } : {}),
           }))
         )
       ),
@@ -3297,7 +3295,6 @@ ${mentions}`,
           (reval.validationIssues || []).map((validationIssue) => ({
             field: toStringTrim(validationIssue.path) || 'details',
             message: toStringTrim(validationIssue.message),
-            ...(validationIssue.path ? { filePath: toStringTrim(validationIssue.path) } : {}),
           }))
         )
       ),

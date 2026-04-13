@@ -2165,6 +2165,150 @@ describe('validation/run.ts extra coverage', () => {
 
     restore();
   });
+
+  it('maps machine-readable validation issue fields to issue template field names', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          product: { folderName: 'data/products', schema: '/schema.json', issueTemplate: 'product.yml' },
+        },
+      },
+      source: 'repo:cfg',
+      hooks: null,
+      hooksSource: null,
+    } as any);
+
+    const schemaObj = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['type', 'name', 'title'],
+      properties: {
+        type: { const: 'product' },
+        name: { 'type': 'string', 'minLength': 5, 'x-form-field': 'identifier' },
+        title: { type: 'string', minLength: 3 },
+      },
+    };
+
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (path === '/schema.json' || path === 'schema.json') {
+        return {
+          data: {
+            content: Buffer.from(JSON.stringify(schemaObj), 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      const e: any = new Error('not found');
+      e.status = 404;
+      throw e;
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const template: any = {
+      body: [
+        { id: 'identifier', attributes: { label: 'Name' }, validations: { required: true } },
+        { id: 'title', attributes: { label: 'Title' }, validations: { required: true } },
+      ],
+      _meta: { requestType: 'product', schema: '/schema.json', root: 'data' },
+    };
+
+    const result = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      { template, formData: { identifier: 'abc', title: 'ok' } }
+    );
+
+    expect(result.validationIssues).toEqual(
+      expect.arrayContaining([{ path: 'Name', message: 'MUST NOT have fewer than 5 characters' }])
+    );
+    expect(result.validationIssues).not.toEqual(
+      expect.arrayContaining([{ path: 'identifier', message: 'MUST NOT have fewer than 5 characters' }])
+    );
+
+    restore();
+  });
+
+  it('falls back to schema field names when the issue template has no field label mapping', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          product: { folderName: 'data/products', schema: '/schema.json', issueTemplate: 'product.yml' },
+        },
+      },
+      source: 'repo:cfg',
+      hooks: null,
+      hooksSource: null,
+    } as any);
+
+    const schemaObj = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['type', 'name', 'title'],
+      properties: {
+        type: { const: 'product' },
+        name: { 'type': 'string', 'minLength': 5, 'x-form-field': 'identifier' },
+        title: { type: 'string', minLength: 3 },
+      },
+    };
+
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (path === '/schema.json' || path === 'schema.json') {
+        return {
+          data: {
+            content: Buffer.from(JSON.stringify(schemaObj), 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      const e: any = new Error('not found');
+      e.status = 404;
+      throw e;
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const template: any = {
+      body: [
+        { id: 'identifier', validations: { required: true } },
+        { id: 'title', validations: { required: true } },
+      ],
+      _meta: { requestType: 'product', schema: '/schema.json', root: 'data' },
+    };
+
+    const result = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      { template, formData: { identifier: 'abc', title: 'ok' } }
+    );
+
+    expect(result.validationIssues).toEqual(
+      expect.arrayContaining([{ path: 'name', message: 'MUST NOT have fewer than 5 characters' }])
+    );
+    expect(result.validationIssues).not.toEqual(
+      expect.arrayContaining([{ path: 'identifier', message: 'MUST NOT have fewer than 5 characters' }])
+    );
+
+    restore();
+  });
 });
 
 describe('vendor governance', () => {
