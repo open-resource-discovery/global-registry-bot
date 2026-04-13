@@ -96,6 +96,7 @@ type StaticConfig = {
   workflow: {
     labels: Record<string, unknown>;
     approvers: string[];
+    approversPool?: string[];
   };
 };
 

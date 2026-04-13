@@ -24,6 +24,7 @@ export type WorkflowReadableConfig = {
       [k: string]: unknown;
     } | null;
     approvers?: unknown;
+    approversPool?: unknown;
     links?: { docs?: unknown } | null;
     [k: string]: unknown;
   } | null;
@@ -34,6 +35,7 @@ export interface RequestConfigEntry {
   schema: string | null;
   issueTemplate: string | null;
   approvers?: string[] | null;
+  approversPool?: string[] | null;
   allowedVendorRoots?: string[] | null;
 }
 
@@ -69,6 +71,7 @@ export interface WorkflowLinksConfig {
 export interface WorkflowConfig {
   labels: WorkflowLabelsConfig;
   approvers: string[] | null;
+  approversPool: string[] | null;
   links: WorkflowLinksConfig;
 }
 
@@ -152,6 +155,7 @@ export const DEFAULT_CONFIG: StaticRegistryBotConfig = {
 
     // primary source for approver identities
     approvers: null,
+    approversPool: null,
 
     // optional links (e.g. documentation)
     links: {
@@ -222,6 +226,17 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
                 minItems: 'requests[*].approvers must contain at least one approver when configured.',
               },
             },
+            approversPool: {
+              type: ['array', 'null'],
+              items: { type: 'string' },
+              minItems: 1,
+              description:
+                'Optional approver pool for this requestType. Exactly one of them will be auto-assigned, and all of them get approval rights.',
+              errorMessage: {
+                type: 'requests[*].approversPool must be an array of strings.',
+                minItems: 'requests[*].approversPool must contain at least one approver when configured.',
+              },
+            },
             allowedVendorRoots: {
               type: ['array', 'null'],
               items: { type: 'string' },
@@ -241,7 +256,7 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
               issueTemplate: "Each requests entry must define 'issueTemplate'.",
             },
             additionalProperties:
-              "Only 'folderName', 'schema', 'issueTemplate', 'approvers' and 'allowedVendorRoots' are allowed inside each requests entry.",
+              "Only 'folderName', 'schema', 'issueTemplate', 'approvers', 'approversPool' and 'allowedVendorRoots' are allowed inside each requests entry.",
           },
         },
       },
@@ -420,6 +435,16 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
           },
         },
 
+        approversPool: {
+          type: ['array', 'null'],
+          items: { type: 'string' },
+          minItems: 1,
+          errorMessage: {
+            type: 'workflow.approversPool must be an array of strings.',
+            minItems: 'workflow.approversPool must contain at least one approver when configured.',
+          },
+        },
+
         links: {
           type: ['object', 'null'],
           additionalProperties: false,
@@ -440,7 +465,8 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
       },
       errorMessage: {
         type: 'workflow must be an object when provided.',
-        additionalProperties: "Only 'labels', 'approvers', 'links' and 'assignees' are allowed inside workflow.",
+        additionalProperties:
+          "Only 'labels', 'approvers', 'approversPool', 'links' and 'assignees' are allowed inside workflow.",
       },
     },
   },
