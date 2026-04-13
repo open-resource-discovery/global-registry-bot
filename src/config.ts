@@ -140,7 +140,23 @@ type LogLike = {
   info?: (obj: unknown, msg?: string) => void;
 };
 
-export type RegistryBotHooks = Record<string, unknown>;
+export type ApprovalHookStatus = 'approved' | 'rejected' | 'unknown';
+
+export type ApprovalHookDecision = {
+  status?: ApprovalHookStatus;
+  path?: string;
+  reason?: string;
+  comment?: string;
+};
+
+export type RegistryBotHooks = {
+  ajvPlugins?: unknown;
+  beforeValidate?: unknown;
+  customValidate?: unknown;
+  onValidate?: unknown;
+  onApproval?: unknown;
+  [k: string]: unknown;
+};
 
 type RegistryBotContextLike = {
   octokit: OctokitLike;

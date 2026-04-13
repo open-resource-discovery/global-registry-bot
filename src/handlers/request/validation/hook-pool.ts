@@ -1,12 +1,33 @@
 import { Piscina } from 'piscina';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 let pool: Piscina | null = null;
+
+const defaultModuleFileName = resolve(process.cwd(), 'dist', 'handlers', 'request', 'validation', 'hook-pool.js');
+const moduleFileName = typeof __filename === 'string' ? __filename : defaultModuleFileName;
+
+function resolveWorkerFilePath(): string | null {
+  const candidates = [
+    resolve(process.cwd(), 'dist', 'handlers', 'request', 'validation', 'hook-worker.js'),
+    resolve(dirname(moduleFileName), 'hook-worker.js'),
+    resolve(process.cwd(), 'src', 'handlers', 'request', 'validation', 'hook-worker.js'),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
 
 function getPool(): Piscina {
   if (pool) return pool;
 
+  const workerFilePath = resolveWorkerFilePath();
+  if (!workerFilePath) {
+    throw new Error('Hook worker runtime artifact not found');
+  }
+
   pool = new Piscina({
-    filename: new URL('./hook-worker.js', import.meta.url).href,
+    filename: pathToFileURL(workerFilePath).href,
 
     // Critical for CF memory quotas:
     minThreads: 1,
@@ -59,12 +80,12 @@ export type HookWorkerResult = {
 };
 
 export async function runHookInWorker(task: HookWorkerTask, opts: { timeoutMs: number }): Promise<HookWorkerResult> {
-  const p = getPool();
-
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), Math.max(1, opts.timeoutMs));
 
   try {
+    const p = getPool();
+
     const runOpts: { abortSignal: AbortSignal; signal: AbortSignal } = {
       abortSignal: ac.signal,
       signal: ac.signal,

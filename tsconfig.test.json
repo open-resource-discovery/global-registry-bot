@@ -3,6 +3,7 @@
   "compilerOptions": {
     "types": ["node", "jest"],
     "module": "ESNext",
+    "moduleResolution": "Bundler",
     "target": "ESNext",
     "noEmit": true
   },

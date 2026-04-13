@@ -127,6 +127,7 @@ const loadTemplate = jest.fn() as unknown as jest.MockedFunction<LoadTemplateFn>
 const parseForm = jest.fn() as unknown as jest.MockedFunction<ParseFormFn>;
 
 // Not used directly in these tests, but request handler imports them
+const runApprovalHook = jest.fn(async () => false);
 const validateRequestIssue = jest.fn() as unknown as jest.MockedFunction<
   (
     context: unknown,
@@ -211,6 +212,7 @@ jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
 
 jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
   validateRequestIssue,
+  runApprovalHook,
 }));
 
 jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({

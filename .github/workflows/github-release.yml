@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
       - name: Create GitHub Release
-        uses: open-resource-discovery/github-release@main
+        uses: open-resource-discovery/github-release@8c4d8e4db8921195691f8a150e3f744db03ce2dc # main
         with:
           tag-template: 'rel/<version>'
           version: ${{ inputs.version }}
