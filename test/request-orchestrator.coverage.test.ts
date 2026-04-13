@@ -110,6 +110,7 @@ type ValidateResult = {
   errors: string[];
   errorsFormattedSingle: string;
   errorsFormatted: string;
+  validationIssues?: { path: string; message: string }[];
   namespace: string;
   nsType: string;
   template: Template;
@@ -174,6 +175,7 @@ const collapseBotCommentsByPrefix = jest.fn<CollapseBotCommentsByPrefix>(async (
 const loadTemplate = jest.fn<LoadTemplate>();
 const parseForm = jest.fn<ParseForm>();
 const validateRequestIssue = jest.fn<ValidateRequestIssue>();
+const runApprovalHook = jest.fn<() => Promise<boolean>>(() => Promise.resolve(false));
 
 const calcSnapshotHash = jest.fn<CalcSnapshotHash>();
 const extractHashFromPrBody = jest.fn<ExtractHashFromPrBody>();
@@ -185,48 +187,6 @@ const tryMergeIfGreen = jest.fn<TryMergeIfGreen>();
 const loadStaticConfig = jest.fn<LoadStaticConfig>();
 
 const getDocLinksFromConfig = jest.fn<(cfg: unknown) => string>(() => '');
-
-jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
-  setStateLabel,
-  ensureAssigneesOnce,
-}));
-
-jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
-  postOnce,
-  collapseBotCommentsByPrefix,
-}));
-
-jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
-  loadTemplate,
-  parseForm,
-}));
-
-jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
-  validateRequestIssue,
-}));
-
-jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
-  calcSnapshotHash,
-  extractHashFromPrBody,
-  findOpenIssuePrs,
-}));
-
-jest.unstable_mockModule('../src/handlers/request/pr/create.js', () => ({
-  createRequestPr,
-}));
-
-jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
-  tryMergeIfGreen,
-}));
-
-jest.unstable_mockModule('../src/config.js', () => ({
-  DEFAULT_CONFIG: DEFAULT_CONFIG_MOCK,
-  loadStaticConfig,
-}));
-
-jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
-  getDocLinksFromConfig,
-}));
 
 function mkApp(): { app: AppLike; handlers: Record<string, Handler> } {
   const handlers: Record<string, Handler> = {};
@@ -331,11 +291,72 @@ function mkCtx(args: {
 let requestHandler: (app: Probot) => void;
 
 beforeAll(async () => {
+  await jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
+    setStateLabel,
+    ensureAssigneesOnce,
+  }));
+
+  await jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
+    postOnce,
+    collapseBotCommentsByPrefix,
+  }));
+
+  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+    loadTemplate,
+    parseForm,
+  }));
+
+  await jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
+    validateRequestIssue,
+    runApprovalHook,
+  }));
+
+  await jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
+    calcSnapshotHash,
+    extractHashFromPrBody,
+    findOpenIssuePrs,
+  }));
+
+  await jest.unstable_mockModule('../src/handlers/request/pr/create.js', () => ({
+    createRequestPr,
+  }));
+
+  await jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
+    tryMergeIfGreen,
+  }));
+
+  await jest.unstable_mockModule('../src/config.js', () => ({
+    DEFAULT_CONFIG: DEFAULT_CONFIG_MOCK,
+    loadStaticConfig,
+  }));
+
+  await jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
+    getDocLinksFromConfig,
+  }));
+
   ({ default: requestHandler } = await import('../src/handlers/request/index.js'));
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  for (const mock of [
+    setStateLabel,
+    ensureAssigneesOnce,
+    postOnce,
+    collapseBotCommentsByPrefix,
+    loadTemplate,
+    parseForm,
+    validateRequestIssue,
+    runApprovalHook,
+    calcSnapshotHash,
+    extractHashFromPrBody,
+    findOpenIssuePrs,
+    createRequestPr,
+    tryMergeIfGreen,
+    loadStaticConfig,
+    getDocLinksFromConfig,
+  ]) {
+    mock.mockReset();
+  }
 
   loadStaticConfig.mockResolvedValue({
     config: DEFAULT_CONFIG_MOCK,
@@ -355,6 +376,7 @@ beforeEach(() => {
     template: DEFAULT_TEMPLATE,
   });
 
+  runApprovalHook.mockResolvedValue(false);
   calcSnapshotHash.mockReturnValue('hash1');
   extractHashFromPrBody.mockReturnValue('hash1');
   findOpenIssuePrs.mockResolvedValue([]);
@@ -1176,5 +1198,94 @@ describe('request-orchestrator additional coverage', () => {
 
     expect(postOnce).toHaveBeenCalled();
     expect(setStateLabel).toHaveBeenCalled();
+  });
+  test('issues.opened: detected issues comment includes machine readable metadata', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const issue: Issue = {
+      number: 21,
+      title: 'Request',
+      body: '### Namespace\nsap.bad',
+      state: 'open',
+      labels: [],
+      user: { login: 'author' },
+    };
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: ['bad request'],
+      errorsFormattedSingle: '### Name\n- Name MUST match the expected namespace format.',
+      errorsFormatted: '### Name\n- Name MUST match the expected namespace format.',
+      validationIssues: [{ path: 'name', message: 'Vendor is incorrect because XYZ' }],
+      namespace: 'sap.bad',
+      nsType: 'system',
+      template: DEFAULT_TEMPLATE,
+    });
+
+    const ctx = mkCtx({
+      name: 'issues.opened',
+      config: DEFAULT_CONFIG_MOCK,
+      payload: { action: 'opened', issue },
+      issueNumber: 21,
+    });
+
+    await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
+
+    const body = String(postOnce.mock.calls[0]?.[2] ?? '');
+    expect(body).toContain('<summary>Show as JSON (Robots Friendly)</summary>');
+    expect(body).toContain('"field": "name"');
+    expect(body).toContain('"message": "Vendor is incorrect because XYZ"');
+  });
+  test('issues.opened: direct PR without snapshot hash is not closed as outdated and approved flow keeps existing PR', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const config: StaticConfig = {
+      requests: {},
+      workflow: {
+        labels: {
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: [],
+      },
+    };
+
+    const directPr: PullRequest = {
+      number: 88,
+      body: 'source: #22',
+      head: { sha: 'sha-direct', ref: 'manual-pr' },
+    };
+
+    findOpenIssuePrs.mockResolvedValue([directPr]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    const issue: Issue = {
+      number: 22,
+      title: 'Request',
+      body: '### Namespace\nsap.agt',
+      state: 'open',
+      labels: [],
+      user: { login: 'author' },
+    };
+
+    const octokit = mkOctokit();
+
+    const ctx = mkCtx({
+      name: 'issues.opened',
+      config,
+      octokit,
+      payload: { action: 'opened', issue },
+      issueNumber: 22,
+    });
+
+    await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
+
+    expect(octokit.pulls.update).not.toHaveBeenCalled();
+    expect(octokit.git.deleteRef).not.toHaveBeenCalled();
+    expect(createRequestPr).not.toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain('PR already open: #88');
   });
 });

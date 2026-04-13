@@ -1,7 +1,10 @@
 import { setStateLabel as setStateLabelRaw, ensureAssigneesOnce as ensureAssigneesOnceRaw } from './state.js';
 import { postOnce as postOnceRaw, collapseBotCommentsByPrefix as collapseBotCommentsByPrefixRaw } from './comments.js';
 import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './template.js';
-import { validateRequestIssue as validateRequestIssueRaw } from './validation/run.js';
+import {
+  validateRequestIssue as validateRequestIssueRaw,
+  runApprovalHook as runApprovalHookRaw,
+} from './validation/run.js';
 import {
   calcSnapshotHash as calcSnapshotHashRaw,
   extractHashFromPrBody as extractHashFromPRBodyRaw,
@@ -91,8 +94,16 @@ type CollapseBotCommentsByPrefixOptions = {
 
 type PullRequestLike = {
   number: number;
+  title?: string | null;
   body?: string | null;
+  state?: string | null;
+  user?: UserLike | null;
   head: { ref: string; sha: string };
+};
+
+type PullRequestFileLike = {
+  filename?: string | null;
+  status?: string | null;
 };
 
 type CheckRunPullRequestRef = { number?: number | null };
@@ -117,6 +128,7 @@ type ValidateRequestIssueResult = {
   errorsGrouped?: unknown;
   errorsFormatted: string;
   errorsFormattedSingle: string;
+  validationIssues?: { message: string; path: string }[];
   formData?: FormData;
   template?: TemplateLike;
   namespace: string;
@@ -133,6 +145,144 @@ type EffectiveConstants = {
   approverUsernames: string[];
   approverPoolUsernames: string[];
 };
+
+type MachineReadableIssue = Readonly<{
+  field: string;
+  message: string;
+  filePath?: string;
+}>;
+
+function normalizeMachineReadableIssues(value: unknown): MachineReadableIssue[] {
+  const items = Array.isArray(value) ? value : [];
+  const out: MachineReadableIssue[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    if (!isPlainObject(item)) continue;
+
+    const message = toStringTrim(item['message']);
+    const field = toStringTrim(item['field'] ?? item['path']) || 'details';
+    const filePath = toStringTrim(item['filePath']);
+
+    if (!message) continue;
+
+    const key = `${field}\u0000${filePath}\u0000${message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      field,
+      message,
+      ...(filePath ? { filePath } : {}),
+    });
+  }
+
+  return out;
+}
+
+function buildMachineReadableMetadataBlock(issues: MachineReadableIssue[]): string {
+  const normalized = normalizeMachineReadableIssues(issues);
+  if (!normalized.length) return '';
+
+  return `
+
+<details>
+<summary>Show as JSON (Robots Friendly)</summary>
+
+\`\`\`json
+${JSON.stringify(normalized, null, 2)}
+\`\`\`
+</details>`;
+}
+
+function buildDetectedIssuesBody(message: string, issues: MachineReadableIssue[] = []): string {
+  return `## Detected issues
+
+${message}${buildMachineReadableMetadataBlock(issues)}`;
+}
+
+function singleMachineReadableIssue(field: string, message: string, filePath = ''): MachineReadableIssue[] {
+  const normalizedMessage = toStringTrim(message);
+  const normalizedField = toStringTrim(field) || 'details';
+  const normalizedFilePath = toStringTrim(filePath);
+
+  return normalizedMessage
+    ? [
+        {
+          field: normalizedField,
+          message: normalizedMessage,
+          ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
+        },
+      ]
+    : [];
+}
+
+function buildRegistryValidationMachineReadableIssues(filePath: string, messages: string[]): MachineReadableIssue[] {
+  const out: MachineReadableIssue[] = [];
+  const normalizedFilePath = toStringTrim(filePath);
+
+  for (const raw of messages || []) {
+    const message = normalizeMsg(raw);
+    if (!message) continue;
+
+    const field = extractFieldFromMsg(raw) || 'details';
+    out.push({
+      field,
+      message,
+      ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
+    });
+  }
+
+  return normalizeMachineReadableIssues(out);
+}
+
+function normalizeApprovalHookErrorsForComment(decision: ApprovalDecision): MachineReadableIssue[] {
+  const raw = Array.isArray(decision.errors) ? decision.errors : [];
+  const mapped = raw.map((entry) => ({
+    field: toStringTrim(entry?.field) || 'details',
+    message: toStringTrim(entry?.message),
+  }));
+
+  const normalized = normalizeMachineReadableIssues(mapped);
+  if (normalized.length) return normalized;
+
+  const fallbackMessage =
+    toStringTrim(decision.message) || toStringTrim(decision.reason) || toStringTrim(decision.comment);
+  const fallbackField = toStringTrim(decision.path) || 'details';
+
+  return fallbackMessage ? [{ field: fallbackField, message: fallbackMessage }] : [];
+}
+
+function buildApprovalHookIssueList(issues: MachineReadableIssue[]): string {
+  const normalized = normalizeMachineReadableIssues(issues);
+  if (!normalized.length) return '';
+
+  const grouped = new Map<string, string[]>();
+
+  for (const issue of normalized) {
+    const key = toStringTrim(issue.field) || 'details';
+    const arr = grouped.get(key) ?? [];
+    if (!arr.includes(issue.message)) arr.push(issue.message);
+    grouped.set(key, arr);
+  }
+
+  const keys = Array.from(grouped.keys()).sort((a, b) => {
+    if (a === 'details') return 1;
+    if (b === 'details') return -1;
+    return a.localeCompare(b);
+  });
+
+  const lines: string[] = [];
+  for (const key of keys) {
+    lines.push(`### ${toSectionTitle(key)}`);
+    for (const msg of grouped.get(key) ?? []) {
+      lines.push(`- ${msg}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -642,7 +792,6 @@ function buildRegistryValidationPrCommentBody(filePath: string, messages: string
   lines.push(`## Detected issues: ${filePath}`);
   lines.push('');
 
-  // group by field
   const grouped = new Map<string, string[]>();
 
   for (const raw of messages) {
@@ -651,12 +800,11 @@ function buildRegistryValidationPrCommentBody(filePath: string, messages: string
     if (!msg) continue;
 
     const arr = grouped.get(field) ?? [];
-    if (!arr.includes(msg)) arr.push(msg); // dedupe within section
+    if (!arr.includes(msg)) arr.push(msg);
     grouped.set(field, arr);
   }
 
   const keys = Array.from(grouped.keys()).sort((a, b) => {
-    // put "details" last
     if (a === 'details') return 1;
     if (b === 'details') return -1;
     return a.localeCompare(b);
@@ -670,7 +818,12 @@ function buildRegistryValidationPrCommentBody(filePath: string, messages: string
     lines.push('');
   }
 
-  return lines.join('\n').trimEnd();
+  const body = lines.join('\n').trimEnd();
+  const machineReadable = buildRegistryValidationMachineReadableIssues(filePath, messages);
+
+  return `${body}
+
+${buildMachineReadableMetadataBlock(machineReadable)}`;
 }
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -723,7 +876,7 @@ function normalizeApprovalCommandToken(value: unknown): string {
   const trailingTrimChars = new Set(['"', "'", '`', ')', ']', '}', '>', '.', ',', '!', '?', ';', ':']);
 
   while (s && leadingTrimChars.has(s[0])) s = s.slice(1).trim();
-  while (s && trailingTrimChars.has(s[s.length - 1])) s = s.slice(0, -1).trim();
+  while (s && trailingTrimChars.has(s.at(-1) || '')) s = s.slice(0, -1).trim();
 
   return s;
 }
@@ -1012,6 +1165,32 @@ type ValidateRequestIssueFn = (
   options?: { template?: TemplateLike; formData?: FormData }
 ) => Promise<ValidateRequestIssueResult>;
 
+type ApprovalDecision = {
+  status?: 'approved' | 'rejected' | 'unknown';
+  path?: string;
+  reason?: string;
+  comment?: string;
+  message?: string;
+  errors?: {
+    field?: string;
+    message?: string;
+  }[];
+};
+
+type ApprovalHandlingResult = 'approved' | 'rejected' | 'continue';
+
+type RunApprovalHookFn = (
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  args: {
+    requestType: string;
+    namespace?: string | null;
+    resourceName?: string | null;
+    formData: FormData;
+    issue: IssueLike;
+  }
+) => Promise<ApprovalDecision | boolean>;
+
 type CalcSnapshotHashFn = (formData: FormData, template: TemplateLike, rawBody: string) => string;
 
 type ExtractHashFromPrBodyFn = (body: string) => string;
@@ -1048,6 +1227,7 @@ const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as
 const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
 const parseForm = parseFormRaw as unknown as ParseFormFn;
 const validateRequestIssue = validateRequestIssueRaw as unknown as ValidateRequestIssueFn;
+const runApprovalHook = runApprovalHookRaw as unknown as RunApprovalHookFn;
 const calcSnapshotHash = calcSnapshotHashRaw as unknown as CalcSnapshotHashFn;
 const extractHashFromPrBody = extractHashFromPRBodyRaw as unknown as ExtractHashFromPrBodyFn;
 const findOpenIssuePrs = findOpenIssuePRsRaw as unknown as FindOpenIssuePrsFn;
@@ -1328,6 +1508,647 @@ function isAuthorizedApprover(
   return Boolean(commenterLc && commenterLc !== issueAuthorLc);
 }
 
+function buildApprovalDecisionJson(decision: ApprovalDecision): string {
+  const payload: Record<string, unknown> = {};
+  if (decision.status) payload.status = decision.status;
+  if (decision.path) payload.path = decision.path;
+  if (decision.reason) payload.reason = decision.reason;
+  if (decision.comment) payload.comment = decision.comment;
+  if (decision.message) payload.message = decision.message;
+  if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
+  return JSON.stringify(payload, null, 2);
+}
+
+function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
+  if (decision === true) return { status: 'approved' };
+  if (decision === false) return {};
+  return decision || {};
+}
+
+function buildApprovalUnknownBody(decision: ApprovalDecision): string {
+  const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
+  const leadBlock = lead ? `${lead}\n\n` : '';
+
+  return `## onApproval feedback
+
+${leadBlock}\`\`\`json
+${buildApprovalDecisionJson({ status: 'unknown', ...decision })}
+\`\`\`
+
+Continuing with the standard review flow.`;
+}
+
+function buildApprovalRejectedBody(decision: ApprovalDecision): string {
+  const issues = normalizeApprovalHookErrorsForComment(decision);
+  const groupedIssues = buildApprovalHookIssueList(issues);
+  const detectedIssuesBlock = groupedIssues ? buildDetectedIssuesBody(groupedIssues, issues) : '';
+
+  const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
+  const leadBlock = lead && !detectedIssuesBlock ? `${lead}\n\n` : '';
+  const issuesBlock = detectedIssuesBlock ? `${detectedIssuesBlock}\n\n` : '';
+
+  return `## onApproval rejected this request
+
+${leadBlock}${issuesBlock}Closing this request automatically.`;
+}
+
+async function applyApprovedRequestState(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  eff: EffectiveConstants
+): Promise<void> {
+  try {
+    if (eff.labelOnApproved) {
+      await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
+    }
+  } catch {
+    // ignore
+  }
+
+  await removeReviewPendingLabelsAfterApproval(context, params, eff);
+
+  try {
+    const labelsAfter = await fetchIssueLabels(context, params);
+    const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+    if (labelsMatching(labelsAfter, approvedLabel).length) {
+      await removeProgressStatusLabels(context, params, labelsAfter);
+      await removeRejectedStatusLabel(context, params, labelsAfter);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function createAutomatedApprovalReview(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision
+): Promise<boolean> {
+  const body =
+    toStringTrim(decision.comment) || toStringTrim(decision.message) || 'Approved automatically by onApproval hook.';
+
+  try {
+    await (
+      context.octokit.pulls as unknown as {
+        createReview: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          event: 'APPROVE';
+          body: string;
+        }) => Promise<unknown>;
+      }
+    ).createReview({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: pr.number,
+      event: 'APPROVE',
+      body,
+    });
+
+    return true;
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      { err: e instanceof Error ? e.message : String(e), prNumber: pr.number },
+      'failed to create automated PR approval review'
+    );
+
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      `## onApproval matched, but automatic PR approval failed
+
+${body}
+
+The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
+      { minimizeTag: 'nsreq:on-approval:approve-failed' }
+    );
+
+    return false;
+  }
+}
+
+function normalizeRepoPath(path: unknown): string {
+  return toStringTrim(path)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/{2,}/g, '/');
+}
+
+function isYamlPath(path: string): boolean {
+  const p = path.toLowerCase();
+  return p.endsWith('.yaml') || p.endsWith('.yml');
+}
+
+function normalizeTypeToken(value: unknown): string {
+  return toStringTrim(value)
+    .replace(/[\s_-]/g, '')
+    .toLowerCase();
+}
+
+function mapRegistryDocTypeToRequestType(value: unknown): string {
+  const type = normalizeTypeToken(value);
+
+  if (type === 'system') return 'systemNamespace';
+  if (type === 'authority') return 'authorityNamespace';
+  if (type === 'subcontext') return 'subContextNamespace';
+  if (type === 'product') return 'product';
+  if (type === 'vendor') return 'vendor';
+
+  return '';
+}
+
+function matchRequestTypesForFile(context: BotContext<RequestEvents>, filePath: string): string[] {
+  const fp = normalizeRepoPath(filePath);
+  const cfg = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
+  const matches: string[] = [];
+
+  for (const [requestType, entry] of Object.entries(reqs)) {
+    if (!isPlainObject(entry)) continue;
+
+    const folder = normalizeRepoPath(entry['folderName']);
+    if (!folder) continue;
+
+    if (fp === folder || fp.startsWith(`${folder}/`)) {
+      matches.push(requestType);
+    }
+  }
+
+  return matches;
+}
+
+function pickRequestTypeForChangedResource(
+  context: BotContext<RequestEvents>,
+  filePath: string,
+  doc: Record<string, unknown>
+): string {
+  const candidates = matchRequestTypesForFile(context, filePath);
+  if (candidates.length === 0) return '';
+  if (candidates.length === 1) return candidates[0];
+
+  const byDocType = mapRegistryDocTypeToRequestType(doc['type']);
+  if (byDocType && candidates.includes(byDocType)) return byDocType;
+
+  return '';
+}
+
+function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
+  const out: FormData = {};
+
+  const name = toStringTrim(doc['name']);
+  if (name) {
+    out.name = name;
+    out.identifier = name;
+    out.namespace = name;
+  }
+
+  const description = toStringTrim(doc['description']);
+  if (description) out.description = description;
+
+  const title = toStringTrim(doc['title']);
+  if (title) out.title = title;
+
+  const vendor = toStringTrim(doc['vendor']);
+  if (vendor) out.vendor = vendor;
+
+  const contacts = Array.isArray(doc['contact'])
+    ? doc['contact']
+        .map((v) => toStringTrim(v))
+        .filter(Boolean)
+        .join('\n')
+    : toStringTrim(doc['contact']);
+
+  if (contacts) out.contact = contacts;
+
+  return out;
+}
+
+async function listChangedYamlFilesForPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<string[]> {
+  const out: string[] = [];
+  let page = 1;
+
+  while (true) {
+    const res = await (
+      context.octokit.pulls as unknown as {
+        listFiles: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data?: PullRequestFileLike[] }>;
+      }
+    ).listFiles({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: prNumber,
+      per_page: 100,
+      page,
+    });
+
+    const files = Array.isArray(res?.data) ? res.data : [];
+    if (!files.length) break;
+
+    for (const file of files) {
+      const filename = normalizeRepoPath(file?.filename);
+      const status = toStringTrim(file?.status).toLowerCase();
+
+      if (!filename) continue;
+      if (!isYamlPath(filename)) continue;
+      if (status === 'removed') continue;
+
+      out.push(filename);
+    }
+
+    if (files.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+
+  return Array.from(new Set(out));
+}
+
+async function readRepoFileTextAtRef(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  path: string,
+  ref: string
+): Promise<string | null> {
+  const p = normalizeRepoPath(path);
+  const branchRef = toStringTrim(ref);
+  if (!p || !branchRef) return null;
+
+  try {
+    const res = await (
+      context.octokit.repos as unknown as {
+        getContent: (args: { owner: string; repo: string; path: string; ref?: string }) => Promise<{ data?: unknown }>;
+      }
+    ).getContent({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      path: p,
+      ref: branchRef,
+    });
+
+    const data = (res as { data?: unknown }).data;
+    if (Array.isArray(data) || !isRepoContentFile(data)) return null;
+
+    const enc = typeof data.encoding === 'string' ? data.encoding : 'base64';
+    return Buffer.from(String(data.content || ''), enc as BufferEncoding).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+async function evaluateDirectPrOnApproval(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<ApprovalDecision> {
+  const changedFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+  if (!changedFiles.length) return {};
+
+  let sawApproved = false;
+  let sawUnknown = false;
+  let approvedComment = '';
+
+  for (const filePath of changedFiles) {
+    const raw = await readRepoFileTextAtRef(context, repoInfo, filePath, pr.head.ref);
+    if (!raw) {
+      sawUnknown = true;
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = YAML.parse(raw);
+    } catch {
+      sawUnknown = true;
+      continue;
+    }
+
+    if (!isPlainObject(parsed)) {
+      sawUnknown = true;
+      continue;
+    }
+
+    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
+    if (!requestType) {
+      sawUnknown = true;
+      continue;
+    }
+
+    const resourceName = toStringTrim(parsed['name']);
+    if (!resourceName) {
+      sawUnknown = true;
+      continue;
+    }
+
+    const formData = buildFormDataFromRegistryDoc(parsed);
+
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(context, repoInfo, {
+        requestType,
+        namespace: resourceName,
+        resourceName,
+        formData,
+        issue: {
+          number: pr.number,
+          title: pr.title,
+          body: pr.body,
+          state: pr.state,
+          user: pr.user,
+          labels: [],
+        },
+      })
+    );
+
+    if (decision.status === 'rejected') {
+      return decision;
+    }
+
+    if (decision.status === 'approved') {
+      sawApproved = true;
+      if (!approvedComment) approvedComment = toStringTrim(decision.comment);
+      continue;
+    }
+
+    sawUnknown = true;
+  }
+
+  if (sawApproved && !sawUnknown) {
+    return {
+      status: 'approved',
+      ...(approvedComment ? { comment: approvedComment } : {}),
+    };
+  }
+
+  return {};
+}
+
+async function maybeHandleStandaloneDirectPrApproval(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<ApprovalHandlingResult> {
+  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr);
+
+  if (decision.status === 'approved') {
+    const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+    return approved ? 'approved' : 'continue';
+  }
+
+  if (decision.status === 'rejected') {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildApprovalRejectedBody(decision),
+      { minimizeTag: 'nsreq:on-approval:rejected' }
+    );
+
+    try {
+      await context.octokit.pulls.update({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        pull_number: pr.number,
+        state: 'closed',
+      });
+    } catch {
+      // ignore
+    }
+
+    return 'rejected';
+  }
+
+  return 'continue';
+}
+
+async function closeLinkedIssuePrs(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  issueNumber: number
+): Promise<number[]> {
+  const prs = await findOpenIssuePrs(context, repoInfo, issueNumber);
+  const closed: number[] = [];
+
+  for (const pr of prs) {
+    try {
+      await context.octokit.pulls.update({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        pull_number: pr.number,
+        state: 'closed',
+      });
+      closed.push(pr.number);
+    } catch {
+      // ignore
+    }
+  }
+
+  return closed;
+}
+
+async function rejectRequestFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  decision: ApprovalDecision,
+  options: { closeLinkedPrs?: boolean; minimizeTag?: string } = {}
+): Promise<void> {
+  const repoInfo = { owner: params.owner, repo: params.repo };
+
+  let closedPrs: number[] = [];
+  if (options.closeLinkedPrs) {
+    try {
+      closedPrs = await closeLinkedIssuePrs(context, repoInfo, issue.number);
+    } catch {
+      // ignore
+    }
+  }
+
+  const closedPrSection = closedPrs.length
+    ? `\n\nClosed linked PR(s): ${closedPrs.map((n) => `#${n}`).join(', ')}.`
+    : '';
+
+  await postOnce(context, params, `${buildApprovalRejectedBody(decision)}${closedPrSection}`, {
+    minimizeTag: options.minimizeTag || 'nsreq:on-approval:rejected',
+  });
+
+  try {
+    await context.octokit.issues.update({ ...params, state: 'closed' });
+    issue.state = 'closed';
+  } catch {
+    // ignore
+  }
+}
+
+async function finalizeApprovedRequest(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  approvalPrefix: string,
+  approvalComment = ''
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+
+  const resourceName = extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
+  if (!resourceName) {
+    await postOnce(
+      context,
+      params,
+      'Cannot create PR: missing resource name in the form (expected identifier, product-id or namespace).',
+      { minimizeTag: 'nsreq:config' }
+    );
+    return;
+  }
+
+  const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
+  if (existing.length) {
+    await applyApprovedRequestState(context, params, eff);
+
+    const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
+    const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
+
+    await postOnce(context, params, body, {
+      minimizeTag: 'nsreq:approval-info',
+    });
+    return;
+  }
+
+  try {
+    const pr = await createRequestPr(context, { owner: params.owner, repo: params.repo }, issue, parsedFormData, {
+      template,
+    });
+
+    await applyApprovedRequestState(context, params, eff);
+
+    const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
+    const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
+
+    await postOnce(context, params, body, {
+      minimizeTag: 'nsreq:approval-info',
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+
+    await postOnce(
+      context,
+      params,
+      /^Failed to create PR automatically:/i.test(msg) ? msg : `Failed to create PR automatically: ${msg}`,
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+  }
+}
+
+async function maybeHandleApprovalDecision(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType: string,
+  namespace: string
+): Promise<ApprovalHandlingResult> {
+  const decision = normalizeApprovalDecision(
+    await runApprovalHook(
+      context,
+      { owner: params.owner, repo: params.repo },
+      {
+        requestType,
+        namespace,
+        resourceName: extractResourceNameFromForm(parsedFormData, template),
+        formData: parsedFormData,
+        issue,
+      }
+    )
+  );
+
+  if (decision.status === 'approved') {
+    await finalizeApprovedRequest(context, params, issue, template, parsedFormData, '', toStringTrim(decision.comment));
+    return 'approved';
+  }
+
+  if (decision.status === 'rejected') {
+    await rejectRequestFromApprovalHook(context, params, issue, decision, {
+      closeLinkedPrs: true,
+    });
+    return 'rejected';
+  }
+
+  if (decision.status === 'unknown') {
+    await postOnce(context, params, buildApprovalUnknownBody(decision), {
+      minimizeTag: 'nsreq:on-approval:unknown',
+    });
+  }
+
+  return 'continue';
+}
+
+async function maybeHandleDirectPrApprovalForMerge(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  issueParams: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  pr: PullRequestLike
+): Promise<ApprovalHandlingResult> {
+  const decision = normalizeApprovalDecision(
+    await runApprovalHook(context, repoInfo, {
+      requestType: resolveEffectiveRequestType(template, parsedFormData),
+      namespace: toStringTrim(parsedFormData['namespace'] || parsedFormData['identifier']),
+      resourceName: extractResourceNameFromForm(parsedFormData, template),
+      formData: parsedFormData,
+      issue,
+    })
+  );
+
+  if (decision.status === 'approved') {
+    const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+    if (!approved) return 'continue';
+
+    await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
+    return 'approved';
+  }
+
+  if (decision.status === 'rejected') {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildApprovalRejectedBody(decision),
+      { minimizeTag: 'nsreq:on-approval:rejected' }
+    );
+
+    await rejectRequestFromApprovalHook(context, issueParams, issue, decision, {
+      closeLinkedPrs: true,
+      minimizeTag: 'nsreq:on-approval:issue-rejected',
+    });
+
+    return 'rejected';
+  }
+
+  if (decision.status === 'unknown') {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildApprovalUnknownBody(decision),
+      { minimizeTag: 'nsreq:on-approval:unknown' }
+    );
+  }
+
+  return 'continue';
+}
+
 function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {
   const who = normalizeLogin(login).toLowerCase();
   if (!who) return false;
@@ -1424,9 +2245,14 @@ async function processIssueEvent(
     const message =
       errorsFormattedSingle?.trim() || errorsFormatted?.trim() || listFallback || 'Unknown validation error.';
 
-    await postOnce(context, params, `## Detected issues\n\n${message}`, {
-      minimizeTag: 'nsreq:validation',
-    });
+    await postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(message, normalizeMachineReadableIssues(result.validationIssues || [])),
+      {
+        minimizeTag: 'nsreq:validation',
+      }
+    );
     await setStateLabel(context, params, issue, 'author');
     return;
   }
@@ -1441,9 +2267,14 @@ async function processIssueEvent(
     );
 
     if (parentError) {
-      await postOnce(context, params, `## Detected issues\n\n- ${parentError}`, {
-        minimizeTag: 'nsreq:validation',
-      });
+      await postOnce(
+        context,
+        params,
+        buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
+        {
+          minimizeTag: 'nsreq:validation',
+        }
+      );
       await setStateLabel(context, params, issue, 'author');
       return;
     }
@@ -1473,6 +2304,18 @@ async function processIssueEvent(
 
   if (gated) return;
 
+  const approvalOutcome = await maybeHandleApprovalDecision(
+    context,
+    params,
+    issue,
+    result.template || template,
+    parsedFormData,
+    effectiveRequestType,
+    validatedNamespace
+  );
+
+  if (approvalOutcome !== 'continue') return;
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
@@ -1480,7 +2323,7 @@ async function processIssueEvent(
 }
 
 async function handleApprovalComment(
-  context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+  context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
   template: TemplateLike,
@@ -1531,9 +2374,20 @@ async function handleApprovalComment(
       listFallback ||
       'Unknown validation error.';
 
-    await postOnce(context, params, `## Detected issues\n\n${message}`, {
-      minimizeTag: 'nsreq:validation',
-    });
+    const normalizedIssues = (reval.validationIssues || []).map((issue) => ({
+      field: toStringTrim(issue.path) || 'details',
+      message: toStringTrim(issue.message),
+      ...(issue.path ? { filePath: toStringTrim(issue.path) } : {}),
+    }));
+
+    await postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(message, normalizeMachineReadableIssues(normalizedIssues)),
+      {
+        minimizeTag: 'nsreq:validation',
+      }
+    );
     await setStateLabel(context, params, issue, 'author');
     return;
   }
@@ -1548,9 +2402,14 @@ async function handleApprovalComment(
     );
 
     if (parentError) {
-      await postOnce(context, params, `## Detected issues\n\n- ${parentError}`, {
-        minimizeTag: 'nsreq:validation',
-      });
+      await postOnce(
+        context,
+        params,
+        buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
+        {
+          minimizeTag: 'nsreq:validation',
+        }
+      );
       await setStateLabel(context, params, issue, 'author');
       return;
     }
@@ -1563,67 +2422,12 @@ async function handleApprovalComment(
     );
   }
 
-  const resourceName = extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
-  if (!resourceName) {
-    await postOnce(
-      context,
-      params,
-      'Cannot create PR: missing resource name in the form (expected identifier, product-id or namespace).',
-      { minimizeTag: 'nsreq:config' }
-    );
-    return;
-  }
-
-  const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
-  if (existing.length) {
-    await postOnce(context, params, `Approved by @${commenter}. PR already open: #${existing[0].number}`, {
-      minimizeTag: 'nsreq:approval-info',
-    });
-    return;
-  }
-
-  try {
-    const pr = await createRequestPr(context, { owner: params.owner, repo: params.repo }, issue, parsedFormData, {
-      template,
-    });
-
-    try {
-      if (eff.labelOnApproved) {
-        await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
-      }
-    } catch {
-      // ignore
-    }
-
-    await removeReviewPendingLabelsAfterApproval(context, params, eff);
-
-    try {
-      const labelsAfter = await fetchIssueLabels(context, params);
-      const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-      if (labelsMatching(labelsAfter, approvedLabel).length) {
-        await removeProgressStatusLabels(context, params, labelsAfter);
-        await removeRejectedStatusLabel(context, params, labelsAfter);
-      }
-    } catch {
-      // ignore
-    }
-
-    await postOnce(context, params, `Approved by @${commenter}. Opened PR: #${pr.number}`, {
-      minimizeTag: 'nsreq:approval-info',
-    });
-  } catch (e: unknown) {
-    await postOnce(
-      context,
-      params,
-      `Failed to create PR automatically: ${e instanceof Error ? e.message : String(e)}`,
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-  }
+  await finalizeApprovedRequest(context, params, issue, template, parsedFormData, `Approved by @${commenter}`);
 }
 
 async function handleAuthorUpdateComment(
   app: Probot,
-  context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+  context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
   template: TemplateLike,
@@ -1656,9 +2460,14 @@ async function handleAuthorUpdateComment(
           namespace
         );
         if (parentError) {
-          await postOnce(context, params, `## Detected issues\n\n- ${parentError}`, {
-            minimizeTag: 'nsreq:validation',
-          });
+          await postOnce(
+            context,
+            params,
+            buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
+            {
+              minimizeTag: 'nsreq:validation',
+            }
+          );
           await setStateLabel(context, params, issue, 'author');
           return;
         }
@@ -1690,9 +2499,21 @@ async function handleAuthorUpdateComment(
 
       if (gated) return;
 
+      const approvalOutcome = await maybeHandleApprovalDecision(
+        context,
+        params,
+        issue,
+        tpl,
+        parsedAfterUpdate,
+        effectiveRequestType,
+        namespace
+      );
+
+      if (approvalOutcome !== 'continue') return;
+
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
-        requestType: toStringTrim(tpl?._meta?.requestType),
+        requestType: effectiveRequestType,
       });
       return;
     }
@@ -1700,9 +2521,23 @@ async function handleAuthorUpdateComment(
     const listFallback = (revalErrors || []).map((e) => `- ${e}`).join('\n');
     const message =
       revalErrorsFormattedSingle?.trim() || revalErrorsFormatted?.trim() || listFallback || 'Unknown validation error.';
-    await postOnce(context, params, `## Detected issues\n\n${message}`, {
-      minimizeTag: 'nsreq:validation',
-    });
+    await postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(
+        message,
+        normalizeMachineReadableIssues(
+          (reval.validationIssues || []).map((validationIssue) => ({
+            field: toStringTrim(validationIssue.path) || 'details',
+            message: toStringTrim(validationIssue.message),
+            ...(validationIssue.path ? { filePath: toStringTrim(validationIssue.path) } : {}),
+          }))
+        )
+      ),
+      {
+        minimizeTag: 'nsreq:validation',
+      }
+    );
     await setStateLabel(context, params, issue, 'author');
   } catch (e: unknown) {
     (app.log || console).warn?.(`Revalidation failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1990,7 +2825,7 @@ Please confirm by commenting \`Approved\`. After that, the bot will continue wit
 }
 
 async function handleParentOwnerApprovalIfNeeded(
-  context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+  context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
   template: TemplateLike,
@@ -2028,7 +2863,23 @@ ${mentions}`,
       reval.errorsFormatted?.trim() ||
       listFallback ||
       'Unknown validation error.';
-    await postOnce(context, params, `## Detected issues\n\n${message}`, { minimizeTag: 'nsreq:validation' });
+    await postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(
+        message,
+        normalizeMachineReadableIssues(
+          (reval.validationIssues || []).map((validationIssue) => ({
+            field: toStringTrim(validationIssue.path) || 'details',
+            message: toStringTrim(validationIssue.message),
+            ...(validationIssue.path ? { filePath: toStringTrim(validationIssue.path) } : {}),
+          }))
+        )
+      ),
+      {
+        minimizeTag: 'nsreq:validation',
+      }
+    );
     await setStateLabel(context, params, issue, 'author');
     return true;
   }
@@ -2047,6 +2898,18 @@ ${mentions}`,
     approvedBy: commenterLogin,
     approvedAt: new Date().toISOString(),
   });
+
+  const approvalOutcome = await maybeHandleApprovalDecision(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt,
+    reval.namespace
+  );
+
+  if (approvalOutcome !== 'continue') return true;
 
   await postOnce(context, params, `Parent namespace approved by @${commenterLogin}. Continuing with standard review.`, {
     minimizeTag: `${tagBase}:approved`,
@@ -2317,7 +3180,11 @@ async function closeOutdatedRequestPrs(
 
   for (const pr of prs) {
     const prHash = extractHashFromPrBody(toStringTrim(pr.body));
-    if (prHash && prHash === currentHash) continue;
+
+    // Direct/manual PRs without request snapshot hash must not be treated as outdated
+    if (!prHash) continue;
+    if (prHash === currentHash) continue;
+
     await closePr(pr.number, pr.head.ref);
     closed.push(pr.number);
   }
@@ -2893,7 +3760,20 @@ export default function requestHandler(app: Probot): void {
     for (const pr of candidates) {
       const body = String(pr.body || '');
       const m = /source:\s*#(\d+)/i.exec(body) ?? /issue\s*#(\d+)/i.exec(body);
-      if (!m) continue;
+
+      if (!m) {
+        const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, { owner, repo }, pr);
+        if (standaloneOutcome !== 'approved') continue;
+
+        await tryMergeIfGreen(context, {
+          owner,
+          repo,
+          prNumber: pr.number,
+          mergeMethod: 'squash',
+          prData: pr,
+        });
+        continue;
+      }
 
       const issueNumber = Number.parseInt(m[1], 10);
       const params: IssueParams = { owner, repo, issue_number: issueNumber };
@@ -2923,10 +3803,33 @@ export default function requestHandler(app: Probot): void {
       const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
       const prHash = extractHashFromPrBody(body);
 
-      if (!prHash || prHash !== currentHash) {
-        await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+      if (prHash) {
+        if (prHash !== currentHash) {
+          await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+          continue;
+        }
+
+        await tryMergeIfGreen(context, {
+          owner,
+          repo,
+          prNumber: pr.number,
+          mergeMethod: 'squash',
+          prData: pr,
+        });
         continue;
       }
+
+      const directPrOutcome = await maybeHandleDirectPrApprovalForMerge(
+        context,
+        { owner, repo },
+        params,
+        issue,
+        template,
+        parsedFormData,
+        pr
+      );
+
+      if (directPrOutcome !== 'approved') continue;
 
       await tryMergeIfGreen(context, {
         owner,

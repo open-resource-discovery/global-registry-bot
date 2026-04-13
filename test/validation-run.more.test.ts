@@ -521,7 +521,10 @@ describe('validation/run.ts extra coverage', () => {
       { template, formData: {} }
     );
 
-    expect(res.errors).toEqual(['Cannot resolve primary identifier from template']);
+    expect(res.errors).toEqual([
+      'Required field is missing in form: Foo',
+      'Cannot resolve primary identifier from template',
+    ]);
     expect(res.namespace).toBe('');
     expect(res.nsType).toBe('');
 
@@ -1858,6 +1861,248 @@ describe('validation/run.ts extra coverage', () => {
     );
 
     expect(res.errors.join('\n')).toMatch(/No schema configured/i);
+
+    restore();
+  });
+  it('runApprovalHook: descriptor hooks forward worker logs and normalize approval result', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        hooks: { allowedHosts: ['api.sap.com'] },
+      },
+      source: 'repo:cfg',
+      hooks: {
+        __type: 'registry-bot-hooks:esm',
+        __path: '.github/registry-bot/config.js',
+        __hash: 'h',
+        __code: 'export default {}',
+      },
+      hooksSource: 'repo:.github/registry-bot/config.js#h',
+    } as any);
+
+    mocks.runHookInWorker.mockResolvedValueOnce({
+      found: true,
+      value: { approved: true },
+      logs: [{ level: 'info', obj: { ok: 1 }, msg: 'worker-info' }],
+    } as any);
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const approved = await mod.runApprovalHook(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'systemNamespace',
+        namespace: 'sap.agt.foo',
+        formData: { namespace: 'sap.agt.foo' },
+        issue: {
+          number: 1,
+          title: 't',
+          body: 'b',
+          state: 'open',
+          labels: [{ name: 'needs-review' }],
+          user: { login: 'agent-fabric-serviceuser' },
+        },
+      }
+    );
+
+    expect(approved).toEqual({ status: 'approved' });
+    expect(mocks.runHookInWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fn: 'onApproval',
+        allowedHosts: ['api.sap.com'],
+        args: expect.objectContaining({
+          requestType: 'systemNamespace',
+          namespace: 'sap.agt.foo',
+          resourceName: 'sap.agt.foo',
+          issue: expect.objectContaining({
+            author: 'agent-fabric-serviceuser',
+            labels: ['needs-review'],
+          }),
+        }),
+      }),
+      expect.anything()
+    );
+    expect(ctx.log.info).toHaveBeenCalledWith({ ok: 1 }, 'worker-info');
+
+    restore();
+  });
+  it('runApprovalHook: legacy hook failures are swallowed and return false', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        hooks: { allowedHosts: ['api.sap.com'] },
+      },
+      source: 'repo:cfg',
+      hooks: {
+        onApproval: async () => {
+          throw new Error('boom');
+        },
+      },
+      hooksSource: 'mock-hooks.js',
+    } as any);
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const approved = await mod.runApprovalHook(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'systemNamespace',
+        namespace: 'sap.agt.foo',
+        formData: { namespace: 'sap.agt.foo' },
+        issue: {
+          number: 1,
+          title: 't',
+          body: 'b',
+          state: 'open',
+          labels: [],
+          user: { login: 'agent-fabric-serviceuser' },
+        },
+      }
+    );
+
+    expect(approved).toEqual({});
+    expect(ctx.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: 'boom' }),
+      'resource-bot hooks.onApproval failed'
+    );
+
+    restore();
+  });
+
+  it('runApprovalHook: legacy hook normalizes unknown and rejected decisions', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig
+      .mockResolvedValueOnce({
+        config: { hooks: { allowedHosts: ['api.sap.com'] } },
+        source: 'repo:cfg',
+        hooks: { onApproval: async () => 'unknown' },
+        hooksSource: 'mock-hooks.js',
+      } as any)
+      .mockResolvedValueOnce({
+        config: { hooks: { allowedHosts: ['api.sap.com'] } },
+        source: 'repo:cfg',
+        hooks: {
+          onApproval: async () => ({ status: 'rejected', path: 'namespace', reason: 'policy denied' }),
+        },
+        hooksSource: 'mock-hooks.js',
+      } as any);
+
+    const mkCtx = () => ({
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    });
+
+    const unknownDecision = await mod.runApprovalHook(
+      mkCtx() as any,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'systemNamespace',
+        namespace: 'sap.agt.foo',
+        formData: { namespace: 'sap.agt.foo' },
+        issue: { number: 1, title: 't', body: 'b', state: 'open', labels: [], user: { login: 'u' } },
+      }
+    );
+
+    const rejectedDecision = await mod.runApprovalHook(
+      mkCtx() as any,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'systemNamespace',
+        namespace: 'sap.agt.foo',
+        formData: { namespace: 'sap.agt.foo' },
+        issue: { number: 1, title: 't', body: 'b', state: 'open', labels: [], user: { login: 'u' } },
+      }
+    );
+
+    expect(unknownDecision).toEqual({ status: 'unknown' });
+    expect(rejectedDecision).toEqual({ status: 'rejected', path: 'namespace', reason: 'policy denied' });
+
+    restore();
+  });
+  it('validateRequestIssue: returns machine readable validation issues for hook and schema errors', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          product: { folderName: 'data', schema: '/schema.json', issueTemplate: 'x' },
+        },
+      },
+      source: 'repo:cfg',
+      hooks: {
+        onValidate: async () => [{ field: 'vendorId', message: 'Vendor is incorrect because XYZ' }],
+      },
+      hooksSource: 'mock-hooks.js',
+    } as any);
+
+    const schemaObj = {
+      type: 'object',
+      required: ['type', 'name', 'identifier', 'title'],
+      properties: {
+        type: { const: 'product' },
+        name: { type: 'string' },
+        identifier: { type: 'string' },
+        title: { type: 'string' },
+      },
+    };
+
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (path === 'schema.json') {
+        return {
+          data: {
+            content: Buffer.from(JSON.stringify(schemaObj), 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      const e: any = new Error('not found');
+      e.status = 404;
+      throw e;
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const template: any = {
+      body: [
+        { id: 'identifier', attributes: { label: 'Name' }, validations: { required: true } },
+        { id: 'title', attributes: { label: 'Title' }, validations: { required: true } },
+      ],
+      _meta: { requestType: 'product', schema: '/schema.json', root: 'data' },
+    };
+
+    const result = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      { template, formData: { identifier: 'PROD-1', title: 'Some Product' } }
+    );
+
+    expect(result.validationIssues).toEqual(
+      expect.arrayContaining([{ path: 'vendorId', message: 'Vendor is incorrect because XYZ' }])
+    );
 
     restore();
   });

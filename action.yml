@@ -37,7 +37,7 @@ runs:
   using: composite
   steps:
     - name: Setup Node
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
       with:
         node-version: ${{ inputs.node-version }}
         token: ${{ github.token }}
@@ -55,7 +55,7 @@ runs:
     - name: Detect human content on bot-created PRs
       id: pr_human_touch
       if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true }}
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
       with:
         result-encoding: string
         script: |
@@ -134,7 +134,7 @@ runs:
           )
         }}
       continue-on-error: true
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
       env:
         BOT_LOGIN: ${{ steps.pr_reviewers.outputs.bot_login }}
         SENDER_IS_BOT: ${{ steps.pr_reviewers.outputs.sender_is_bot }}
@@ -199,7 +199,7 @@ runs:
     - name: Check auto-approve eligibility
       id: auto_approve_gate
       if: ${{ inputs.auto-approve == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true && success() }}
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
       env:
         BOT_LOGIN: ${{ steps.pr_reviewers.outputs.bot_login }}
         SENDER_IS_BOT: ${{ steps.pr_reviewers.outputs.sender_is_bot }}

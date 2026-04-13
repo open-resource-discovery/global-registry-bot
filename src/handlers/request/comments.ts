@@ -148,7 +148,7 @@ function resolveCommentTarget(
   const repo = toStringTrim(params.repo ?? context.payload?.repository?.name);
   const issueNumber =
     typeof (params.issue_number ?? params.pull_number) === 'number'
-      ? (params.issue_number ?? params.pull_number)!
+      ? ((params.issue_number ?? params.pull_number) as number)
       : null;
 
   return { owner, repo, issueNumber };

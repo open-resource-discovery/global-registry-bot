@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { test, expect, beforeAll, beforeEach, jest } from '@jest/globals';
+import { beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
 
 process.env.DEBUG_NS = '0';
 
@@ -11,14 +11,19 @@ type CollapseBotCommentsByPrefix = (
   opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
 ) => Promise<void>;
 
+type SetStateLabelFn = (ctx: unknown, params: IssueParams, issue: unknown, state: string) => Promise<void>;
+type EnsureAssigneesOnceFn = (ctx: unknown, params: IssueParams, issue: unknown, assignees: string[]) => Promise<void>;
+type PostOnceFn = (ctx: unknown, params: IssueParams, body: string, options?: unknown) => Promise<void>;
+
 const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
-const setStateLabel = jest.fn(async (_ctx: any, _param1: any, _param2: any, _param3: any) => {});
-const ensureAssigneesOnce = jest.fn(async (_ctx: any, _param1: any, _param2: any, _param3: any) => {});
-const postOnce = jest.fn(async (..._args: any[]) => {});
+const setStateLabel = jest.fn<SetStateLabelFn>(async () => {});
+const ensureAssigneesOnce = jest.fn<EnsureAssigneesOnceFn>(async () => {});
+const postOnce = jest.fn<PostOnceFn>(async (..._args: Parameters<PostOnceFn>) => {});
 
 const loadTemplate = jest.fn(async () => ({}));
 const parseForm = jest.fn(() => ({}));
 const validateRequestIssue = jest.fn(async () => ({}));
+const runApprovalHook = jest.fn(async () => false);
 const calcSnapshotHash = jest.fn(() => 'h1');
 const extractHashFromPrBody = jest.fn(() => 'h1');
 const findOpenIssuePrs = jest.fn(async () => []);
@@ -141,6 +146,7 @@ beforeAll(async () => {
 
   await jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
     validateRequestIssue,
+    runApprovalHook,
   }));
 
   await jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
@@ -378,7 +384,7 @@ test('issues.opened: template load error -> posts config error and sets author s
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalled();
-  const body = postOnce.mock.calls[0][2] as string;
+  const body = postOnce.mock.calls[0][2];
   expect(body).toContain('Configuration error: unable to load request template');
 
   expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), 'author');
@@ -446,7 +452,7 @@ test('issues.opened: validation errors -> posts and sets author state', async ()
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalled();
-  const body = postOnce.mock.calls[0][2] as string;
+  const body = postOnce.mock.calls[0][2];
   expect(body).toContain('## Detected issues');
 
   expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), 'author');
@@ -503,7 +509,188 @@ test('issues.opened: success -> normalizes title and hands over with labels and 
   expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(expect.objectContaining({ name: 'approved-label' }));
 
   expect(postOnce).toHaveBeenCalled();
-  const body = postOnce.mock.calls[0][2] as string;
+  const body = postOnce.mock.calls[0][2];
   expect(body).toContain('### ✅ No issues detected');
   expect(body).toContain('<!-- nsreq:snapshot:h1 -->');
+});
+
+test('issues.opened: onApproval hook match auto-approves and skips review handover', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['cpa-user'],
+      labels: {
+        approvalRequested: ['needs-review'],
+        approvalSuccessful: ['Approved'],
+      },
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const issue = {
+    number: 16,
+    title: 'Request',
+    body: 'Body',
+    labels: [],
+    user: { login: 'author' },
+  };
+
+  const ctx = mkIssueContext({
+    action: 'opened',
+    issue,
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+  await handler(ctx);
+
+  expect(runApprovalHook).toHaveBeenCalled();
+  expect(createRequestPr).toHaveBeenCalled();
+  expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+
+  const body = postOnce.mock.calls[0][2];
+  expect(body).toContain('Opened PR: #10');
+  expect(body).not.toContain('Routing to an approver for review');
+});
+
+test('issues.opened: onApproval false keeps normal review handover unchanged', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['cpa-user'],
+      labels: {
+        global: ['registry-bot'],
+        approvalRequested: ['needs-review'],
+      },
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const issue = {
+    number: 17,
+    title: 'Request',
+    body: 'Body',
+    labels: [],
+    user: { login: 'author' },
+  };
+
+  const ctx = mkIssueContext({
+    action: 'opened',
+    issue,
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  runApprovalHook.mockResolvedValueOnce({} as any);
+
+  await handler(ctx);
+
+  expect(createRequestPr).not.toHaveBeenCalled();
+  expect(ensureAssigneesOnce).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), ['cpa-user']);
+
+  const body = postOnce.mock.calls[0][2];
+  expect(body).toContain('Routing to an approver for review');
+});
+
+test('issues.opened: onApproval rejected posts feedback and closes request', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['cpa-user'],
+      labels: {
+        approvalRequested: ['needs-review'],
+        approvalSuccessful: ['Approved'],
+      },
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const issue = {
+    number: 18,
+    title: 'Request',
+    body: 'Body',
+    labels: [],
+    user: { login: 'author' },
+  };
+
+  const ctx = mkIssueContext({
+    action: 'opened',
+    issue,
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  runApprovalHook.mockResolvedValueOnce({
+    status: 'rejected',
+    path: 'namespace',
+    reason: 'not eligible',
+  } as any);
+
+  await handler(ctx);
+
+  expect(createRequestPr).not.toHaveBeenCalled();
+  expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+    expect.objectContaining({ issue_number: 18, state: 'closed' })
+  );
+
+  const posted = postOnce.mock.calls.map((c: any[]) => String(c[2] ?? '')).join('\n');
+  expect(posted).toContain('onApproval rejected this request');
+  expect(posted).toContain('not eligible');
+  expect(posted).not.toContain('Routing to an approver for review');
+});
+
+test('issues.opened: onApproval unknown posts feedback and keeps normal review handover', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['cpa-user'],
+      labels: {
+        global: ['registry-bot'],
+        approvalRequested: ['needs-review'],
+      },
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const issue = {
+    number: 19,
+    title: 'Request',
+    body: 'Body',
+    labels: [],
+    user: { login: 'author' },
+  };
+
+  const ctx = mkIssueContext({
+    action: 'opened',
+    issue,
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  runApprovalHook.mockResolvedValueOnce({
+    status: 'unknown',
+    path: 'issue.author',
+    reason: 'manual review required',
+  } as any);
+
+  await handler(ctx);
+
+  expect(createRequestPr).not.toHaveBeenCalled();
+  expect(ensureAssigneesOnce).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), ['cpa-user']);
+
+  const bodies = postOnce.mock.calls.map((c: any[]) => String(c[2] ?? ''));
+  expect(bodies.some((b) => b.includes('## onApproval feedback'))).toBe(true);
+  expect(bodies.some((b) => b.includes('manual review required'))).toBe(true);
+  expect(bodies.some((b) => b.includes('Routing to an approver for review'))).toBe(true);
 });
