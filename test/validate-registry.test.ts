@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import type { ErrorObject } from 'ajv';
 import YAML from 'yaml';
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
@@ -1044,5 +1045,350 @@ describe('validate-registry', () => {
 
     expect(res.ok).toBe(true);
     expect(res.errors).toEqual([]);
+  });
+
+  it('covers helper edge cases for mode, config parsing and repo metadata', async () => {
+    expect(TEST_UTILS.normalizeRepoPath(undefined as unknown as string)).toBe('');
+
+    setEnv({ REGISTRY_VALIDATE_MODE: '', GITHUB_EVENT_NAME: 'pull_request_target', GITHUB_REPOSITORY: 'acme/demo' });
+    expect(TEST_UTILS.pickMode()).toBe('pr');
+    expect(TEST_UTILS.readRepoInfoFromEnv()).toEqual({ owner: 'acme', repo: 'demo' });
+
+    setEnv({ REGISTRY_VALIDATE_MODE: '', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: undefined });
+    expect(TEST_UTILS.pickMode()).toBe('main');
+    expect(TEST_UTILS.readRepoInfoFromEnv()).toEqual({ owner: 'local', repo: 'repo' });
+
+    expect(TEST_UTILS.readDocType('not-an-object')).toBe('');
+    expect(TEST_UTILS.extractSchemaTypeConst(null)).toBe('');
+    expect(TEST_UTILS.extractSchemaTypeConst({ properties: { type: 'system' } })).toBe('');
+    expect(TEST_UTILS.extractSchemaTypeConst({ properties: { type: { enum: ['a', 'b'] } } })).toBe('');
+
+    await expect(TEST_UTILS.loadValidationConfig()).rejects.toThrow(
+      'Missing registry-bot config: expected .github/registry-bot/config.yaml or .yml'
+    );
+
+    await writeText(path.join(tmpDir, '.github/registry-bot/config.yaml'), '- just\n- a\n- list\n');
+    await expect(TEST_UTILS.loadValidationConfig()).rejects.toThrow('Invalid YAML in .github/registry-bot/config.yaml');
+
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({
+        requests: {
+          skipMe: 'not-an-object',
+          alreadyRooted: {
+            folderName: './data/namespaces/',
+            schema: '.github/registry-bot/request-schemas/system.schema.json',
+          },
+          prefixedFromBaseDir: {
+            folderName: '/data/products/',
+            schema: 'request-schemas/product.schema.json',
+          },
+          blankFolder: {
+            folderName: '',
+            schema: 'request-schemas/blank.schema.json',
+          },
+        },
+      }) + '\nhooks:\n  allowedHosts:\n    -\n    - " api.sap.com "\n'
+    );
+
+    const cfg = await TEST_UTILS.loadValidationConfig();
+    expect(cfg).toEqual({
+      requests: {
+        alreadyRooted: {
+          folderName: 'data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system.schema.json',
+        },
+        prefixedFromBaseDir: {
+          folderName: 'data/products',
+          schema: '.github/registry-bot/request-schemas/product.schema.json',
+        },
+        blankFolder: {
+          folderName: '',
+          schema: '.github/registry-bot/request-schemas/blank.schema.json',
+        },
+      },
+      hooksAllowedHosts: ['api.sap.com'],
+    });
+
+    expect(TEST_UTILS.matchRequestTypesForFile('data/products/item.yaml', cfg.requests)).toEqual({
+      filePath: 'data/products/item.yaml',
+      candidates: [
+        {
+          requestType: 'prefixedFromBaseDir',
+          schemaPath: '.github/registry-bot/request-schemas/product.schema.json',
+        },
+      ],
+    });
+  });
+
+  it('covers git helper edge cases and filters deleted files from PR validation', async () => {
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    await writeYaml(path.join(tmpDir, 'data/namespaces/keep.yaml'), { type: 'system', name: 'keep' });
+    await writeYaml(path.join(tmpDir, 'data/namespaces/delete-me.yaml'), { type: 'system', name: 'delete-me' });
+    const baseSha = commitAll(tmpDir, 'base');
+
+    expect(await TEST_UTILS.repoPathExists('README.md')).toBe(true);
+    expect(await TEST_UTILS.repoPathExists('missing.txt')).toBe(false);
+    expect(await TEST_UTILS.repoPathExists('')).toBe(false);
+
+    expect(await TEST_UTILS.readTextFromGitRevision('', 'README.md')).toBeNull();
+    expect(await TEST_UTILS.readTextFromGitRevision('HEAD', '')).toBeNull();
+    expect(await TEST_UTILS.readTextFromGitRevision(baseSha, 'README.md')).toBe('base\n');
+
+    await expect(TEST_UTILS.readTrustedRepoFileText('', '')).rejects.toThrow("Invalid repository path ''");
+    await expect(TEST_UTILS.readTrustedRepoFileText('missing.txt', baseSha)).rejects.toThrow(
+      `Missing trusted file 'missing.txt' at revision '${baseSha}'`
+    );
+
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    await writeYaml(path.join(tmpDir, 'data/namespaces/new-file.yaml'), { type: 'system', name: 'new-file' });
+    await rm(path.join(tmpDir, 'data/namespaces/delete-me.yaml'));
+    commitAll(tmpDir, 'head');
+
+    await expect(TEST_UTILS.resolveMergeBase('')).rejects.toThrow('Missing base ref for merge-base calculation');
+    expect(await TEST_UTILS.resolveMergeBase(baseSha, undefined as unknown as string)).toBe(baseSha);
+
+    const changedWithDefaultHead = await TEST_UTILS.getChangedFiles(baseSha, undefined as unknown as string);
+    expect(changedWithDefaultHead).toContain('README.md');
+    expect(changedWithDefaultHead).toContain('data/namespaces/new-file.yaml');
+    expect(changedWithDefaultHead).not.toContain('data/namespaces/delete-me.yaml');
+
+    expect(await TEST_UTILS.getAllTrackedFilesUnder('')).toEqual([]);
+    expect(await TEST_UTILS.getAllTrackedFilesUnder('data/namespaces')).toEqual(
+      expect.arrayContaining(['data/namespaces/keep.yaml', 'data/namespaces/new-file.yaml'])
+    );
+  });
+
+  it('covers local hook loading, local octokit behavior and GitHub annotation escaping', async () => {
+    expect(await TEST_UTILS.loadLocalHooksDescriptor()).toEqual({ hooks: null, hooksSource: null });
+
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.js'),
+      'export async function onValidate() { return []; }\nexport default { onValidate };\n'
+    );
+
+    const hooksDesc = await TEST_UTILS.loadLocalHooksDescriptor();
+    expect(hooksDesc.hooks).not.toBeNull();
+    expect(hooksDesc.hooksSource).toMatch(/^repo:.github\/registry-bot\/config\.js#/);
+
+    await writeText(path.join(tmpDir, 'docs/readme.txt'), 'hello');
+    await mkdirp(path.join(tmpDir, 'docs/subdir'));
+
+    const octokit = TEST_UTILS.createLocalOctokit();
+    const fileData = await octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'docs/readme.txt' });
+    expect(Array.isArray(fileData.data)).toBe(false);
+    if (!Array.isArray(fileData.data)) {
+      expect(Buffer.from(fileData.data.content, 'base64').toString('utf8')).toBe('hello');
+    }
+
+    const dirData = await octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'docs' });
+    expect(Array.isArray(dirData.data)).toBe(true);
+    if (Array.isArray(dirData.data)) {
+      expect((dirData.data as unknown as { name: string }[]).map((entry) => entry.name)).toEqual(
+        expect.arrayContaining(['readme.txt', 'subdir'])
+      );
+    }
+
+    await expect(octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'missing' })).rejects.toMatchObject({
+      status: 404,
+    });
+
+    await expect(octokit.issues.get({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({ data: {} });
+    await expect(octokit.issues.listForRepo({ owner: 'o', repo: 'r', state: 'open' })).resolves.toEqual({ data: [] });
+    await expect(octokit.issues.update({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({});
+    await expect(octokit.issues.create({ owner: 'o', repo: 'r', title: 't', body: 'b' })).resolves.toEqual({});
+    await expect(
+      octokit.issues.createComment({ owner: 'o', repo: 'r', issue_number: 1, body: 'note' })
+    ).resolves.toEqual({});
+    await expect(octokit.issues.addLabels({ owner: 'o', repo: 'r', issue_number: 1, labels: ['x'] })).resolves.toEqual(
+      {}
+    );
+    await expect(octokit.issues.removeLabel({ owner: 'o', repo: 'r', issue_number: 1, name: 'x' })).resolves.toEqual(
+      {}
+    );
+
+    TEST_UTILS.ghAnnotateError('a:b,c.yaml', 'line1\nline2');
+    const errs: string = (errorSpy?.mock.calls ?? [])
+      .map((c: unknown[]) => (typeof c[0] === 'string' ? c[0] : JSON.stringify(c[0])))
+      .join('\n');
+    expect(errs).toContain('::error file=a%3Ab%2Cc.yaml::line1 line2');
+  });
+
+  it('covers validateOneFile fallback selection, first-valid mode and hook exception handling', async () => {
+    await mkdirp(path.join(tmpDir, '.github/registry-bot/request-schemas'));
+    await mkdirp(path.join(tmpDir, 'data/misc'));
+
+    const multiErrorSchemaPath = '.github/registry-bot/request-schemas/multi-error.schema.json';
+    const singleErrorSchemaPath = '.github/registry-bot/request-schemas/single-error.schema.json';
+    const disabledOnlySchemaPath = '.github/registry-bot/request-schemas/disabled-only.schema.json';
+    const stringSchemaPath = '.github/registry-bot/request-schemas/string.schema.json';
+
+    await writeJson(path.join(tmpDir, multiErrorSchemaPath), {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      required: ['a', 'b'],
+      properties: {
+        a: { type: 'string' },
+        b: { type: 'string' },
+      },
+    });
+
+    await writeJson(path.join(tmpDir, singleErrorSchemaPath), {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      required: ['a'],
+      properties: {
+        a: { type: 'string' },
+      },
+    });
+
+    await writeJson(path.join(tmpDir, disabledOnlySchemaPath), {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      required: ['legacyField'],
+      properties: {
+        legacyField: { 'type': 'string', 'x-sap-main-disable-validation': true },
+      },
+    });
+
+    await writeJson(path.join(tmpDir, stringSchemaPath), {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'string',
+    });
+
+    const emptyDocPath = 'data/misc/empty.yaml';
+    const scalarDocPath = 'data/misc/scalar.yaml';
+    const noCandidatesPath = 'data/misc/no-candidates.yaml';
+
+    await writeText(path.join(tmpDir, emptyDocPath), '');
+    await writeText(path.join(tmpDir, scalarDocPath), 'plain scalar');
+    await writeText(path.join(tmpDir, noCandidatesPath), '{}\n');
+
+    const ajv = TEST_UTILS.buildAjv();
+
+    const repoInfo = mkRepoInfo();
+    const botCtx = mkBotValidationContext(repoInfo);
+    botCtx.resourceBotHooks = {
+      onValidate: () => {
+        throw new Error('hook blew up');
+      },
+    } as unknown as BotValidationContext['resourceBotHooks'];
+
+    const bestScoreRes = await TEST_UTILS.validateOneFile(
+      {
+        filePath: emptyDocPath,
+        candidates: [
+          { requestType: 'multi', schemaPath: multiErrorSchemaPath },
+          { requestType: 'single', schemaPath: singleErrorSchemaPath },
+        ],
+      },
+      ajv,
+      new Map(),
+      botCtx,
+      repoInfo,
+      'main'
+    );
+
+    expect(bestScoreRes.ok).toBe(false);
+    expect(bestScoreRes.requestType).toBe('single');
+    expect(bestScoreRes.errors).toHaveLength(1);
+
+    const disabledOnlyRes = await TEST_UTILS.validateOneFile(
+      {
+        filePath: emptyDocPath,
+        candidates: [{ requestType: 'disabled', schemaPath: disabledOnlySchemaPath }],
+      },
+      ajv,
+      new Map(),
+      botCtx,
+      repoInfo,
+      'main'
+    );
+
+    expect(disabledOnlyRes.ok).toBe(true);
+
+    const stringDocRes = await TEST_UTILS.validateOneFile(
+      {
+        filePath: scalarDocPath,
+        candidates: [{ requestType: 'freeform', schemaPath: stringSchemaPath }],
+      },
+      ajv,
+      new Map(),
+      botCtx,
+      repoInfo,
+      'pr'
+    );
+
+    expect(stringDocRes.ok).toBe(false);
+    expect(stringDocRes.tries.at(-1)?.reason).toBe('first-valid');
+    expect(stringDocRes.errors).toContain('Hook onValidate failed: hook blew up');
+
+    const noCandidatesRes = await TEST_UTILS.validateOneFile(
+      {
+        filePath: noCandidatesPath,
+        candidates: [],
+      },
+      ajv,
+      new Map(),
+      mkBotValidationContext(repoInfo),
+      repoInfo,
+      'main'
+    );
+
+    expect(noCandidatesRes.ok).toBe(false);
+    expect(noCandidatesRes.requestType).toBe('unknown');
+    expect(noCandidatesRes.schemaPath).toBe('unknown');
+    expect(noCandidatesRes.errors).toEqual(['No candidate schema available for this file']);
+  });
+
+  it('covers schema cache defaults and AJV error formatting helpers', async () => {
+    await mkdirp(path.join(tmpDir, '.github/registry-bot/request-schemas'));
+
+    const schemaPath = '.github/registry-bot/request-schemas/system.schema.json';
+    await writeJson(path.join(tmpDir, schemaPath), {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      required: ['type'],
+      properties: {
+        type: { type: 'string', const: 'system' },
+      },
+    });
+
+    setEnv({ REGISTRY_VALIDATE_MODE: 'main' });
+
+    const ajv = TEST_UTILS.buildAjv();
+    const cache = new Map();
+    const first = await TEST_UTILS.getSchemaEntry(schemaPath, ajv, cache);
+    const second = await TEST_UTILS.getSchemaEntry(schemaPath, ajv, cache);
+
+    expect(first).toBe(second);
+    expect(first.typeConst).toBe('system');
+
+    expect(TEST_UTILS.scoreErrors([])).toBe(9999);
+    expect(
+      TEST_UTILS.pickBestTry([
+        { requestType: 'a', schemaPath: 'a', ok: false, errors: ['one', 'two'] },
+        { requestType: 'b', schemaPath: 'b', ok: false, errors: ['one'] },
+      ])
+    ).toMatchObject({ requestType: 'b' });
+
+    expect(TEST_UTILS.formatAjvErrors(undefined)).toEqual([]);
+    const ajvErrors: ErrorObject[] = [
+      {
+        keyword: 'required',
+        instancePath: '/name',
+        schemaPath: '#/required',
+        params: { missingProperty: 'type' },
+        message: 'is required',
+      },
+      {
+        keyword: 'errorMessage',
+        instancePath: '/',
+        schemaPath: '#',
+        params: {},
+        message: 'bad root',
+      },
+    ];
+    expect(TEST_UTILS.formatAjvErrors(ajvErrors)).toEqual(['/name is required', 'bad root']);
   });
 });
