@@ -544,19 +544,51 @@ function normalizeApprovalHookErrors(value: unknown): readonly {
   return out;
 }
 
+function normalizeLoginValue(value: unknown): string {
+  return toStringSafe(value).replace(/^@+/, '').trim();
+}
+
+function uniqLogins(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values || []) {
+    const login = normalizeLoginValue(value);
+    if (!login) continue;
+
+    const key = login.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(login);
+  }
+
+  return out;
+}
+
+function toLoginArray(value: unknown): string[] {
+  return Array.isArray(value) ? uniqLogins(value.map((item) => normalizeLoginValue(item)).filter(Boolean)) : [];
+}
+
 function getApprovalHookApprovers(context: ValidationContext, requestType: string): string[] {
   const cfg = context.resourceBotConfig ?? {};
+  const workflow = isPlainObject(cfg['workflow']) ? cfg['workflow'] : {};
+
+  const fallbackApprovers = uniqLogins([
+    ...toLoginArray(workflow['approvers']),
+    ...toLoginArray(workflow['approversPool']),
+  ]);
+
   const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
-  const entry = isPlainObject(reqs[requestType]) ? (reqs[requestType] as Record<string, unknown>) : null;
+  const entry = isPlainObject(reqs[requestType]) ? reqs[requestType] : null;
 
-  const localApprovers = Array.isArray(entry?.['approvers'])
-    ? entry['approvers'].map((v) => toStringSafe(v)).filter(Boolean)
-    : [];
+  if (!entry) return fallbackApprovers;
 
-  if (localApprovers.length) return localApprovers;
+  const hasOwnApprovers = Array.isArray(entry['approvers']);
+  const hasOwnApproversPool = Array.isArray(entry['approversPool']);
 
-  const workflow = isPlainObject(cfg.workflow) ? cfg.workflow : {};
-  return Array.isArray(workflow['approvers']) ? workflow['approvers'].map((v) => toStringSafe(v)).filter(Boolean) : [];
+  if (!hasOwnApprovers && !hasOwnApproversPool) return fallbackApprovers;
+
+  return uniqLogins([...toLoginArray(entry['approvers']), ...toLoginArray(entry['approversPool'])]);
 }
 
 function buildApprovalHookData(
@@ -2615,11 +2647,12 @@ function buildApprovalHookArgs(
     resourceName?: string | null;
     formData: FormData;
     issue: IssueLike;
+    requestAuthorId?: string | null;
   }
 ): OnApprovalArgs {
   const namespace = resolveApprovalNamespace(args);
   const resourceName = resolveApprovalResourceName(args, namespace);
-  const requesterId = toStringSafe(args.issue?.user?.login);
+  const requesterId = toStringSafe(args.requestAuthorId) || toStringSafe(args.issue?.user?.login);
 
   return {
     requestType: toStringSafe(args.requestType),
@@ -2715,6 +2748,7 @@ export async function runApprovalHook(
     resourceName?: string | null;
     formData: FormData;
     issue: IssueLike;
+    requestAuthorId?: string | null;
   }
 ): Promise<ApprovalHookDecision> {
   await ensureStaticConfigLoaded(context);

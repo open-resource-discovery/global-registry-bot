@@ -106,6 +106,11 @@ type PullRequestFileLike = {
   status?: string | null;
 };
 
+type PullRequestCommitLike = {
+  author?: UserLike | null;
+  committer?: UserLike | null;
+};
+
 type CheckRunPullRequestRef = { number?: number | null };
 
 type CheckRunLike = {
@@ -786,12 +791,7 @@ function extractFieldFromMsg(m: string): string {
   return '';
 }
 
-function buildRegistryValidationPrCommentBody(filePath: string, messages: string[]): string {
-  const lines: string[] = [];
-
-  lines.push(`## Detected issues: ${filePath}`);
-  lines.push('');
-
+function groupRegistryValidationMessages(messages: string[]): Map<string, string[]> {
   const grouped = new Map<string, string[]>();
 
   for (const raw of messages) {
@@ -804,24 +804,70 @@ function buildRegistryValidationPrCommentBody(filePath: string, messages: string
     grouped.set(field, arr);
   }
 
-  const keys = Array.from(grouped.keys()).sort((a, b) => {
+  return grouped;
+}
+
+function sortRegistryValidationGroupKeys(grouped: Map<string, string[]>): string[] {
+  return Array.from(grouped.keys()).sort((a, b) => {
     if (a === 'details') return 1;
     if (b === 'details') return -1;
     return a.localeCompare(b);
   });
+}
 
-  for (const k of keys) {
-    lines.push(`### ${toSectionTitle(k)}`);
-    for (const msg of grouped.get(k) ?? []) {
+function appendRegistryValidationSections(lines: string[], grouped: Map<string, string[]>, headingLevel: string): void {
+  for (const key of sortRegistryValidationGroupKeys(grouped)) {
+    lines.push(`${headingLevel} ${toSectionTitle(key)}`);
+    for (const msg of grouped.get(key) ?? []) {
       lines.push(`- ${msg}`);
     }
     lines.push('');
   }
+}
+
+function appendRegistryValidationFileSection(
+  lines: string[],
+  machineReadable: MachineReadableIssue[],
+  filePath: string,
+  messages: string[]
+): void {
+  lines.push(`### ${filePath}`, '');
+  appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '####');
+  machineReadable.push(...buildRegistryValidationMachineReadableIssues(filePath, messages));
+}
+
+function buildRegistryValidationPrCommentBody(filePath: string, messages: string[]): string {
+  const lines: string[] = [`## Detected issues: ${filePath}`, ''];
+
+  appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '###');
 
   const body = lines.join('\n').trimEnd();
   const machineReadable = buildRegistryValidationMachineReadableIssues(filePath, messages);
 
   return `${body}
+
+${buildMachineReadableMetadataBlock(machineReadable)}`;
+}
+
+function buildRegistryValidationAggregatePrCommentBody(byFile: Map<string, string[]>): string {
+  const entries = Array.from(byFile.entries())
+    .filter(([, messages]) => Array.isArray(messages) && messages.length > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  if (!entries.length) return '';
+  if (entries.length === 1) {
+    const [filePath, messages] = entries[0];
+    return buildRegistryValidationPrCommentBody(filePath, messages);
+  }
+
+  const lines: string[] = ['## Detected issues', ''];
+  const machineReadable: MachineReadableIssue[] = [];
+
+  for (const [filePath, messages] of entries) {
+    appendRegistryValidationFileSection(lines, machineReadable, filePath, messages);
+  }
+
+  return `${lines.join('\n').trimEnd()}
 
 ${buildMachineReadableMetadataBlock(machineReadable)}`;
 }
@@ -1188,6 +1234,7 @@ type RunApprovalHookFn = (
     resourceName?: string | null;
     formData: FormData;
     issue: IssueLike;
+    requestAuthorId?: string | null;
   }
 ) => Promise<ApprovalDecision | boolean>;
 
@@ -1631,6 +1678,68 @@ The PR could not be approved automatically, so merge remains blocked until a rev
   }
 }
 
+async function resolvePullRequestRequestAuthorId(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<string> {
+  let page = 1;
+  let lastCommitter = '';
+
+  while (true) {
+    const res = await (
+      context.octokit.pulls as unknown as {
+        listCommits: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data?: PullRequestCommitLike[] }>;
+      }
+    ).listCommits({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: pr.number,
+      per_page: 100,
+      page,
+    });
+
+    const commits = Array.isArray(res?.data) ? res.data : [];
+    if (!commits.length) break;
+
+    const last = commits.at(-1);
+    lastCommitter = normalizeLogin(last?.committer?.login) || normalizeLogin(last?.author?.login) || lastCommitter;
+
+    if (commits.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+
+  return lastCommitter || normalizeLogin(pr.user?.login);
+}
+
+async function addApprovedLabelToPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  if (!approvedLabel) return;
+
+  try {
+    await context.octokit.issues.addLabels({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: prNumber,
+      labels: [approvedLabel],
+    });
+  } catch {
+    // ignore
+  }
+}
+
 function normalizeRepoPath(path: unknown): string {
   return toStringTrim(path)
     .replace(/\\/g, '/')
@@ -1696,37 +1805,77 @@ function pickRequestTypeForChangedResource(
   return '';
 }
 
+function resolveRegistryDocResourceName(doc: Record<string, unknown>): string {
+  const directKeys = ['identifier', 'namespace', 'product-id', 'productId', 'id', 'name', 'vendor'];
+
+  for (const key of directKeys) {
+    const value = toStringTrim(doc[key]).replaceAll('\u00a0', ' ').trim();
+    if (value) return value;
+  }
+
+  return '';
+}
+
+function stringifyRegistryDocFormValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  if (Array.isArray(value)) {
+    const scalarItems = value
+      .map((item) =>
+        typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean' ? String(item) : ''
+      )
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (scalarItems.length === value.length) return scalarItems.join('\n');
+  }
+
+  return YAML.stringify(value).trim();
+}
+
 function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
   const out: FormData = {};
 
-  const name = toStringTrim(doc['name']);
-  if (name) {
-    out.name = name;
-    out.identifier = name;
-    out.namespace = name;
+  for (const [key, value] of Object.entries(doc)) {
+    const serialized = stringifyRegistryDocFormValue(value);
+    if (serialized) out[key] = serialized;
   }
 
+  const resourceName = resolveRegistryDocResourceName(doc);
+  if (resourceName) {
+    out.identifier = out.identifier || resourceName;
+    out.namespace = out.namespace || resourceName;
+  }
+
+  const name = toStringTrim(doc['name']);
+  if (name && !out.name) out.name = name;
+
   const description = toStringTrim(doc['description']);
-  if (description) out.description = description;
+  if (description && !out.description) out.description = description;
 
   const title = toStringTrim(doc['title']);
-  if (title) out.title = title;
+  if (title && !out.title) out.title = title;
 
   const vendor = toStringTrim(doc['vendor']);
-  if (vendor) out.vendor = vendor;
+  if (vendor && !out.vendor) out.vendor = vendor;
 
   const contacts = Array.isArray(doc['contact'])
     ? doc['contact']
-        .map((v) => toStringTrim(v))
+        .map((v: unknown) => toStringTrim(v))
         .filter(Boolean)
         .join('\n')
     : toStringTrim(doc['contact']);
 
-  if (contacts) out.contact = contacts;
+  if (contacts && !out.contact) out.contact = contacts;
 
   return out;
 }
 
+function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: string): boolean {
+  return matchRequestTypesForFile(context, filePath).length > 0;
+}
 function isChangedYamlCandidate(file: PullRequestFileLike): string {
   const filename = normalizeRepoPath(file?.filename);
   const status = toStringTrim(file?.status).toLowerCase();
@@ -1776,7 +1925,7 @@ async function listChangedYamlFilesForPr(
 
     for (const file of files) {
       const filename = isChangedYamlCandidate(file);
-      if (filename) out.push(filename);
+      if (filename && isRegistryEntryPath(context, filename)) out.push(filename);
     }
 
     if (files.length < 100) break;
@@ -1840,7 +1989,8 @@ async function evaluateChangedResourceApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
-  filePath: string
+  filePath: string,
+  requestAuthorId?: string
 ): Promise<ApprovalDecision> {
   const parsed = await readRegistryDocForApproval(context, repoInfo, filePath, pr.head.ref);
   if (!parsed) return { status: 'unknown' };
@@ -1848,7 +1998,7 @@ async function evaluateChangedResourceApproval(
   const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
   if (!requestType) return { status: 'unknown' };
 
-  const resourceName = toStringTrim(parsed['name']);
+  const resourceName = resolveRegistryDocResourceName(parsed);
   if (!resourceName) return { status: 'unknown' };
 
   return normalizeApprovalDecision(
@@ -1857,6 +2007,7 @@ async function evaluateChangedResourceApproval(
       namespace: resourceName,
       resourceName,
       formData: buildFormDataFromRegistryDoc(parsed),
+      requestAuthorId,
       issue: {
         number: pr.number,
         title: pr.title,
@@ -1877,12 +2028,14 @@ async function evaluateDirectPrOnApproval(
   const changedFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
   if (!changedFiles.length) return {};
 
+  const requestAuthorId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+
   let sawApproved = false;
   let sawUnknown = false;
   let approvedComment = '';
 
   for (const filePath of changedFiles) {
-    const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath);
+    const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
 
     if (decision.status === 'rejected') {
       return decision;
@@ -1916,7 +2069,10 @@ async function maybeHandleStandaloneDirectPrApproval(
 
   if (decision.status === 'approved') {
     const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-    return approved ? 'approved' : 'continue';
+    if (!approved) return 'continue';
+
+    await addApprovedLabelToPr(context, repoInfo, pr.number);
+    return 'approved';
   }
 
   if (decision.status === 'rejected') {
@@ -1987,9 +2143,8 @@ async function rejectRequestFromApprovalHook(
     }
   }
 
-  const closedPrSection = closedPrs.length
-    ? `\n\nClosed linked PR(s): ${closedPrs.map((n) => `#${n}`).join(', ')}.`
-    : '';
+  const closedPrRefs = closedPrs.map((n) => `#${n}`).join(', ');
+  const closedPrSection = closedPrs.length ? `\n\nClosed linked PR(s): ${closedPrRefs}.` : '';
 
   await postOnce(context, params, `${buildApprovalRejectedBody(decision)}${closedPrSection}`, {
     minimizeTag: options.minimizeTag || 'nsreq:on-approval:rejected',
@@ -2009,10 +2164,16 @@ async function finalizeApprovedRequest(
   issue: IssueLike,
   template: TemplateLike,
   parsedFormData: FormData,
-  approvalPrefix: string,
-  approvalComment = ''
+  options: {
+    approvalPrefix: string;
+    approvalComment?: string;
+    autoApproved?: boolean;
+  }
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
+  const approvalPrefix = toStringTrim(options.approvalPrefix);
+  const approvalComment = toStringTrim(options.approvalComment);
+  const autoApproved = options.autoApproved === true;
 
   const resourceName = extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
   if (!resourceName) {
@@ -2028,6 +2189,9 @@ async function finalizeApprovedRequest(
   const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
   if (existing.length) {
     await applyApprovedRequestState(context, params, eff);
+    if (autoApproved) {
+      await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, existing[0].number);
+    }
 
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
@@ -2042,6 +2206,10 @@ async function finalizeApprovedRequest(
     const pr = await createRequestPrWithRecovery(context, params, issue, parsedFormData, template, resourceName);
 
     await applyApprovedRequestState(context, params, eff);
+
+    if (autoApproved) {
+      await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, pr.number);
+    }
 
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
@@ -2085,7 +2253,11 @@ async function maybeHandleApprovalDecision(
   );
 
   if (decision.status === 'approved') {
-    await finalizeApprovedRequest(context, params, issue, template, parsedFormData, '', toStringTrim(decision.comment));
+    await finalizeApprovedRequest(context, params, issue, template, parsedFormData, {
+      approvalPrefix: '',
+      approvalComment: decision.comment,
+      autoApproved: true,
+    });
     return 'approved';
   }
 
@@ -2114,12 +2286,14 @@ async function maybeHandleDirectPrApprovalForMerge(
   parsedFormData: FormData,
   pr: PullRequestLike
 ): Promise<ApprovalHandlingResult> {
+  const requestAuthorId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
   const decision = normalizeApprovalDecision(
     await runApprovalHook(context, repoInfo, {
       requestType: resolveEffectiveRequestType(template, parsedFormData),
       namespace: toStringTrim(parsedFormData['namespace'] || parsedFormData['identifier']),
       resourceName: extractResourceNameFromForm(parsedFormData, template),
       formData: parsedFormData,
+      requestAuthorId,
       issue,
     })
   );
@@ -2128,6 +2302,7 @@ async function maybeHandleDirectPrApprovalForMerge(
     const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
     if (!approved) return 'continue';
 
+    await addApprovedLabelToPr(context, repoInfo, pr.number);
     await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
     return 'approved';
   }
@@ -2435,7 +2610,6 @@ async function processIssueEvent(
       }
       return;
     }
-
     log(context, 'error', { err: msg }, 'Error loading template in issues handler');
 
     const userMsg = buildTemplateLoadErrorMessage(msg);
@@ -2671,7 +2845,9 @@ async function handleApprovalComment(
     );
   }
 
-  await finalizeApprovedRequest(context, params, issue, template, parsedFormData, `Approved by @${commenter}`);
+  await finalizeApprovedRequest(context, params, issue, template, parsedFormData, {
+    approvalPrefix: `Approved by @${commenter}`,
+  });
 }
 
 async function handleAuthorUpdateComment(
@@ -4148,7 +4324,7 @@ export default function requestHandler(app: Probot): void {
             context,
             { owner: ownerLogin, repo: repoName, issue_number: prNumber },
             {
-              tagPrefix: 'nsreq:ci-validation:',
+              tagPrefix: 'nsreq:ci-validation',
               collapseBody: 'Validation issues resolved.',
               classifier: 'RESOLVED',
             }
@@ -4242,14 +4418,14 @@ export default function requestHandler(app: Probot): void {
           byFile.set(file, arr);
         }
 
-        const currentCiTags = Array.from(byFile.keys()).map((file) => `nsreq:ci-validation:${normalizeKey(file)}`);
+        const currentCiTags = ['nsreq:ci-validation'];
 
         for (const prNumber of prNumbers) {
           await collapseBotCommentsByPrefix(
             context,
             { owner: ownerLogin, repo: repoName, issue_number: prNumber },
             {
-              tagPrefix: 'nsreq:ci-validation:',
+              tagPrefix: 'nsreq:ci-validation',
               keepTags: currentCiTags,
               collapseBody: 'Validation issues resolved.',
               classifier: 'RESOLVED',
@@ -4257,20 +4433,22 @@ export default function requestHandler(app: Probot): void {
           );
         }
 
-        for (const [file, msgs] of byFile.entries()) {
-          for (const prNumber of prNumbers) {
-            const body = buildRegistryValidationPrCommentBody(file, msgs);
-            if (!body) continue;
+        const body = buildRegistryValidationAggregatePrCommentBody(byFile);
+        if (!body) break;
 
-            if (DBG) {
-              log(context, 'debug', { prNumber, file, bodyLen: body.length }, 'dbg:checks:posting PR comment');
-            }
-
-            // Use per-file tag to avoid overwriting when multiple files fail.
-            await postOnce(context, { owner: ownerLogin, repo: repoName, issue_number: prNumber }, body, {
-              minimizeTag: `nsreq:ci-validation:${normalizeKey(file)}`,
-            });
+        for (const prNumber of prNumbers) {
+          if (DBG) {
+            log(
+              context,
+              'debug',
+              { prNumber, files: Array.from(byFile.keys()), bodyLen: body.length },
+              'dbg:checks:posting PR comment'
+            );
           }
+
+          await postOnce(context, { owner: ownerLogin, repo: repoName, issue_number: prNumber }, body, {
+            minimizeTag: 'nsreq:ci-validation',
+          });
         }
 
         break; // avoid spamming multiple runs/suite events

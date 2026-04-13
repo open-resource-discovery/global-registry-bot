@@ -90,6 +90,7 @@ type PullsListFn = (args: unknown) => Promise<{ data: unknown[] }>;
 type PullsUpdateFn = (args: unknown) => Promise<unknown>;
 type PullsCreateReviewFn = (args: unknown) => Promise<unknown>;
 type PullsListFilesFn = (args: unknown) => Promise<{ data: unknown[] }>;
+type PullsListCommitsFn = (args: unknown) => Promise<{ data: unknown[] }>;
 
 type ChecksListAnnotationsFn = (args: any) => Promise<{ data: any[] }>;
 type ChecksListForSuiteFn = (args: any) => Promise<{ data: { check_runs: any[] } }>;
@@ -143,6 +144,7 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
         ),
         list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
         listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
+        listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
         createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
         update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
       },
@@ -903,6 +905,67 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
   expect(String(body)).toContain("Property 'contact' is required for System.");
 
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
+});
+
+test('check_suite.completed failure aggregates multi-file registry issues into one machine-readable PR comment', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['check_suite.completed'][0];
+
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'failure',
+    sha: 'sha-aggregate',
+    ownerLogin: 'o1',
+    repoName: 'r1',
+    withCachedConfig: true,
+  });
+
+  ctx.payload.check_suite.id = 501;
+  ctx.payload.check_suite.pull_requests = [{ number: 77 }];
+
+  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+    data: { check_runs: [{ id: 9002, html_url: 'https://example/check/9002' }] },
+  });
+
+  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+    data: [
+      {
+        path: 'data/namespaces/sap.css.yaml',
+        title: 'registry-validate systemNamespace',
+        message:
+          "Property 'contact' is required for System. [file=data/namespaces/sap.css.yaml schema=.github/registry-bot/request-schemas/system-namespace.schema.json requestType=systemNamespace]",
+        annotation_level: 'failure',
+      },
+      {
+        path: 'data/products/product-one.yaml',
+        title: 'registry-validate product',
+        message:
+          '/identifier MUST match pattern. [file=data/products/product-one.yaml schema=.github/registry-bot/request-schemas/product.schema.json requestType=product]',
+        annotation_level: 'failure',
+      },
+    ],
+  });
+
+  ctx.octokit.pulls.get.mockResolvedValueOnce({
+    data: { html_url: 'https://github.tools.sap/o1/r1/pull/77' },
+  });
+
+  await handler(ctx);
+
+  expect(postOnce).toHaveBeenCalledTimes(1);
+  const [, params, body, options] = (postOnce as jest.Mock).mock.calls[0];
+  const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
+
+  expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 77 });
+  expect(options).toEqual(expect.objectContaining({ minimizeTag: 'nsreq:ci-validation' }));
+  expect(bodyText).toContain('## Detected issues');
+  expect(bodyText).toContain('### data/namespaces/sap.css.yaml');
+  expect(bodyText).toContain('### data/products/product-one.yaml');
+  expect(bodyText).toContain('Show as JSON (Robots Friendly)');
+  expect(bodyText).toContain('"filePath": "data/namespaces/sap.css.yaml"');
+  expect(bodyText).toContain('"filePath": "data/products/product-one.yaml"');
 });
 
 test('check_suite.completed failure does nothing if there are no registry-validate annotations', async () => {
@@ -2155,6 +2218,9 @@ public
     });
 
     extractHashFromPrBody.mockReturnValueOnce('');
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'ignored-author' }, committer: { login: 'last-committer' } }],
+    });
     runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
 
     await handler(ctx);
@@ -2163,6 +2229,11 @@ public
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 5, mergeMethod: 'squash' })
+    );
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({ requestAuthorId: 'last-committer' })
     );
     expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(expect.objectContaining({ labels: ['Approved'] }));
   });
@@ -2208,6 +2279,7 @@ public
     ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/product-one.yaml', status: 'modified' },
+        { filename: '.github/workflows/review.yaml', status: 'modified' },
         { filename: 'README.md', status: 'modified' },
         { filename: 'resources/deleted.yaml', status: 'removed' },
       ],
@@ -2221,6 +2293,10 @@ public
         ).toString('base64'),
         encoding: 'base64',
       },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'ignored-author' }, committer: { login: 'direct-last-committer' } }],
     });
 
     runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved from standalone hook' } as any);
@@ -2240,6 +2316,7 @@ public
         requestType: 'product',
         namespace: 'product-one',
         resourceName: 'product-one',
+        requestAuthorId: 'direct-last-committer',
         formData: expect.objectContaining({
           identifier: 'product-one',
           namespace: 'product-one',
@@ -2887,5 +2964,95 @@ public
     expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: standalone direct PR ignores non-registry yaml files during onApproval evaluation', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-non-registry-yaml',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 60,
+            body: 'manual direct pr',
+            title: 'Direct',
+            head: { ref: 'feature/non-registry-yaml', sha: 'sha-non-registry-yaml' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [
+        { filename: 'resources/product-ok.yaml', status: 'modified' },
+        { filename: '.github/release.yml', status: 'modified' },
+      ],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from(
+          'type: product\nidentifier: product-ok\ntitle: Product OK\nvisibility: public\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ committer: { login: 'registry-committer' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.repos.getContent).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        path: 'resources/product-ok.yaml',
+        ref: 'feature/non-registry-yaml',
+      })
+    );
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestAuthorId: 'registry-committer',
+        formData: expect.objectContaining({
+          identifier: 'product-ok',
+          title: 'Product OK',
+          visibility: 'public',
+        }),
+      })
+    );
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 60, mergeMethod: 'squash' })
+    );
   });
 });

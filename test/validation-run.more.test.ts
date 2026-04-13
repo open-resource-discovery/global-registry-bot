@@ -1933,6 +1933,65 @@ describe('validation/run.ts extra coverage', () => {
 
     restore();
   });
+  it('runApprovalHook: merges approversPool into config.approvers and prefers explicit requestAuthorId', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          systemNamespace: {
+            approvers: ['REQ-APPROVER'],
+            approversPool: ['REQ-POOL'],
+          },
+        },
+        workflow: {
+          approvers: ['WF-APPROVER'],
+          approversPool: ['WF-POOL'],
+        },
+        hooks: { allowedHosts: ['api.sap.com'] },
+      },
+      source: 'repo:cfg',
+      hooks: {
+        onApproval: async (args: any) => {
+          expect(args.requestAuthor.id).toBe('last-commit-user');
+          expect(args.issue.author).toBe('last-commit-user');
+          expect(args.config.approvers).toEqual(['REQ-APPROVER', 'REQ-POOL']);
+          return true;
+        },
+      },
+      hooksSource: 'mock-hooks.js',
+    } as any);
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const approved = await mod.runApprovalHook(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      {
+        requestType: 'systemNamespace',
+        namespace: 'sap.agt.foo',
+        formData: { namespace: 'sap.agt.foo' },
+        requestAuthorId: 'last-commit-user',
+        issue: {
+          number: 1,
+          title: 't',
+          body: 'b',
+          state: 'open',
+          labels: [],
+          user: { login: 'issue-author' },
+        },
+      }
+    );
+
+    expect(approved).toEqual({ status: 'approved' });
+
+    restore();
+  });
   it('runApprovalHook: legacy hook failures are swallowed and return false', async () => {
     const { mod, mocks, restore } = await loadSubject();
 
