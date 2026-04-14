@@ -890,6 +890,27 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
     ],
   });
 
+  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    if (path === '.github/registry-bot/request-schemas/system-namespace.schema.json') {
+      return {
+        data: {
+          content: Buffer.from(
+            JSON.stringify({
+              properties: {
+                contacts: {
+                  title: 'Contacts',
+                },
+              },
+            })
+          ).toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
+
+    throw httpErr(404);
+  });
+
   ctx.octokit.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/42' },
   });
@@ -898,11 +919,13 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
 
   expect(postOnce).toHaveBeenCalledTimes(1);
   const [, params, body] = (postOnce as jest.Mock).mock.calls[0];
+  const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 42 });
-  expect(String(body)).toContain('## Detected issues: data/namespaces/sap.css.yaml');
-  expect(String(body)).toContain('### Contacts');
-  expect(String(body)).toContain("Property 'contact' is required for System.");
+  expect(bodyText).toContain('## Detected issues: data/namespaces/sap.css.yaml');
+  expect(bodyText).toContain('### Contacts');
+  expect(bodyText).toContain("Property 'contact' is required for System.");
+  expect(bodyText).toContain('"field": "contacts"');
 
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
@@ -942,10 +965,60 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
         path: 'data/products/product-one.yaml',
         title: 'registry-validate product',
         message:
+          'Product Name is required. [file=data/products/product-one.yaml schema=.github/registry-bot/request-schemas/product.schema.json requestType=product]',
+        annotation_level: 'failure',
+      },
+      {
+        path: 'data/products/product-one.yaml',
+        title: 'registry-validate product',
+        message:
           '/identifier MUST match pattern. [file=data/products/product-one.yaml schema=.github/registry-bot/request-schemas/product.schema.json requestType=product]',
         annotation_level: 'failure',
       },
     ],
+  });
+
+  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    if (path === '.github/registry-bot/request-schemas/system-namespace.schema.json') {
+      return {
+        data: {
+          content: Buffer.from(
+            JSON.stringify({
+              properties: {
+                contacts: {
+                  title: 'Contacts',
+                },
+              },
+            })
+          ).toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
+
+    if (path === '.github/registry-bot/request-schemas/product.schema.json') {
+      return {
+        data: {
+          content: Buffer.from(
+            JSON.stringify({
+              properties: {
+                title: {
+                  'title': 'Product Name',
+                  'x-form-field': 'title',
+                },
+                identifier: {
+                  'title': 'Product ID',
+                  'x-form-field': 'identifier',
+                },
+              },
+            })
+          ).toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
+
+    throw httpErr(404);
   });
 
   ctx.octokit.pulls.get.mockResolvedValueOnce({
@@ -966,6 +1039,10 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
   expect(bodyText).toContain('Show as JSON (Robots Friendly)');
   expect(bodyText).toContain('"filePath": "data/namespaces/sap.css.yaml"');
   expect(bodyText).toContain('"filePath": "data/products/product-one.yaml"');
+  expect(bodyText).toContain('"field": "contacts"');
+  expect(bodyText).toContain('"field": "title"');
+  expect(bodyText).toContain('"field": "identifier"');
+  expect(bodyText).toContain('#### Product name');
 });
 
 test('check_suite.completed failure does nothing if there are no registry-validate annotations', async () => {

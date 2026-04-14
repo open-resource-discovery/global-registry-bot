@@ -157,6 +157,14 @@ type MachineReadableIssue = Readonly<{
   filePath?: string;
 }>;
 
+type RegistryValidationMachineReadableSource = Readonly<{
+  filePath: string;
+  message: string;
+  schemaPath?: string;
+}>;
+
+type SchemaFieldAliasLookup = Map<string, string>;
+
 function normalizeMachineReadableIssues(value: unknown): MachineReadableIssue[] {
   const items = Array.isArray(value) ? value : [];
   const out: MachineReadableIssue[] = [];
@@ -222,15 +230,140 @@ function singleMachineReadableIssue(field: string, message: string, filePath = '
     : [];
 }
 
-function buildRegistryValidationMachineReadableIssues(filePath: string, messages: string[]): MachineReadableIssue[] {
-  const out: MachineReadableIssue[] = [];
-  const normalizedFilePath = toStringTrim(filePath);
+const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
 
-  for (const raw of messages || []) {
-    const message = normalizeMsg(raw);
+function normalizeSchemaFieldAlias(value: unknown): string {
+  const raw = toStringTrim(value);
+  if (!raw) return '';
+
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function addSchemaFieldAlias(lookup: SchemaFieldAliasLookup, aliasValue: unknown, propertyName: string): void {
+  const alias = normalizeSchemaFieldAlias(aliasValue);
+  if (!alias || lookup.has(alias)) return;
+
+  lookup.set(alias, propertyName);
+
+  if (alias.endsWith('s') && alias.length > 1) {
+    const singular = alias.slice(0, -1);
+    if (singular && !lookup.has(singular)) lookup.set(singular, propertyName);
+  } else {
+    const plural = `${alias}s`;
+    if (!lookup.has(plural)) lookup.set(plural, propertyName);
+  }
+}
+
+function collectSchemaFieldAliasesForProperty(
+  propertyName: string,
+  propertyDef: unknown,
+  lookup: SchemaFieldAliasLookup
+): void {
+  addSchemaFieldAlias(lookup, propertyName, propertyName);
+  if (!isPlainObject(propertyDef)) return;
+
+  addSchemaFieldAlias(lookup, propertyDef['title'], propertyName);
+  addSchemaFieldAlias(lookup, propertyDef['x-form-field'], propertyName);
+  collectSchemaFieldAliases(propertyDef, lookup);
+}
+
+function collectSchemaFieldAliasesFromProperties(props: Record<string, unknown>, lookup: SchemaFieldAliasLookup): void {
+  for (const [propertyName, propertyDef] of Object.entries(props)) {
+    collectSchemaFieldAliasesForProperty(propertyName, propertyDef, lookup);
+  }
+}
+
+function collectSchemaFieldAliasesFromArray(items: unknown[], lookup: SchemaFieldAliasLookup): void {
+  for (const item of items) {
+    collectSchemaFieldAliases(item, lookup);
+  }
+}
+
+function collectSchemaFieldAliases(schemaObj: unknown, lookup: SchemaFieldAliasLookup): void {
+  if (!isPlainObject(schemaObj)) return;
+
+  const props = isPlainObject(schemaObj['properties']) ? schemaObj['properties'] : null;
+  if (props) collectSchemaFieldAliasesFromProperties(props, lookup);
+
+  for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
+    const items = schemaObj[key];
+    if (!Array.isArray(items)) continue;
+
+    collectSchemaFieldAliasesFromArray(items, lookup);
+  }
+
+  const defs = isPlainObject(schemaObj['$defs']) ? schemaObj['$defs'] : null;
+  if (defs) {
+    for (const value of Object.values(defs)) {
+      collectSchemaFieldAliases(value, lookup);
+    }
+  }
+}
+
+async function loadSchemaFieldAliasLookup(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  schemaPath: string
+): Promise<SchemaFieldAliasLookup> {
+  const normalizedPath = toStringTrim(schemaPath).replace(/^\.\//, '');
+  if (!normalizedPath) return new Map<string, string>();
+
+  const cached = SCHEMA_FIELD_ALIAS_CACHE.get(normalizedPath);
+  if (cached) return await cached;
+
+  const pending = (async (): Promise<SchemaFieldAliasLookup> => {
+    const raw = await readRepoFileText(context, repoInfo, normalizedPath);
+    if (!raw) return new Map<string, string>();
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const lookup = new Map<string, string>();
+      collectSchemaFieldAliases(parsed, lookup);
+      return lookup;
+    } catch {
+      return new Map<string, string>();
+    }
+  })();
+
+  SCHEMA_FIELD_ALIAS_CACHE.set(normalizedPath, pending);
+  return await pending;
+}
+
+async function resolveMachineReadableRegistryField(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  fieldHint: string,
+  schemaPath?: string
+): Promise<string> {
+  const fallback = toStringTrim(fieldHint) || 'details';
+  const normalizedSchemaPath = toStringTrim(schemaPath);
+
+  if (!normalizedSchemaPath || fallback === 'details') return fallback;
+
+  const lookup = await loadSchemaFieldAliasLookup(context, repoInfo, normalizedSchemaPath);
+  if (!lookup.size) return fallback;
+
+  return lookup.get(normalizeSchemaFieldAlias(fallback)) || fallback;
+}
+
+async function buildRegistryValidationMachineReadableIssues(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  items: RegistryValidationMachineReadableSource[]
+): Promise<MachineReadableIssue[]> {
+  const out: MachineReadableIssue[] = [];
+
+  for (const item of items || []) {
+    const message = normalizeMsg(item.message);
     if (!message) continue;
 
-    const field = extractFieldFromMsg(raw) || 'details';
+    const fieldHint = extractFieldFromMsg(item.message) || 'details';
+    const field = await resolveMachineReadableRegistryField(context, repoInfo, fieldHint, item.schemaPath);
+    const normalizedFilePath = toStringTrim(item.filePath);
+
     out.push({
       field,
       message,
@@ -825,31 +958,36 @@ function appendRegistryValidationSections(lines: string[], grouped: Map<string, 
   }
 }
 
-function appendRegistryValidationFileSection(
-  lines: string[],
-  machineReadable: MachineReadableIssue[],
-  filePath: string,
-  messages: string[]
-): void {
-  lines.push(`### ${filePath}`, '');
+function appendRegistryValidationFileSection(lines: string[], filePath: string, messages: string[]): void {
+  lines.push(`### File: \`${filePath}\``, '');
   appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '####');
-  machineReadable.push(...buildRegistryValidationMachineReadableIssues(filePath, messages));
 }
 
-function buildRegistryValidationPrCommentBody(filePath: string, messages: string[]): string {
-  const lines: string[] = [`## Detected issues: ${filePath}`, ''];
+async function buildRegistryValidationPrCommentBody(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  filePath: string,
+  messages: string[],
+  machineReadableSources: RegistryValidationMachineReadableSource[]
+): Promise<string> {
+  const lines: string[] = ['## Detected issues', '', `### File: \`${filePath}\``, ''];
 
   appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '###');
 
   const body = lines.join('\n').trimEnd();
-  const machineReadable = buildRegistryValidationMachineReadableIssues(filePath, messages);
+  const machineReadable = await buildRegistryValidationMachineReadableIssues(context, repoInfo, machineReadableSources);
 
   return `${body}
 
 ${buildMachineReadableMetadataBlock(machineReadable)}`;
 }
 
-function buildRegistryValidationAggregatePrCommentBody(byFile: Map<string, string[]>): string {
+async function buildRegistryValidationAggregatePrCommentBody(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  byFile: Map<string, string[]>,
+  machineReadableSources: RegistryValidationMachineReadableSource[]
+): Promise<string> {
   const entries = Array.from(byFile.entries())
     .filter(([, messages]) => Array.isArray(messages) && messages.length > 0)
     .sort(([a], [b]) => a.localeCompare(b));
@@ -857,15 +995,22 @@ function buildRegistryValidationAggregatePrCommentBody(byFile: Map<string, strin
   if (!entries.length) return '';
   if (entries.length === 1) {
     const [filePath, messages] = entries[0];
-    return buildRegistryValidationPrCommentBody(filePath, messages);
+    return await buildRegistryValidationPrCommentBody(
+      context,
+      repoInfo,
+      filePath,
+      messages,
+      machineReadableSources.filter((item) => toStringTrim(item.filePath) === toStringTrim(filePath))
+    );
   }
 
   const lines: string[] = ['## Detected issues', ''];
-  const machineReadable: MachineReadableIssue[] = [];
 
   for (const [filePath, messages] of entries) {
-    appendRegistryValidationFileSection(lines, machineReadable, filePath, messages);
+    appendRegistryValidationFileSection(lines, filePath, messages);
   }
+
+  const machineReadable = await buildRegistryValidationMachineReadableIssues(context, repoInfo, machineReadableSources);
 
   return `${lines.join('\n').trimEnd()}
 
@@ -4409,14 +4554,22 @@ export default function requestHandler(app: Probot): void {
         if (!relevant.length) continue;
 
         const byFile = new Map<string, string[]>();
+        const machineReadableSources: RegistryValidationMachineReadableSource[] = [];
         for (const a of relevant) {
           const file = toStringTrim(a.path) || 'unknown file';
           const rawMsg = toStringTrim(a.message) || toStringTrim(a.raw_details);
           const msg = stripRegistrySuffix(rawMsg);
           if (!msg) continue;
+          const schemaMeta = /\bschema=([^\s\]]+)/.exec(rawMsg);
           const arr = byFile.get(file) ?? [];
           arr.push(msg);
           byFile.set(file, arr);
+
+          machineReadableSources.push({
+            filePath: file,
+            message: msg,
+            schemaPath: schemaMeta?.[1] ? toStringTrim(schemaMeta[1]) : '',
+          });
         }
 
         const currentCiTags = ['nsreq:ci-validation'];
@@ -4434,7 +4587,12 @@ export default function requestHandler(app: Probot): void {
           );
         }
 
-        const body = buildRegistryValidationAggregatePrCommentBody(byFile);
+        const body = await buildRegistryValidationAggregatePrCommentBody(
+          context,
+          { owner: ownerLogin, repo: repoName },
+          byFile,
+          machineReadableSources
+        );
         if (!body) break;
 
         for (const prNumber of prNumbers) {
