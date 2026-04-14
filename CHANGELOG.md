@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## Added
+
+- Direct PR auto-approval via `onApproval` hook
+- Use last commit author as `requestAuthorId`
+- Merge `approvers` and `approversPool` for approval logic
+- Auto-add `Approved` label on successful auto-approval
+- Multi-file validation support with aggregated PR comment
+- Machine-readable validation output
+
+## Improved
+
+- Consistent validation feedback between CI and bot comments
+- Safer approval logic
+
 ## [[0.0.5](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/rel/0.0.5)] - 2026-04-10
 
 ## Added
