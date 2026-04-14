@@ -54,7 +54,7 @@
     "prettier": "3.8.1",
     "smee-client": "2.0.4",
     "ts-jest": "29.4.9",
-    "typescript": "5.9.3",
+    "typescript": "6.0.2",
     "is-ci": "4.1.0"
   },
   "engines": {
