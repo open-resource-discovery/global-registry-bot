@@ -922,7 +922,7 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
   const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 42 });
-  expect(bodyText).toContain('## Detected issues: data/namespaces/sap.css.yaml');
+  expect(bodyText).toContain('### File: `data/namespaces/sap.css.yaml`');
   expect(bodyText).toContain('### Contacts');
   expect(bodyText).toContain("Property 'contact' is required for System.");
   expect(bodyText).toContain('"field": "contacts"');
@@ -1034,8 +1034,8 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 77 });
   expect(options).toEqual(expect.objectContaining({ minimizeTag: 'nsreq:ci-validation' }));
   expect(bodyText).toContain('## Detected issues');
-  expect(bodyText).toContain('### data/namespaces/sap.css.yaml');
-  expect(bodyText).toContain('### data/products/product-one.yaml');
+  expect(bodyText).toContain('### File: `data/namespaces/sap.css.yaml`');
+  expect(bodyText).toContain('### File: `data/products/product-one.yaml`');
   expect(bodyText).toContain('Show as JSON (Robots Friendly)');
   expect(bodyText).toContain('"filePath": "data/namespaces/sap.css.yaml"');
   expect(bodyText).toContain('"filePath": "data/products/product-one.yaml"');
