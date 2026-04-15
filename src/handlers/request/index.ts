@@ -316,7 +316,7 @@ async function loadSchemaFieldAliasLookup(
     ? [rawPath.replace(/^\/+/, '')]
     : [cleaned.startsWith('.github/') ? cleaned : `.github/registry-bot/${cleaned}`, cleaned];
 
-  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${candidates[0]}`;
+  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${JSON.stringify(candidates)}`;
   const cached = SCHEMA_FIELD_ALIAS_CACHE.get(cacheKey);
   if (cached) return await cached;
 
