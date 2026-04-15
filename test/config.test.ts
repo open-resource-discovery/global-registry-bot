@@ -288,3 +288,140 @@ test('throws if GitHub getContent fails with non-404', async () => {
 
   await expect(loadStaticConfig(context, { forceReload: true })).rejects.toThrow('500');
 });
+
+test('falls back from repo yaml directory entry to repo yml config, closes nothing when no issue exists, and loads repo hooks', async () => {
+  const owner = 'o_repo_yml_hooks';
+  const repo = 'r_repo_yml_hooks';
+  const prevDebug = process.env.DEBUG_NS;
+  process.env.DEBUG_NS = '1';
+
+  try {
+    const { context, createComment, update } = mkContext({
+      owner,
+      repo,
+      openIssues: [],
+      files: {
+        [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'dir' },
+        [`${owner}/${repo}:${CFG_YML}`]: {
+          kind: 'file',
+          text: `
+pr:
+  autoMerge:
+    enabled: false
+    method: merge
+workflow:
+  approvers: null
+requests:
+  demo:
+    folderName: data
+    schema: schema/demo.json
+    issueTemplate: .github/ISSUE_TEMPLATE/demo.yml
+    approvers: null
+`,
+        },
+        [`${owner}/${repo}:${CFG_JS}`]: {
+          kind: 'file',
+          text: `export default { hooks: true }`,
+        },
+      },
+    });
+
+    const res = await loadStaticConfig(context, {
+      validate: true,
+      updateIssue: true,
+      forceReload: true,
+    });
+
+    expect(res.source).toBe(`repo:${CFG_YML}`);
+    expect(res.config.pr?.autoMerge?.enabled).toBe(false);
+    expect(res.config.pr?.autoMerge?.method).toBe('merge');
+    expect(res.config.workflow?.approvers).toBeNull();
+    expect(res.config.requests?.demo?.approvers).toBeNull();
+    expect(res.hooks).toEqual(
+      expect.objectContaining({
+        __type: 'registry-bot-hooks:esm',
+        __path: CFG_JS,
+        __code: `export default { hooks: true }`,
+      })
+    );
+    expect(createComment).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  } finally {
+    process.env.DEBUG_NS = prevDebug;
+  }
+});
+
+test('invalid config reporting tolerates non-Error failures while listing and creating issues', async () => {
+  const owner = 'o_invalid_warns';
+  const repo = 'r_invalid_warns';
+
+  const { context, listForRepo, create } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: `requests: bad` },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  listForRepo.mockRejectedValueOnce('list failed');
+  create.mockRejectedValueOnce('create failed');
+
+  const res = await loadStaticConfig(context, {
+    validate: true,
+    updateIssue: true,
+    forceReload: true,
+  });
+
+  expect(res.source).toBe('default-invalid-config');
+  expect(context.log.warn).toHaveBeenCalledWith(
+    { err: 'list failed' },
+    'failed to list issues while reporting static config error'
+  );
+  expect(context.log.warn).toHaveBeenCalledWith({ err: 'create failed' }, 'failed to create static config error issue');
+});
+
+test('default config without validation logs debug and ignores hook loading failures with non-status errors', async () => {
+  const owner = 'o_default_debug';
+  const repo = 'r_default_debug';
+
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'err', status: 404 },
+      [`${owner}/${repo}:${CFG_YML}`]: { kind: 'err', status: 404 },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+      [`${owner}/.github:${CFG_YAML}`]: { kind: 'err', status: 404 },
+      [`${owner}/.github:${CFG_YML}`]: { kind: 'err', status: 404 },
+      [`${owner}/.github:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  context.octokit.repos.getContent.mockImplementation(
+    ({ owner: ownerArg, repo: repoArg, path }: { owner: string; repo: string; path: string }) => {
+      if (ownerArg === owner && repoArg === repo && path === CFG_JS) {
+        throw new Error('hooks boom');
+      }
+      throw httpErr(404);
+    }
+  );
+
+  const res = await loadStaticConfig(context, {
+    validate: false,
+    updateIssue: true,
+    forceReload: true,
+  });
+
+  expect(res.source).toBe('default');
+  expect(res.hooks).toBeNull();
+  expect(res.hooksSource).toBeNull();
+  expect(context.log.debug).toHaveBeenCalledWith(
+    { source: 'default' },
+    'no static registry-bot config found; using DEFAULT_CONFIG without validation'
+  );
+  expect(context.log.warn).toHaveBeenCalledWith(
+    { err: 'hooks boom' },
+    'failed to load JS registry-bot config; continuing without hooks'
+  );
+});

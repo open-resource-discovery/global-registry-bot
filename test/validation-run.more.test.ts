@@ -2166,7 +2166,7 @@ describe('validation/run.ts extra coverage', () => {
     restore();
   });
 
-  it('maps machine-readable validation issue fields to issue template field names', async () => {
+  it('maps machine-readable validation issue fields to schema property names before template labels', async () => {
     const { mod, mocks, restore } = await loadSubject();
 
     mocks.loadStaticConfig.mockResolvedValueOnce({
@@ -2229,10 +2229,13 @@ describe('validation/run.ts extra coverage', () => {
     );
 
     expect(result.validationIssues).toEqual(
-      expect.arrayContaining([{ path: 'Name', message: 'MUST NOT have fewer than 5 characters' }])
+      expect.arrayContaining([{ path: 'name', message: 'MUST NOT have fewer than 5 characters' }])
     );
     expect(result.validationIssues).not.toEqual(
       expect.arrayContaining([{ path: 'identifier', message: 'MUST NOT have fewer than 5 characters' }])
+    );
+    expect(result.validationIssues).not.toEqual(
+      expect.arrayContaining([{ path: 'Name', message: 'MUST NOT have fewer than 5 characters' }])
     );
 
     restore();
