@@ -20,5 +20,5 @@ jobs:
       - name: Create GitHub Release
         uses: open-resource-discovery/github-release@8c4d8e4db8921195691f8a150e3f744db03ce2dc # main
         with:
-          tag-template: 'rel/<version>'
+          tag-template: 'v/<version>'
           version: ${{ inputs.version }}

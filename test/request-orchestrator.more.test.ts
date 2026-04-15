@@ -90,6 +90,7 @@ type PullsListFn = (args: unknown) => Promise<{ data: unknown[] }>;
 type PullsUpdateFn = (args: unknown) => Promise<unknown>;
 type PullsCreateReviewFn = (args: unknown) => Promise<unknown>;
 type PullsListFilesFn = (args: unknown) => Promise<{ data: unknown[] }>;
+type PullsListCommitsFn = (args: unknown) => Promise<{ data: unknown[] }>;
 
 type ChecksListAnnotationsFn = (args: any) => Promise<{ data: any[] }>;
 type ChecksListForSuiteFn = (args: any) => Promise<{ data: { check_runs: any[] } }>;
@@ -143,6 +144,7 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
         ),
         list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
         listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
+        listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
         createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
         update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
       },
@@ -888,6 +890,27 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
     ],
   });
 
+  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    if (path === '.github/registry-bot/request-schemas/system-namespace.schema.json') {
+      return {
+        data: {
+          content: Buffer.from(
+            JSON.stringify({
+              properties: {
+                contacts: {
+                  title: 'Contacts',
+                },
+              },
+            })
+          ).toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
+
+    throw httpErr(404);
+  });
+
   ctx.octokit.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/42' },
   });
@@ -896,13 +919,130 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
 
   expect(postOnce).toHaveBeenCalledTimes(1);
   const [, params, body] = (postOnce as jest.Mock).mock.calls[0];
+  const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 42 });
-  expect(String(body)).toContain('## Detected issues: data/namespaces/sap.css.yaml');
-  expect(String(body)).toContain('### Contacts');
-  expect(String(body)).toContain("Property 'contact' is required for System.");
+  expect(bodyText).toContain('### File: `data/namespaces/sap.css.yaml`');
+  expect(bodyText).toContain('### Contacts');
+  expect(bodyText).toContain("Property 'contact' is required for System.");
+  expect(bodyText).toContain('"field": "contacts"');
 
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
+});
+
+test('check_suite.completed failure aggregates multi-file registry issues into one machine-readable PR comment', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['check_suite.completed'][0];
+
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'failure',
+    sha: 'sha-aggregate',
+    ownerLogin: 'o1',
+    repoName: 'r1',
+    withCachedConfig: true,
+  });
+
+  ctx.payload.check_suite.id = 501;
+  ctx.payload.check_suite.pull_requests = [{ number: 77 }];
+
+  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+    data: { check_runs: [{ id: 9002, html_url: 'https://example/check/9002' }] },
+  });
+
+  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+    data: [
+      {
+        path: 'data/namespaces/sap.css.yaml',
+        title: 'registry-validate systemNamespace',
+        message:
+          "Property 'contact' is required for System. [file=data/namespaces/sap.css.yaml schema=.github/registry-bot/request-schemas/system-namespace.schema.json requestType=systemNamespace]",
+        annotation_level: 'failure',
+      },
+      {
+        path: 'data/products/product-one.yaml',
+        title: 'registry-validate product',
+        message:
+          'Product Name is required. [file=data/products/product-one.yaml schema=.github/registry-bot/request-schemas/product.schema.json requestType=product]',
+        annotation_level: 'failure',
+      },
+      {
+        path: 'data/products/product-one.yaml',
+        title: 'registry-validate product',
+        message:
+          '/identifier MUST match pattern. [file=data/products/product-one.yaml schema=.github/registry-bot/request-schemas/product.schema.json requestType=product]',
+        annotation_level: 'failure',
+      },
+    ],
+  });
+
+  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    if (path === '.github/registry-bot/request-schemas/system-namespace.schema.json') {
+      return {
+        data: {
+          content: Buffer.from(
+            JSON.stringify({
+              properties: {
+                contacts: {
+                  title: 'Contacts',
+                },
+              },
+            })
+          ).toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
+
+    if (path === '.github/registry-bot/request-schemas/product.schema.json') {
+      return {
+        data: {
+          content: Buffer.from(
+            JSON.stringify({
+              properties: {
+                title: {
+                  'title': 'Product Name',
+                  'x-form-field': 'title',
+                },
+                identifier: {
+                  'title': 'Product ID',
+                  'x-form-field': 'identifier',
+                },
+              },
+            })
+          ).toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
+
+    throw httpErr(404);
+  });
+
+  ctx.octokit.pulls.get.mockResolvedValueOnce({
+    data: { html_url: 'https://github.tools.sap/o1/r1/pull/77' },
+  });
+
+  await handler(ctx);
+
+  expect(postOnce).toHaveBeenCalledTimes(1);
+  const [, params, body, options] = (postOnce as jest.Mock).mock.calls[0];
+  const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
+
+  expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 77 });
+  expect(options).toEqual(expect.objectContaining({ minimizeTag: 'nsreq:ci-validation' }));
+  expect(bodyText).toContain('## Detected issues');
+  expect(bodyText).toContain('### File: `data/namespaces/sap.css.yaml`');
+  expect(bodyText).toContain('### File: `data/products/product-one.yaml`');
+  expect(bodyText).toContain('Show as JSON (Robots Friendly)');
+  expect(bodyText).toContain('"filePath": "data/namespaces/sap.css.yaml"');
+  expect(bodyText).toContain('"filePath": "data/products/product-one.yaml"');
+  expect(bodyText).toContain('"field": "contacts"');
+  expect(bodyText).toContain('"field": "title"');
+  expect(bodyText).toContain('"field": "identifier"');
+  expect(bodyText).toContain('#### Product name');
 });
 
 test('check_suite.completed failure does nothing if there are no registry-validate annotations', async () => {
@@ -1507,6 +1647,466 @@ describe('parent owner approval gating', () => {
     expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Detected issues'))).toBe(true);
     expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
   });
+  test('issue_comment: approval recovers from stale request branch when PR creation fails with no commits between', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+  sap.aiadm
+
+  ### System Description
+
+  \`\`\`text
+  Example description
+  \`\`\`
+
+  ### Contacts
+
+  \`\`\`text
+  owner@sap.com
+  \`\`\`
+
+  ### Visibility
+
+  public
+
+  <!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr
+      .mockRejectedValueOnce(
+        new Error(
+          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
+        )
+      )
+      .mockResolvedValueOnce({ number: 999 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      ref: 'heads/feat/resource-sap.aiadm-issue-176',
+    });
+
+    expect(createRequestPr).toHaveBeenCalledTimes(2);
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #999'))).toBe(
+      true
+    );
+    expect(
+      postOnce.mock.calls.some((c) =>
+        String(c[2] ?? '').includes('No commits between main and feat/resource-sap.aiadm-issue-176')
+      )
+    ).toBe(false);
+  });
+
+  test('issue_comment: approval recovers from stale branch when PR creation reports resource already exists only on request branch', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+sap.aiadm
+
+### System Description
+
+\`\`\`text
+Example description
+\`\`\`
+
+### Contacts
+
+\`\`\`text
+owner@sap.com
+\`\`\`
+
+### Visibility
+
+public
+
+<!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr
+      .mockRejectedValueOnce(new Error("Resource 'sap.aiadm' already exists at data/namespaces"))
+      .mockResolvedValueOnce({ number: 1001 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (String(path) === 'data/namespaces/sap.aiadm.yaml') {
+        const err: any = new Error('Not Found');
+        err.status = 404;
+        throw err;
+      }
+      const err: any = new Error('Not Found');
+      err.status = 404;
+      throw err;
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      ref: 'heads/feat/resource-sap.aiadm-issue-176',
+    });
+
+    expect(createRequestPr).toHaveBeenCalledTimes(2);
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #1001'))).toBe(
+      true
+    );
+  });
+
+  test('issue_comment: approval shows human-readable exists message when resource already exists on default branch', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+sap.aiadm
+
+### System Description
+
+\`\`\`text
+Example description
+\`\`\`
+
+### Contacts
+
+\`\`\`text
+owner@sap.com
+\`\`\`
+
+### Visibility
+
+public
+
+<!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr.mockRejectedValueOnce(new Error("Resource 'sap.aiadm' already exists at data/namespaces"));
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({ data: { content: 'x', encoding: 'base64' } });
+
+    await handler(ctx);
+
+    expect(createRequestPr).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.git.deleteRef).not.toHaveBeenCalled();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain("Failed to create PR automatically: Resource 'sap.aiadm' already exists in the registry.");
+  });
+
+  test('issue_comment: approval shows human-readable stale branch message when retry after no-commits also fails', async () => {
+    const cfg = {
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['alice'],
+      },
+      pr: {
+        branchNameTemplate: 'feat/resource-{resource}-issue-{issue}',
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 176,
+      title: 'System Namespace: sap.aiadm',
+      body: `### Namespace
+
+sap.aiadm
+
+### System Description
+
+\`\`\`text
+Example description
+\`\`\`
+
+### Contacts
+
+\`\`\`text
+owner@sap.com
+\`\`\`
+
+### Visibility
+
+public
+
+<!-- nsreq:routing-lock = {"v":1,"expected":"System Namespace"} -->`,
+      labels: ['needs-review'],
+      user: { login: 'requester' },
+    };
+
+    loadTemplate.mockResolvedValueOnce({
+      title: 'System Namespace',
+      name: 'System Namespace',
+      body: [],
+      labels: ['System Namespace'],
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+    });
+
+    parseForm.mockReturnValueOnce({
+      namespace: 'sap.aiadm',
+      description: 'Example description',
+      contact: 'owner@sap.com',
+      visibility: 'public',
+    });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsGrouped: null,
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.aiadm',
+      nsType: 'system',
+      template: {
+        _meta: {
+          requestType: 'systemNamespace',
+          root: '/data/namespaces',
+          schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        },
+      },
+    });
+
+    createRequestPr
+      .mockRejectedValueOnce(
+        new Error(
+          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
+        )
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
+        )
+      );
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      ref: 'heads/feat/resource-sap.aiadm-issue-176',
+    });
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+    expect(bodies).toContain(
+      "Failed to create PR automatically: stale request branch 'feat/resource-sap.aiadm-issue-176' blocked PR creation. Please retry approval."
+    );
+    expect(bodies).not.toContain('Validation Failed: {"resource":"PullRequest"');
+    expect(bodies).not.toContain('https://docs.github.com/');
+  });
 
   test('issue_comment: explicit approved creates PR only after request is valid', async () => {
     const cfg = {
@@ -1695,6 +2295,9 @@ describe('parent owner approval gating', () => {
     });
 
     extractHashFromPrBody.mockReturnValueOnce('');
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'ignored-author' }, committer: { login: 'last-committer' } }],
+    });
     runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
 
     await handler(ctx);
@@ -1703,6 +2306,11 @@ describe('parent owner approval gating', () => {
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 5, mergeMethod: 'squash' })
+    );
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({ requestAuthorId: 'last-committer' })
     );
     expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(expect.objectContaining({ labels: ['Approved'] }));
   });
@@ -1748,6 +2356,7 @@ describe('parent owner approval gating', () => {
     ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/product-one.yaml', status: 'modified' },
+        { filename: '.github/workflows/review.yaml', status: 'modified' },
         { filename: 'README.md', status: 'modified' },
         { filename: 'resources/deleted.yaml', status: 'removed' },
       ],
@@ -1761,6 +2370,10 @@ describe('parent owner approval gating', () => {
         ).toString('base64'),
         encoding: 'base64',
       },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'ignored-author' }, committer: { login: 'direct-last-committer' } }],
     });
 
     runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved from standalone hook' } as any);
@@ -1780,6 +2393,7 @@ describe('parent owner approval gating', () => {
         requestType: 'product',
         namespace: 'product-one',
         resourceName: 'product-one',
+        requestAuthorId: 'direct-last-committer',
         formData: expect.objectContaining({
           identifier: 'product-one',
           namespace: 'product-one',
@@ -2427,5 +3041,95 @@ describe('parent owner approval gating', () => {
     expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: standalone direct PR ignores non-registry yaml files during onApproval evaluation', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-non-registry-yaml',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 60,
+            body: 'manual direct pr',
+            title: 'Direct',
+            head: { ref: 'feature/non-registry-yaml', sha: 'sha-non-registry-yaml' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [
+        { filename: 'resources/product-ok.yaml', status: 'modified' },
+        { filename: '.github/release.yml', status: 'modified' },
+      ],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from(
+          'type: product\nidentifier: product-ok\ntitle: Product OK\nvisibility: public\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ committer: { login: 'registry-committer' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.repos.getContent).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        path: 'resources/product-ok.yaml',
+        ref: 'feature/non-registry-yaml',
+      })
+    );
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestAuthorId: 'registry-committer',
+        formData: expect.objectContaining({
+          identifier: 'product-ok',
+          title: 'Product OK',
+          visibility: 'public',
+        }),
+      })
+    );
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 60, mergeMethod: 'squash' })
+    );
   });
 });

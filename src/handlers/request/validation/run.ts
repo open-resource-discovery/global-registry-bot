@@ -544,19 +544,51 @@ function normalizeApprovalHookErrors(value: unknown): readonly {
   return out;
 }
 
+function normalizeLoginValue(value: unknown): string {
+  return toStringSafe(value).replace(/^@+/, '').trim();
+}
+
+function uniqLogins(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values || []) {
+    const login = normalizeLoginValue(value);
+    if (!login) continue;
+
+    const key = login.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(login);
+  }
+
+  return out;
+}
+
+function toLoginArray(value: unknown): string[] {
+  return Array.isArray(value) ? uniqLogins(value.map((item) => normalizeLoginValue(item)).filter(Boolean)) : [];
+}
+
 function getApprovalHookApprovers(context: ValidationContext, requestType: string): string[] {
   const cfg = context.resourceBotConfig ?? {};
+  const workflow = isPlainObject(cfg['workflow']) ? cfg['workflow'] : {};
+
+  const fallbackApprovers = uniqLogins([
+    ...toLoginArray(workflow['approvers']),
+    ...toLoginArray(workflow['approversPool']),
+  ]);
+
   const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
-  const entry = isPlainObject(reqs[requestType]) ? (reqs[requestType] as Record<string, unknown>) : null;
+  const entry = isPlainObject(reqs[requestType]) ? reqs[requestType] : null;
 
-  const localApprovers = Array.isArray(entry?.['approvers'])
-    ? entry['approvers'].map((v) => toStringSafe(v)).filter(Boolean)
-    : [];
+  if (!entry) return fallbackApprovers;
 
-  if (localApprovers.length) return localApprovers;
+  const hasOwnApprovers = Array.isArray(entry['approvers']);
+  const hasOwnApproversPool = Array.isArray(entry['approversPool']);
 
-  const workflow = isPlainObject(cfg.workflow) ? cfg.workflow : {};
-  return Array.isArray(workflow['approvers']) ? workflow['approvers'].map((v) => toStringSafe(v)).filter(Boolean) : [];
+  if (!hasOwnApprovers && !hasOwnApproversPool) return fallbackApprovers;
+
+  return uniqLogins([...toLoginArray(entry['approvers']), ...toLoginArray(entry['approversPool'])]);
 }
 
 function buildApprovalHookData(
@@ -623,6 +655,75 @@ function buildLabelToFieldIdMap(template: TemplateLike): Map<string, string> {
   return out;
 }
 
+function getTemplateFieldLabel(template: TemplateLike, fieldId: unknown): string {
+  const id = toStringSafe(fieldId);
+  if (!id) return '';
+
+  const fields = Array.isArray(template?.body) ? template.body : [];
+  for (const field of fields) {
+    if (toStringSafe(field?.id) !== id) continue;
+
+    const label = toStringSafe(field?.attributes?.label);
+    return label;
+  }
+
+  return '';
+}
+
+function getSchemaMappedFieldName(schemaObj: unknown, fieldId: unknown): string {
+  const id = toStringSafe(fieldId);
+  if (!id) return '';
+
+  const schemaProps = getObjectProp(schemaObj, 'properties');
+  if (!schemaProps) return '';
+
+  if (Object.hasOwn(schemaProps, id)) {
+    const propDef = schemaProps[id];
+    if (isPlainObject(propDef)) {
+      const mappedFormFieldId = toStringSafe(propDef['x-form-field']);
+      if (mappedFormFieldId) return mappedFormFieldId;
+    }
+
+    return id;
+  }
+
+  for (const [propName, propDef] of Object.entries(schemaProps)) {
+    if (!isPlainObject(propDef)) continue;
+    if (toStringSafe(propDef['x-form-field']) !== id) continue;
+    return propName;
+  }
+
+  return '';
+}
+
+function resolveMachineReadableFieldName(
+  template: TemplateLike,
+  schemaObj: unknown,
+  fieldId: unknown,
+  fallback = 'details'
+): string {
+  const id = toStringSafe(fieldId);
+  if (!id) return fallback;
+
+  const templateLabel = getTemplateFieldLabel(template, id);
+  if (templateLabel) return templateLabel;
+
+  const schemaFieldName = getSchemaMappedFieldName(schemaObj, id);
+  if (schemaFieldName) {
+    const mappedTemplateLabel = getTemplateFieldLabel(template, schemaFieldName);
+    if (mappedTemplateLabel) return mappedTemplateLabel;
+
+    const reverseMappedSchemaFieldName = getSchemaMappedFieldName(schemaObj, schemaFieldName);
+    if (reverseMappedSchemaFieldName && reverseMappedSchemaFieldName !== schemaFieldName) {
+      return reverseMappedSchemaFieldName;
+    }
+
+    return schemaFieldName;
+  }
+
+  return id || fallback;
+}
+
 function parseRuleValidationIssue(raw: string): ValidationIssue | null {
   const m = /^([A-Za-z0-9_.-]+)\s*:\s*(.+)$/.exec(raw);
   if (!m?.[1] || !m?.[2]) return null;
@@ -633,13 +734,14 @@ function parseRuleValidationIssue(raw: string): ValidationIssue | null {
 function buildMachineReadableValidationIssues(
   buckets: ValidationBuckets,
   template: TemplateLike,
+  schemaObj: unknown,
   ajvErrors: AjvErrorLike[] = []
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const labelToFieldId = buildLabelToFieldIdMap(template);
   const { idToLabel } = buildTemplateLabelMaps(template);
   const primaryFieldId = guessPrimaryFieldId(template) || 'identifier';
-  const primaryLabel = idToLabel.get(primaryFieldId) || humanizeKey(primaryFieldId);
+  const primaryLabel = resolveMachineReadableFieldName(template, schemaObj, primaryFieldId, 'details');
   const ajvMessages = new Set<string>();
 
   for (const err of Array.isArray(ajvErrors) ? ajvErrors : []) {
@@ -651,14 +753,23 @@ function buildMachineReadableValidationIssues(
     const fieldIds = fieldIdsFromAjvError(err);
     if (fieldIds.length) {
       for (const fieldId of fieldIds) {
-        const issue = makeValidationIssue(fieldId, msg, 'schema');
+        const issue = makeValidationIssue(
+          resolveMachineReadableFieldName(template, schemaObj, fieldId, 'details'),
+          msg,
+          'details'
+        );
         if (issue) issues.push(issue);
       }
       continue;
     }
 
     const instancePath = toStringSafe(err?.instancePath).replace(/^\/+/, '');
-    const issue = makeValidationIssue(instancePath || 'schema', msg, 'schema');
+    const instanceField = instancePath.split('/').find(Boolean) || '';
+    const issue = makeValidationIssue(
+      resolveMachineReadableFieldName(template, schemaObj, instanceField, 'details'),
+      msg,
+      'details'
+    );
     if (issue) issues.push(issue);
   }
 
@@ -666,31 +777,39 @@ function buildMachineReadableValidationIssues(
     const requiredMatch = /^Required field is missing in form:\s*(.+)$/i.exec(raw);
     if (requiredMatch?.[1]) {
       const label = toStringSafe(requiredMatch[1]).toLowerCase();
-      const fieldId = labelToFieldId.get(label) || primaryFieldId;
-      const issue = makeValidationIssue(fieldId, 'Required field is missing.', 'form');
+      const fieldName = resolveMachineReadableFieldName(
+        template,
+        schemaObj,
+        labelToFieldId.get(label) || '',
+        requiredMatch[1]
+      );
+      const issue = makeValidationIssue(fieldName, 'Required field is missing.', requiredMatch[1]);
       if (issue) issues.push(issue);
       continue;
     }
 
-    const issue = makeValidationIssue('form', raw, 'form');
+    const issue = makeValidationIssue('details', raw, 'details');
     if (issue) issues.push(issue);
   }
 
   for (const raw of dedupe(buckets.rules || [])) {
     const structured = parseRuleValidationIssue(raw);
     if (structured) {
-      issues.push(structured);
+      issues.push({
+        ...structured,
+        path: resolveMachineReadableFieldName(template, schemaObj, structured.path, structured.path || 'details'),
+      });
       continue;
     }
 
     const inferredLabel = inferFieldLabelFromRuleMsg(raw, primaryLabel, idToLabel);
-    const inferredFieldId = inferredLabel ? labelToFieldId.get(inferredLabel.toLowerCase()) || 'rules' : 'rules';
-    const issue = makeValidationIssue(inferredFieldId, raw, 'rules');
+    const inferredFieldName = inferredLabel || 'details';
+    const issue = makeValidationIssue(inferredFieldName, raw, inferredFieldName);
     if (issue) issues.push(issue);
   }
 
   for (const raw of dedupe(buckets.registry || [])) {
-    const issue = makeValidationIssue(primaryFieldId, raw, primaryFieldId);
+    const issue = makeValidationIssue(primaryLabel, raw, primaryLabel);
     if (issue) issues.push(issue);
   }
 
@@ -698,7 +817,7 @@ function buildMachineReadableValidationIssues(
     const normalized = normalizeAjvMessage(raw);
     if (ajvMessages.has(normalized)) continue;
 
-    const issue = makeValidationIssue('schema', raw, 'schema');
+    const issue = makeValidationIssue('details', raw, 'details');
     if (issue) issues.push(issue);
   }
 
@@ -1059,8 +1178,6 @@ function formatUnifiedIssues(
     if (ajvMsgSet.has(msg)) continue;
     addGrouped(grouped, 'General', `[schema] ${msg}`);
   }
-
-  if (!grouped.size) return '';
   const ordered = orderGroupedKeys(labelOrder, grouped);
   return ordered
     .map((k) => {
@@ -1103,7 +1220,6 @@ function pickIdentifierFromFields(template: TemplateLike, formData: FormData): s
   const fields = Array.isArray(template.body) ? template.body : [];
 
   for (const field of fields) {
-    if (!field?.id) continue;
     const id = String(field.id).trim();
     const required = field?.validations?.required === true;
     const label = toStringSafe(field?.attributes?.label).toLowerCase();
@@ -1375,13 +1491,21 @@ function buildValidateRequestIssueResult(
   errors: string[],
   buckets: ValidationBuckets,
   template: TemplateLike,
-  ajvErrorsForUnifiedFormat: AjvErrorLike[],
-  formData: FormData,
-  namespace: string,
-  nsType: string
+  options: {
+    schemaObj: unknown;
+    ajvErrorsForUnifiedFormat: AjvErrorLike[];
+    formData: FormData;
+    namespace: string;
+    nsType: string;
+  }
 ): ValidateRequestIssueResult {
-  const unified = formatUnifiedIssues(buckets, template, ajvErrorsForUnifiedFormat);
-  const validationIssues = buildMachineReadableValidationIssues(buckets, template, ajvErrorsForUnifiedFormat);
+  const unified = formatUnifiedIssues(buckets, template, options.ajvErrorsForUnifiedFormat);
+  const validationIssues = buildMachineReadableValidationIssues(
+    buckets,
+    template,
+    options.schemaObj,
+    options.ajvErrorsForUnifiedFormat
+  );
 
   return {
     errors,
@@ -1389,10 +1513,10 @@ function buildValidateRequestIssueResult(
     errorsFormatted: unified || formatBuckets(buckets),
     errorsFormattedSingle: unified || formatFirstBucket(buckets),
     validationIssues,
-    formData,
+    formData: options.formData,
     template,
-    namespace,
-    nsType,
+    namespace: options.namespace,
+    nsType: options.nsType,
   };
 }
 
@@ -1400,13 +1524,20 @@ function buildValidateRequestIssueErrorResult(
   errors: string[],
   buckets: ValidationBuckets,
   template: TemplateLike,
+  schemaObj: unknown,
   message: string,
   targetBucket: string[]
 ): ValidateRequestIssueResult {
   targetBucket.push(message);
   errors.push(message);
 
-  return buildValidateRequestIssueResult(errors, buckets, template, [], {}, '', '');
+  return buildValidateRequestIssueResult(errors, buckets, template, {
+    schemaObj,
+    ajvErrorsForUnifiedFormat: [],
+    formData: {},
+    namespace: '',
+    nsType: '',
+  });
 }
 
 function resolveTemplateAndRequestType(
@@ -1431,6 +1562,7 @@ function resolveTemplateAndRequestType(
           errors,
           buckets,
           template,
+          null,
           `Invalid Partner Namespace 'Request Type' selection '${toStringSafe(selected) || ''}'. Expected one of: authority, system, subContext.`,
           buckets.form
         ),
@@ -1444,6 +1576,7 @@ function resolveTemplateAndRequestType(
           errors,
           buckets,
           template,
+          null,
           `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests has no such entry.`,
           buckets.schema
         ),
@@ -1457,6 +1590,7 @@ function resolveTemplateAndRequestType(
           errors,
           buckets,
           template,
+          null,
           `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests['${mapped}'].schema is empty.`,
           buckets.schema
         ),
@@ -1488,6 +1622,7 @@ function resolveTemplateAndRequestType(
         errors,
         buckets,
         template,
+        null,
         'Configuration error: template missing _meta.requestType (expected cfg.requests mapping via loadTemplate).',
         buckets.schema
       ),
@@ -1501,6 +1636,7 @@ function resolveTemplateAndRequestType(
         errors,
         buckets,
         template,
+        null,
         `Configuration error: unknown requestType '${requestType}' (missing cfg.requests entry).`,
         buckets.schema
       ),
@@ -2297,6 +2433,7 @@ export async function validateRequestIssue(
   // 6) Resolve primary identifier
   const schemaPathForId = String(template?._meta?.schema || '').trim();
   const schemaObjForId = await loadSchemaFromRepoOrLocal(context, owner, repo, schemaPathForId);
+  let schemaObjForValidation: unknown = schemaObjForId;
 
   const rawResolved = resolvePrimaryIdFromTemplate(template, formData, schemaObjForId) || '';
   const rawIdOrNs = rawResolved.replaceAll('\u00a0', ' ').trim();
@@ -2306,7 +2443,13 @@ export async function validateRequestIssue(
     buckets.form.push(msg);
     errors.push(msg);
 
-    return buildValidateRequestIssueResult(errors, buckets, template, [], {}, '', '');
+    return buildValidateRequestIssueResult(errors, buckets, template, {
+      schemaObj: schemaObjForValidation,
+      ajvErrorsForUnifiedFormat: [],
+      formData: {},
+      namespace: '',
+      nsType: '',
+    });
   }
 
   // 7) Normalize formData
@@ -2358,6 +2501,7 @@ export async function validateRequestIssue(
 
       const schemaObj = await loadSchemaFromRepoOrLocal(context, owner, repo, schemaPath);
       if (!schemaObj) throw new Error(`Schema not found for path: ${schemaPath}`);
+      schemaObjForValidation = schemaObj;
 
       // enforce identifier mapping consistency
       const schemaProps = getObjectProp(schemaObj, 'properties') || {};
@@ -2546,15 +2690,13 @@ export async function validateRequestIssue(
 
   const nsType = inferNsType(requestType);
 
-  return buildValidateRequestIssueResult(
-    errors,
-    buckets,
-    template,
+  return buildValidateRequestIssueResult(errors, buckets, template, {
+    schemaObj: schemaObjForValidation,
     ajvErrorsForUnifiedFormat,
-    normalizedFormData,
+    formData: normalizedFormData,
     namespace,
-    nsType
-  );
+    nsType,
+  });
 }
 
 function logApprovalHookMessages(
@@ -2615,11 +2757,12 @@ function buildApprovalHookArgs(
     resourceName?: string | null;
     formData: FormData;
     issue: IssueLike;
+    requestAuthorId?: string | null;
   }
 ): OnApprovalArgs {
   const namespace = resolveApprovalNamespace(args);
   const resourceName = resolveApprovalResourceName(args, namespace);
-  const requesterId = toStringSafe(args.issue?.user?.login);
+  const requesterId = toStringSafe(args.requestAuthorId) || toStringSafe(args.issue?.user?.login);
 
   return {
     requestType: toStringSafe(args.requestType),
@@ -2715,6 +2858,7 @@ export async function runApprovalHook(
     resourceName?: string | null;
     formData: FormData;
     issue: IssueLike;
+    requestAuthorId?: string | null;
   }
 ): Promise<ApprovalHookDecision> {
   await ensureStaticConfigLoaded(context);
