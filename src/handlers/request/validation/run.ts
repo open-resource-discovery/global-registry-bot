@@ -663,8 +663,7 @@ function getTemplateFieldLabel(template: TemplateLike, fieldId: unknown): string
   for (const field of fields) {
     if (toStringSafe(field?.id) !== id) continue;
 
-    const label = toStringSafe(field?.attributes?.label);
-    return label;
+    return toStringSafe(field?.attributes?.label);
   }
 
   return '';
@@ -677,15 +676,7 @@ function getSchemaMappedFieldName(schemaObj: unknown, fieldId: unknown): string 
   const schemaProps = getObjectProp(schemaObj, 'properties');
   if (!schemaProps) return '';
 
-  if (Object.hasOwn(schemaProps, id)) {
-    const propDef = schemaProps[id];
-    if (isPlainObject(propDef)) {
-      const mappedFormFieldId = toStringSafe(propDef['x-form-field']);
-      if (mappedFormFieldId) return mappedFormFieldId;
-    }
-
-    return id;
-  }
+  if (Object.hasOwn(schemaProps, id)) return id;
 
   for (const [propName, propDef] of Object.entries(schemaProps)) {
     if (!isPlainObject(propDef)) continue;
@@ -705,21 +696,11 @@ function resolveMachineReadableFieldName(
   const id = toStringSafe(fieldId);
   if (!id) return fallback;
 
+  const schemaFieldName = getSchemaMappedFieldName(schemaObj, id);
+  if (schemaFieldName) return schemaFieldName;
+
   const templateLabel = getTemplateFieldLabel(template, id);
   if (templateLabel) return templateLabel;
-
-  const schemaFieldName = getSchemaMappedFieldName(schemaObj, id);
-  if (schemaFieldName) {
-    const mappedTemplateLabel = getTemplateFieldLabel(template, schemaFieldName);
-    if (mappedTemplateLabel) return mappedTemplateLabel;
-
-    const reverseMappedSchemaFieldName = getSchemaMappedFieldName(schemaObj, schemaFieldName);
-    if (reverseMappedSchemaFieldName && reverseMappedSchemaFieldName !== schemaFieldName) {
-      return reverseMappedSchemaFieldName;
-    }
-
-    return schemaFieldName;
-  }
 
   return id || fallback;
 }
@@ -802,8 +783,11 @@ function buildMachineReadableValidationIssues(
       continue;
     }
 
-    const inferredLabel = inferFieldLabelFromRuleMsg(raw, primaryLabel, idToLabel);
-    const inferredFieldName = inferredLabel || 'details';
+    const inferredFieldId = inferFieldLabelFromRuleMsg(raw, primaryFieldId, idToLabel);
+    const inferredFieldName = inferredFieldId
+      ? resolveMachineReadableFieldName(template, schemaObj, inferredFieldId, inferredFieldId)
+      : 'details';
+
     const issue = makeValidationIssue(inferredFieldName, raw, inferredFieldName);
     if (issue) issues.push(issue);
   }
@@ -1061,8 +1045,15 @@ function guessPrimaryFieldId(template: TemplateLike): string {
 
 function inferFieldLabelFromRuleMsg(msg: unknown, primary: string, idMap: Map<string, string>): string {
   const s = toStringSafe(msg).toLowerCase();
-  if (s.includes('identifier') || s.includes('namespace') || s.includes('product id')) return primary;
-  if (s.includes('title') && idMap.get('title')) return idMap.get('title') || '';
+
+  if (s.includes('identifier') || s.includes('namespace') || s.includes('product id')) {
+    return primary;
+  }
+
+  if (s.includes('title') && idMap.get('title')) {
+    return 'title';
+  }
+
   return '';
 }
 

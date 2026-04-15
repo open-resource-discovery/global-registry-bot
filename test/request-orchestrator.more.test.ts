@@ -3133,3 +3133,758 @@ public
     );
   });
 });
+
+test('issues.opened: without jest worker id skips freeform issues outside test runtime', async () => {
+  const prevWorkerId = process.env.JEST_WORKER_ID;
+  delete process.env.JEST_WORKER_ID;
+
+  try {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issues.opened'][0];
+    const ctx = mkIssuesContext({
+      action: 'opened',
+      issue: { number: 70, title: 'Freeform', body: 'plain text only', labels: [], user: { login: 'user' } },
+      withCachedConfig: true,
+    });
+
+    await handler(ctx);
+
+    expect(loadTemplate).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  } finally {
+    if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
+  }
+});
+
+test('issues.closed: without jest worker id skips freeform issues outside test runtime', async () => {
+  const prevWorkerId = process.env.JEST_WORKER_ID;
+  delete process.env.JEST_WORKER_ID;
+
+  try {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issues.closed'][0];
+    const issue = {
+      number: 71,
+      title: 'Freeform',
+      body: 'plain text only',
+      labels: [],
+      state: 'closed',
+      user: { login: 'u' },
+    };
+    const ctx = mkBaseContext({
+      issue,
+      withCachedConfig: true,
+    });
+    ctx.name = 'issues.closed';
+    ctx.payload = { action: 'closed', issue };
+
+    await handler(ctx);
+
+    expect(loadTemplate).not.toHaveBeenCalled();
+  } finally {
+    if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
+  }
+});
+
+test('issues.labeled: without jest worker id skips freeform issues outside test runtime', async () => {
+  const prevWorkerId = process.env.JEST_WORKER_ID;
+  delete process.env.JEST_WORKER_ID;
+
+  try {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issues.labeled'][0];
+    const issue = {
+      number: 72,
+      title: 'Freeform',
+      body: 'plain text only',
+      labels: [],
+      state: 'open',
+      user: { login: 'u' },
+    };
+    const ctx = mkBaseContext({ issue, withCachedConfig: true });
+    ctx.name = 'issues.labeled';
+    ctx.payload = { action: 'labeled', issue, sender: { type: 'User', login: 'alice' }, label: { name: 'Approved' } };
+
+    await handler(ctx);
+
+    expect(loadTemplate).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  } finally {
+    if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
+  }
+});
+
+test('issue_comment: without jest worker id skips freeform issues outside test runtime', async () => {
+  const prevWorkerId = process.env.JEST_WORKER_ID;
+  delete process.env.JEST_WORKER_ID;
+
+  try {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue: { number: 73, title: 'Freeform', body: 'plain text only', labels: [], user: { login: 'u' } },
+      comment: { body: 'Approved', user: { login: 'alice' } },
+      withCachedConfig: true,
+    });
+
+    await handler(ctx);
+
+    expect(loadTemplate).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  } finally {
+    if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
+  }
+});
+
+test('status: without jest worker id skips non-form linked issues outside test runtime', async () => {
+  const prevWorkerId = process.env.JEST_WORKER_ID;
+  delete process.env.JEST_WORKER_ID;
+
+  try {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['status'][0];
+    const ctx = mkStatusContext({
+      state: 'success',
+      sha: 'sha-freeform-status',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [{ number: 74, body: 'source: #1', head: { ref: 'feature/freeform', sha: 'sha-freeform-status' } }],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.issues.get.mockResolvedValueOnce({
+      data: { number: 1, title: 'Freeform', body: 'plain text only', labels: [], state: 'open', user: { login: 'u' } },
+    });
+
+    await handler(ctx);
+
+    expect(loadTemplate).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  } finally {
+    if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
+  }
+});
+
+test('issues.opened: partner namespace maps request type and matches normalized request config keys', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['fallback-approver'],
+      approversPool: ['fallback-pool'],
+      labels: {},
+    },
+    requests: {
+      subContextNamespace: {
+        approversPool: ['zoe'],
+      },
+    },
+  };
+
+  loadTemplate.mockResolvedValueOnce({
+    title: 'Partner Request',
+    name: 'Partner Request',
+    body: [],
+    labels: [],
+    _meta: { requestType: 'partnerNamespace', root: 'resources', schema: 'schema.json', path: 'p' },
+  });
+  parseForm.mockReturnValueOnce({ identifier: 'partner-resource', requestType: 'subcontext' });
+  validateRequestIssue.mockResolvedValueOnce({
+    errors: [],
+    errorsGrouped: null,
+    errorsFormatted: '',
+    errorsFormattedSingle: '',
+    namespace: 'partner-resource',
+    nsType: 'partner',
+  });
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const ctx = mkIssuesContext({
+    action: 'opened',
+    issue: {
+      number: 74,
+      title: 'Partner',
+      body: '### Request Type\nsub_context',
+      labels: [],
+      user: { login: 'author' },
+    },
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  await handler(ctx);
+
+  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['zoe']);
+});
+
+test('issues.opened: non-object request config falls back to sorted workflow approvers pool', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['fallback-approver'],
+      approversPool: ['zoe', 'amy'],
+      labels: {},
+    },
+    requests: 'invalid',
+  };
+
+  loadTemplate.mockResolvedValueOnce({
+    title: 'Request',
+    name: 'Request',
+    body: [],
+    labels: [],
+    _meta: { requestType: 'product', root: 'resources', schema: 'schema.json', path: 'p' },
+  });
+  parseForm.mockReturnValueOnce({ 'product-id': 'fallback-resource' });
+  validateRequestIssue.mockResolvedValueOnce({
+    errors: [],
+    errorsGrouped: null,
+    errorsFormatted: '',
+    errorsFormattedSingle: '',
+    namespace: 'fallback-resource',
+    nsType: 'generic',
+  });
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const ctx = mkIssuesContext({
+    action: 'opened',
+    issue: {
+      number: 2,
+      title: 'Fallback',
+      body: '### Product ID\nfallback-resource',
+      labels: [],
+      user: { login: 'author' },
+    },
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  await handler(ctx);
+
+  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['zoe']);
+});
+
+test('issues.opened: request config without own approver arrays falls back to workflow approvers', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['fallback-approver'],
+      labels: {},
+    },
+    requests: {
+      product: {},
+    },
+  };
+
+  loadTemplate.mockResolvedValueOnce({
+    title: 'Product Request',
+    name: 'Product Request',
+    body: [],
+    labels: [],
+    _meta: { requestType: 'product', root: 'resources', schema: 'schema.json', path: 'p' },
+  });
+  parseForm.mockReturnValueOnce({ 'product-id': 'product-fallback' });
+  validateRequestIssue.mockResolvedValueOnce({
+    errors: [],
+    errorsGrouped: null,
+    errorsFormatted: '',
+    errorsFormattedSingle: '',
+    namespace: 'product-fallback',
+    nsType: 'product',
+  });
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const ctx = mkIssuesContext({
+    action: 'opened',
+    issue: {
+      number: 75,
+      title: 'Product',
+      body: '### Product ID\nproduct-fallback',
+      labels: [],
+      user: { login: 'author' },
+    },
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  await handler(ctx);
+
+  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['fallback-approver']);
+});
+
+test('issue_comment: approval tolerates approved-label refresh failures after approval state is applied', async () => {
+  const cfg = {
+    workflow: {
+      labels: {
+        approvalRequested: ['needs-review'],
+        approvalSuccessful: ['Approved'],
+      },
+      approvers: ['alice'],
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issue_comment.created'][0];
+  const issue = {
+    number: 76,
+    title: 'Request',
+    body: '### Namespace\nsap.ok',
+    labels: [{ name: 'needs-review' }],
+    state: 'open',
+    user: { login: 'author' },
+  };
+  const ctx = mkCommentContext({
+    event: 'issue_comment.created',
+    issue,
+    comment: { body: 'Approved', user: { login: 'alice' } },
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  ctx.octokit.issues.get
+    .mockResolvedValueOnce({ data: { ...issue, labels: [{ name: 'needs-review' }] } })
+    .mockRejectedValueOnce(httpErr(500))
+    .mockRejectedValueOnce(httpErr(500));
+
+  await handler(ctx);
+
+  expect(createRequestPr).toHaveBeenCalled();
+  expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 76, labels: ['Approved'] })
+  );
+});
+
+test('issue_comment: already-existing resource retry failure reports stale branch contains resource name', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issue_comment.created'][0];
+  const issue = {
+    number: 77,
+    title: 'Request',
+    body: '### Product ID\nproduct-stale',
+    labels: [],
+    state: 'open',
+    user: { login: 'author' },
+  };
+  const ctx = mkCommentContext({
+    event: 'issue_comment.created',
+    issue,
+    comment: { body: 'Approved', user: { login: 'alice' } },
+    withCachedConfig: true,
+    config: {
+      workflow: { approvers: [], labels: {} },
+    },
+  });
+
+  parseForm.mockReturnValueOnce({ 'product-id': 'product-stale' });
+
+  createRequestPr
+    .mockRejectedValueOnce(new Error("Resource 'product-stale' already exists at resources/product-stale.yaml"))
+    .mockRejectedValueOnce(new Error("Resource 'product-stale' already exists at resources/product-stale.yaml"));
+
+  ctx.octokit.repos.getContent.mockRejectedValueOnce(httpErr(404)).mockRejectedValueOnce(httpErr(404));
+
+  await handler(ctx);
+
+  expect(postedBodies()).toContain("a stale request branch already contains 'product-stale'");
+});
+
+test('check_suite.success: direct PR request author pagination falls back to last known committer on later page failure', async () => {
+  const cfg = {
+    requests: {
+      product: { folderName: 'resources' },
+    },
+    workflow: {
+      labels: { approvalSuccessful: ['Approved'] },
+      approvers: [],
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['check_suite.completed'][0];
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'success',
+    sha: 'sha-paginated-author',
+    ownerLogin: 'o1',
+    repoName: 'r1',
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  ctx.octokit.pulls.list
+    .mockResolvedValueOnce({
+      data: [
+        {
+          number: 78,
+          body: 'manual direct pr',
+          title: 'Direct',
+          head: { ref: 'feature/paginated-author', sha: 'sha-paginated-author' },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ data: [] });
+
+  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    data: [{ filename: 'resources/product-paginated.yaml', status: 'modified' }],
+  });
+  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    data: {
+      content: Buffer.from('type: product\nname: product-paginated\n', 'utf8').toString('base64'),
+      encoding: 'base64',
+    },
+  });
+  ctx.octokit.pulls.listCommits
+    .mockResolvedValueOnce({
+      data: Array.from({ length: 100 }, (_, index) => ({
+        committer: { login: index === 99 ? 'page-one-user' : `user-${index}` },
+      })),
+    })
+    .mockRejectedValueOnce(new Error('page 2 failed'));
+
+  runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+  await handler(ctx);
+
+  expect(runApprovalHook).toHaveBeenCalledWith(
+    ctx,
+    { owner: 'o1', repo: 'r1' },
+    expect.objectContaining({ requestAuthorId: 'page-one-user' })
+  );
+  expect(tryMergeIfGreen).toHaveBeenCalledWith(
+    ctx,
+    expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 78, mergeMethod: 'squash' })
+  );
+});
+
+test('check_suite.success: direct PR serializes complex yaml form values before onApproval', async () => {
+  const cfg = {
+    requests: {
+      product: { folderName: 'resources' },
+    },
+    workflow: {
+      labels: { approvalSuccessful: ['Approved'] },
+      approvers: [],
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['check_suite.completed'][0];
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'success',
+    sha: 'sha-complex-form-data',
+    ownerLogin: 'o1',
+    repoName: 'r1',
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  ctx.octokit.pulls.list
+    .mockResolvedValueOnce({
+      data: [
+        {
+          number: 79,
+          body: 'manual direct pr',
+          title: 'Direct',
+          head: { ref: 'feature/complex', sha: 'sha-complex-form-data' },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ data: [] });
+
+  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    data: [{ filename: 'resources/product-complex.yaml', status: 'modified' }],
+  });
+  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    data: {
+      content: Buffer.from(
+        'type: product\nname: product-complex\nmaintainers:\n  - name: Alice\n    github: alice\n',
+        'utf8'
+      ).toString('base64'),
+      encoding: 'base64',
+    },
+  });
+  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    data: [{ committer: { login: 'complex-author' } }],
+  });
+
+  runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+  await handler(ctx);
+
+  expect(runApprovalHook).toHaveBeenCalledWith(
+    ctx,
+    { owner: 'o1', repo: 'r1' },
+    expect.objectContaining({
+      formData: expect.objectContaining({
+        maintainers: expect.stringContaining('github: alice'),
+      }),
+    })
+  );
+});
+
+test('check_suite.completed failure exits quietly when suite runs cannot be listed', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['check_suite.completed'][0];
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'failure',
+    sha: 'sha-suite-list-failure',
+    ownerLogin: 'o1',
+    repoName: 'r1',
+    withCachedConfig: true,
+  });
+
+  ctx.payload.check_suite.id = 880;
+  ctx.payload.check_suite.pull_requests = [{ number: 80 }];
+  ctx.octokit.checks.listForSuite.mockRejectedValueOnce(new Error('suite lookup failed'));
+
+  await handler(ctx);
+
+  expect(postOnce).not.toHaveBeenCalled();
+});
+
+test('check_suite.completed failure skips a run when its annotations cannot be listed', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['check_suite.completed'][0];
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'failure',
+    sha: 'sha-annotation-list-failure',
+    ownerLogin: 'o1',
+    repoName: 'r1',
+    withCachedConfig: true,
+  });
+
+  ctx.payload.check_suite.id = 881;
+  ctx.payload.check_suite.pull_requests = [{ number: 81 }];
+  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+    data: { check_runs: [{ id: 9009, html_url: 'https://example/check/9009' }] },
+  });
+  ctx.octokit.checks.listAnnotations.mockRejectedValueOnce(new Error('annotations failed'));
+
+  await handler(ctx);
+
+  expect(postOnce).not.toHaveBeenCalled();
+});
+
+test('issues.closed: template load failure is ignored for non-request issues', async () => {
+  loadTemplate.mockRejectedValueOnce(new Error('no template'));
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.closed'][0];
+  const issue = {
+    number: 82,
+    title: 'Freeform',
+    body: '### Namespace\nsap.ignore',
+    labels: [],
+    state: 'closed',
+    user: { login: 'author' },
+  };
+  const ctx = mkBaseContext({ issue, withCachedConfig: true });
+  ctx.name = 'issues.closed';
+  ctx.payload = { action: 'closed', issue };
+
+  await handler(ctx);
+
+  expect(postOnce).not.toHaveBeenCalled();
+});
+
+test('issues.labeled: closed approved issue removes rejected and progress labels after refresh', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.labeled'][0];
+  const issue = {
+    number: 83,
+    title: 'Request',
+    body: '### Product ID\nabc',
+    labels: [],
+    state: 'closed',
+    user: { login: 'author' },
+  };
+  const ctx = mkBaseContext({
+    issue,
+    withCachedConfig: true,
+    config: {
+      workflow: {
+        approvers: [],
+        labels: { approvalSuccessful: ['Approved'] },
+      },
+    },
+  });
+  ctx.name = 'issues.labeled';
+  ctx.payload = { action: 'labeled', issue, sender: { type: 'User', login: 'bob' }, label: { name: 'other' } };
+
+  ctx.octokit.issues.get.mockResolvedValueOnce({
+    data: {
+      ...issue,
+      labels: ['Approved', 'Rejected', 'Requester Action', 'Review Pending'],
+    },
+  });
+
+  await handler(ctx);
+
+  const removed = ctx.octokit.issues.removeLabel.mock.calls.map((call: any[]) => call[0]?.name).sort();
+  expect(removed).toEqual(expect.arrayContaining(['Rejected', 'Requester Action', 'Review Pending']));
+  expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+});
+
+test('issues.labeled: closed non-approved issue adds rejected and removes approved after refresh', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.labeled'][0];
+  const issue = {
+    number: 84,
+    title: 'Request',
+    body: '### Product ID\nabc',
+    labels: [],
+    state: 'closed',
+    user: { login: 'author' },
+  };
+  const ctx = mkBaseContext({
+    issue,
+    withCachedConfig: true,
+    config: {
+      workflow: {
+        approvers: [],
+        labels: { approvalSuccessful: ['Approved'] },
+      },
+    },
+  });
+  ctx.name = 'issues.labeled';
+  ctx.payload = { action: 'labeled', issue, sender: { type: 'User', login: 'bob' }, label: { name: 'other' } };
+
+  ctx.octokit.issues.get
+    .mockResolvedValueOnce({
+      data: {
+        ...issue,
+        labels: ['Requester Action'],
+      },
+    })
+    .mockResolvedValueOnce({
+      data: {
+        ...issue,
+        labels: ['Rejected', 'Approved', 'Requester Action'],
+      },
+    });
+
+  await handler(ctx);
+
+  expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 84, labels: ['Rejected'] })
+  );
+  const removed = ctx.octokit.issues.removeLabel.mock.calls.map((call: any[]) => call[0]?.name);
+  expect(removed).toEqual(expect.arrayContaining(['Approved', 'Requester Action']));
+});
+
+test('issue_comment: parent-owner approval posts validation fallback errors and resets author state', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const target = 'sap.css.bar.foo';
+  const issue = {
+    number: 85,
+    title: 'Sub-Context Namespace',
+    body: `### Namespace\n\n${target}\n`,
+    labels: [{ name: 'Sub-Context Namespace' }],
+    user: { type: 'User', login: 'requester' },
+    state: 'open',
+  };
+  const tpl = {
+    _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+    title: 'Sub-Context Namespace',
+    labels: ['Sub-Context Namespace'],
+    body: [],
+  };
+
+  loadTemplate.mockResolvedValue(tpl);
+  parseForm.mockReturnValue({ identifier: target, description: 'x' });
+  validateRequestIssue.mockResolvedValue({
+    errors: [],
+    errorsGrouped: {},
+    errorsFormatted: '',
+    errorsFormattedSingle: '',
+    namespace: target,
+    nsType: 'subContextNamespace',
+    template: tpl,
+    formData: { identifier: target, description: 'x' },
+  });
+
+  const openCtx = mkIssuesContext({ issue, action: 'opened' });
+  (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    if (path === 'data/namespaces/sap.css.yaml') {
+      return {
+        data: { content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'), encoding: 'base64' },
+      };
+    }
+    if (path === 'data/namespaces/sap.css.bar.yaml') {
+      return {
+        data: { content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'), encoding: 'base64' },
+      };
+    }
+    throw Object.assign(new Error('Not Found'), { status: 404 });
+  });
+  await handlers['issues.opened'][0](openCtx);
+
+  (postOnce as jest.Mock).mockClear();
+  (setStateLabel as jest.Mock).mockClear();
+  validateRequestIssue.mockResolvedValueOnce({
+    errors: ['validation fallback error'],
+    errorsGrouped: {},
+    errorsFormatted: '',
+    errorsFormattedSingle: '',
+    namespace: target,
+    nsType: 'subContextNamespace',
+    template: tpl,
+    validationIssues: [{ path: 'contacts', message: 'missing owner contact' }],
+  });
+
+  const commentCtx = mkCommentContext({
+    event: 'issue_comment.created',
+    issue,
+    comment: { body: 'Approved', user: { type: 'User', login: 'barOwner' } },
+  });
+
+  await handlers['issue_comment.created'][0](commentCtx);
+
+  expect(postedBodies()).toContain('validation fallback error');
+  expect(postedBodies()).toContain('missing owner contact');
+  expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+});

@@ -147,3 +147,65 @@ test('scans handlers folder and handles: good handler, missing index, bad defaul
     fsReal.rmSync(boomDir, { recursive: true, force: true });
   }
 });
+
+test('wraps non-Error directory read failures before logging', async () => {
+  const fsMock = {
+    readdirSync: (): never => {
+      throw 'boom-string';
+    },
+    existsSync: (): boolean => false,
+  };
+
+  const appEntry = await importAppEntry({
+    secrets: { APP_ID: '1', WEBHOOK_SECRET: '1', PRIVATE_KEY: '1' },
+    fsMock,
+  });
+
+  const app = mkApp() as {
+    log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
+  };
+  await appEntry(app, {} as unknown);
+
+  expect(app.log.error).toHaveBeenCalledWith(
+    expect.objectContaining({ err: expect.objectContaining({ message: 'boom-string' }) }),
+    'Failed reading handlers directory: boom-string'
+  );
+});
+
+test('logs handler import fallback message when thrown error has no stack', async () => {
+  const noStackName = '__test_no_stack';
+  const noStackDir = path.join(handlersRoot, noStackName);
+  const noStackIndex = path.join(noStackDir, 'index.js');
+
+  fsReal.mkdirSync(noStackDir, { recursive: true });
+  fsReal.writeFileSync(noStackIndex, `const err = new Error('nostack'); err.stack = undefined; throw err;`, 'utf8');
+
+  const fsMock = {
+    readdirSync: (): { name: string; isDirectory: () => true }[] => [
+      {
+        name: noStackName,
+        isDirectory: (): true => true,
+      },
+    ],
+    existsSync: (p: string): boolean => String(p) === noStackIndex,
+  };
+
+  try {
+    const appEntry = await importAppEntry({
+      secrets: { APP_ID: '1', WEBHOOK_SECRET: '1', PRIVATE_KEY: '1' },
+      fsMock,
+    });
+
+    const app = mkApp() as {
+      log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
+    };
+    await appEntry(app, {} as unknown);
+
+    expect(app.log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.objectContaining({ message: 'nostack', stack: undefined }) }),
+      `Failed loading handler entry for ${noStackName}: nostack`
+    );
+  } finally {
+    fsReal.rmSync(noStackDir, { recursive: true, force: true });
+  }
+});
