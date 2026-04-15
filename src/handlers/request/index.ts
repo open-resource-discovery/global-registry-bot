@@ -308,27 +308,37 @@ async function loadSchemaFieldAliasLookup(
   repoInfo: RepoInfo,
   schemaPath: string
 ): Promise<SchemaFieldAliasLookup> {
-  const normalizedPath = toStringTrim(schemaPath).replace(/^\.\//, '');
-  if (!normalizedPath) return new Map<string, string>();
+  const rawPath = toStringTrim(schemaPath);
+  if (!rawPath) return new Map<string, string>();
 
-  const cached = SCHEMA_FIELD_ALIAS_CACHE.get(normalizedPath);
+  const cleaned = rawPath.replace(/^\.?\//, '');
+  const candidates = rawPath.startsWith('/')
+    ? [rawPath.replace(/^\/+/, '')]
+    : [cleaned.startsWith('.github/') ? cleaned : `.github/registry-bot/${cleaned}`, cleaned];
+
+  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${candidates[0]}`;
+  const cached = SCHEMA_FIELD_ALIAS_CACHE.get(cacheKey);
   if (cached) return await cached;
 
   const pending = (async (): Promise<SchemaFieldAliasLookup> => {
-    const raw = await readRepoFileText(context, repoInfo, normalizedPath);
-    if (!raw) return new Map<string, string>();
+    for (const candidate of candidates) {
+      const raw = await readRepoFileText(context, repoInfo, candidate);
+      if (!raw) continue;
 
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      const lookup = new Map<string, string>();
-      collectSchemaFieldAliases(parsed, lookup);
-      return lookup;
-    } catch {
-      return new Map<string, string>();
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        const lookup = new Map<string, string>();
+        collectSchemaFieldAliases(parsed, lookup);
+        return lookup;
+      } catch {
+        continue;
+      }
     }
+
+    return new Map<string, string>();
   })();
 
-  SCHEMA_FIELD_ALIAS_CACHE.set(normalizedPath, pending);
+  SCHEMA_FIELD_ALIAS_CACHE.set(cacheKey, pending);
   return await pending;
 }
 
@@ -4560,7 +4570,7 @@ export default function requestHandler(app: Probot): void {
           const rawMsg = toStringTrim(a.message) || toStringTrim(a.raw_details);
           const msg = stripRegistrySuffix(rawMsg);
           if (!msg) continue;
-          const schemaMeta = /\bschema=([^\s\]]+)/.exec(rawMsg);
+          const schemaMeta = /\bschema=([^\s\]]+)/.exec(rawMsg) ?? /\[schema=([^\]]+)\]/.exec(rawMsg);
           const arr = byFile.get(file) ?? [];
           arr.push(msg);
           byFile.set(file, arr);
