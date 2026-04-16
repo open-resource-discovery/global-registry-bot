@@ -322,7 +322,13 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
+
+  setStateLabel.mockImplementation(async () => {});
+  ensureAssigneesOnce.mockImplementation(async () => {});
+  postOnce.mockImplementation(async () => {});
+  collapseBotCommentsByPrefix.mockImplementation(async () => {});
+  tryMergeIfGreen.mockImplementation(async () => {});
 
   loadStaticConfig.mockResolvedValue({
     config: DEFAULT_CONFIG,
@@ -639,6 +645,36 @@ test('issue_comment: author update comment triggers revalidation errors -> posts
   expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), 'author');
 });
 
+test('issue_comment: author update revalidation maps machine-readable validation issues', async () => {
+  validateRequestIssue.mockResolvedValueOnce({
+    errors: ['x'],
+    errorsGrouped: null,
+    errorsFormatted: '',
+    errorsFormattedSingle: '- x',
+    validationIssues: [{ path: 'contact', message: 'missing contact owner' }],
+    namespace: 'ABC',
+    nsType: 'product',
+  });
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issue_comment.created'][0];
+
+  const ctx = mkCommentContext({
+    event: 'issue_comment.created',
+    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    comment: { body: 'updated', user: { login: 'author' } },
+    withCachedConfig: true,
+  });
+
+  await handler(ctx);
+
+  expect(postOnce).toHaveBeenCalled();
+  expect(String(postOnce.mock.calls[0][2])).toContain('missing contact owner');
+  expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), 'author');
+});
+
 test('issue_comment: author update (subcontext) missing parent -> posts + author state', async () => {
   loadTemplate.mockResolvedValueOnce({
     title: 'Request',
@@ -681,7 +717,8 @@ test('issue_comment: author update (subcontext) missing parent -> posts + author
 
   ctx.octokit.repos.getContent.mockImplementation(async (args: any) => {
     const p = String(args?.path || '');
-    if (p.includes('a.b.yaml')) throw httpErr(404);
+    if (p === 'data/vendors/a.yaml') return { data: {} };
+    if (p.includes('a.b.yaml') || p.includes('a.b.yml')) throw httpErr(404);
     return { data: {} };
   });
 
@@ -1272,6 +1309,9 @@ describe('parent owner approval gating', () => {
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
     (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return { data: { content: b64(topYaml), encoding: 'base64' } };
       }
@@ -1335,6 +1375,9 @@ describe('parent owner approval gating', () => {
     const parentYaml = `contacts:\n  - "@barOwner"\n`;
 
     (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return { data: { content: b64(parentYaml), encoding: 'base64' } };
       }
@@ -1388,6 +1431,7 @@ describe('parent owner approval gating', () => {
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
     (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
       throw Object.assign(new Error('Not Found'), { status: 404 });
@@ -1413,7 +1457,7 @@ describe('parent owner approval gating', () => {
     expect(createRequestPr).not.toHaveBeenCalled();
   });
 
-  test('accepts Approved comments from parent owners and then hands over to CPA review', async () => {
+  test('accepts Approved comments from parent owners and opens a PR directly for sub-context requests', async () => {
     const { app, handlers: h } = mkApp();
     requestHandler(app);
 
@@ -1452,6 +1496,7 @@ describe('parent owner approval gating', () => {
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
     (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
       throw Object.assign(new Error('Not Found'), { status: 404 });
@@ -1475,13 +1520,1039 @@ describe('parent owner approval gating', () => {
     expect(issue.body).toContain('"approvedBy":"barOwner"');
 
     const posted = postedBodies();
-    expect(posted).toContain('Parent namespace approved by @barOwner');
-    expect(posted).toContain('Routing to an approver');
+    expect(posted).toContain('Approved by parent namespace owner @barOwner. Opened PR: #10');
 
-    expect(ensureAssigneesOnce).toHaveBeenCalled();
-    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
-    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+    expect(createRequestPr).toHaveBeenCalled();
   });
+  describe('additional approval gate coverage', () => {
+    const systemTemplate = {
+      _meta: {
+        requestType: 'systemNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/system-namespace.schema.json',
+        path: '.github/ISSUE_TEMPLATE/1-system-namespace-request.yaml',
+      },
+      title: 'System Namespace',
+      labels: [],
+      body: [],
+      name: 'System Namespace',
+    };
+
+    test('issues.opened: system namespace requests require contact-owner approval after email resolution', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 560,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: 'owner@sap.com',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: 'owner@sap.com',
+          visibility: 'public',
+        },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.search = {
+        users: jest.fn(async () => ({ data: { items: [{ login: 'resolvedOwner' }] } })),
+      };
+      ctx.octokit.graphql = jest.fn(async () => ({ search: { nodes: [] } }));
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (String(path) === 'data/vendors/sap.yaml') {
+          return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:contact-approval');
+      expect(postedBodies()).toContain('@resolvedOwner');
+      expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+    });
+
+    test('issue_comment: contact-owner approval validation errors keep the request with the author', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 561,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body\n\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: 'owner@sap.com',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: ['Missing contact'],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: 'Missing contact',
+        validationIssues: [{ path: 'contact', message: 'Missing contact' }],
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: 'owner@sap.com',
+          visibility: 'public',
+        },
+      });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'Approved', user: { login: 'resolvedOwner' } },
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postedBodies()).toContain('Missing contact');
+      expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+    });
+
+    test('issue_comment: contact-owner approval resumes the normal review handover', async () => {
+      const cfg = {
+        workflow: {
+          labels: {
+            approvalRequested: ['needs-review'],
+            approvalSuccessful: ['Approved'],
+          },
+          approvers: ['alice'],
+        },
+      };
+
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 562,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body\n\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"]} -->\n',
+        labels: ['needs-review'],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: 'owner@sap.com',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: 'owner@sap.com',
+          visibility: 'public',
+        },
+      });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'Approved', user: { login: 'resolvedOwner' } },
+        withCachedConfig: true,
+        config: cfg,
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(issue.body).toContain('"approvedBy":"resolvedOwner"');
+      expect(postedBodies()).toContain('Contact owner approved by @resolvedOwner. Continuing with standard review.');
+      expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+    });
+
+    test('issue_comment: parent-owner approval resumes normal review for non-subcontext namespace requests', async () => {
+      const cfg = {
+        workflow: {
+          labels: {
+            approvalRequested: ['needs-review'],
+            approvalSuccessful: ['Approved'],
+          },
+          approvers: ['alice'],
+        },
+      };
+
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const target = 'sap.css.bar.foo';
+      const issue = {
+        number: 563,
+        title: 'System Namespace',
+        body:
+          `### Namespace\n\n${target}\n` +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"]} -->\n',
+        labels: ['needs-review'],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const template = {
+        _meta: { requestType: 'systemNamespace', root: '/data/namespaces', schema: 'x' },
+        title: 'System Namespace',
+        labels: [],
+        body: [],
+      };
+
+      loadTemplate.mockResolvedValue(template);
+      parseForm.mockReturnValue({ namespace: target, contact: '@owner', visibility: 'public' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: target,
+        nsType: 'systemNamespace',
+        template,
+        formData: { namespace: target, contact: '@owner', visibility: 'public' },
+      });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'Approved', user: { login: 'barOwner' } },
+        withCachedConfig: true,
+        config: cfg,
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postedBodies()).toContain('Parent namespace approved by @barOwner. Continuing with standard review.');
+      expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+    });
+
+    test('issues.opened: non-system requests clear stale contact approval markers', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 564,
+        title: 'Product: ABC',
+        body:
+          '### Product\n\nABC\n' +
+          '\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const productTemplate = {
+        _meta: { requestType: 'product', root: '/data/products', schema: 'x', path: 'x' },
+        title: 'Product',
+        labels: [],
+        body: [],
+        name: 'Product',
+      };
+
+      loadTemplate.mockResolvedValue(productTemplate);
+      parseForm.mockReturnValue({ identifier: 'ABC' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'ABC',
+        nsType: 'product',
+        template: productTemplate,
+        formData: { identifier: 'ABC' },
+      });
+
+      const ctx = mkIssuesContext({ issue, action: 'opened' });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).not.toContain('nsreq:contact-approval');
+    });
+
+    test('issues.opened: requester already being a contact owner skips the contact gate', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 565,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: '@requester',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: '@requester',
+          visibility: 'public',
+        },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (String(path) === 'data/vendors/sap.yaml') {
+          return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(postedBodies()).not.toContain('Contact owner approval required');
+      expect(issue.body).not.toContain('nsreq:contact-approval');
+    });
+
+    test('issue_comment: non-contact owners are ignored while contact approval is pending', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 566,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body\n\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: 'owner@sap.com',
+        visibility: 'public',
+      });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'Approved', user: { login: 'someoneElse' } },
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postedBodies()).toContain('Approval ignored: this request requires contact owner approval');
+      expect(postedBodies()).toContain('@resolvedOwner');
+    });
+
+    test('issue_comment: parent-owner approval validation errors keep the request with the author', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const target = 'sap.css.bar.foo';
+      const issue = {
+        number: 567,
+        title: 'System Namespace',
+        body:
+          `### Namespace\n\n${target}\n` +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const template = {
+        _meta: { requestType: 'systemNamespace', root: '/data/namespaces', schema: 'x' },
+        title: 'System Namespace',
+        labels: [],
+        body: [],
+      };
+
+      loadTemplate.mockResolvedValue(template);
+      parseForm.mockReturnValue({ namespace: target, contact: '@owner', visibility: 'public' });
+      validateRequestIssue.mockResolvedValue({
+        errors: ['Missing contact'],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: 'Missing contact',
+        validationIssues: [{ path: 'contact', message: 'Missing contact' }],
+        namespace: target,
+        nsType: 'systemNamespace',
+        template,
+        formData: { namespace: target, contact: '@owner', visibility: 'public' },
+      });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'Approved', user: { login: 'barOwner' } },
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postedBodies()).toContain('Missing contact');
+      expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+    });
+
+    test('issues.opened: non-namespace requests clear stale parent approval markers', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 568,
+        title: 'Product: ABC',
+        body:
+          '### Product\n\nABC\n' +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const productTemplate = {
+        _meta: { requestType: 'product', root: '/data/products', schema: 'x', path: 'x' },
+        title: 'Product',
+        labels: [],
+        body: [],
+        name: 'Product',
+      };
+
+      loadTemplate.mockResolvedValue(productTemplate);
+      parseForm.mockReturnValue({ identifier: 'ABC' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'ABC',
+        nsType: 'product',
+        template: productTemplate,
+        formData: { identifier: 'ABC' },
+      });
+
+      const ctx = mkIssuesContext({ issue, action: 'opened' });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).not.toContain('nsreq:parent-approval');
+    });
+
+    test('issues.opened: tolerates contact approval marker cleanup failures', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 569,
+        title: 'Product: ABC',
+        body:
+          '### Product\n\nABC\n' +
+          '\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const productTemplate = {
+        _meta: { requestType: 'product', root: '/data/products', schema: 'x', path: 'x' },
+        title: 'Product',
+        labels: [],
+        body: [],
+        name: 'Product',
+      };
+
+      loadTemplate.mockResolvedValue(productTemplate);
+      parseForm.mockReturnValue({ identifier: 'ABC' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'ABC',
+        nsType: 'product',
+        template: productTemplate,
+        formData: { identifier: 'ABC' },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:contact-approval');
+    });
+
+    test('issues.opened: identical pending contact approval markers are not rewritten', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 570,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body\n\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: '@resolvedOwner',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: '@resolvedOwner',
+          visibility: 'public',
+        },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (String(path) === 'data/vendors/sap.yaml') {
+          return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:contact-approval');
+      expect(postedBodies()).toContain('Contact owner approval required');
+    });
+
+    test('issues.opened: contact approval marker update failures still keep the request gated', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 571,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: '@resolvedOwner',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: '@resolvedOwner',
+          visibility: 'public',
+        },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (String(path) === 'data/vendors/sap.yaml') {
+          return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(postedBodies()).toContain('Contact owner approval required');
+      expect(issue.body).not.toContain('nsreq:contact-approval');
+    });
+
+    test('issues.opened: already-approved contact markers skip renewed contact gating', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 572,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body\n\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"],"approvedBy":"resolvedOwner","approvedAt":"2026-01-01T00:00:00.000Z"} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: '@resolvedOwner',
+        visibility: 'public',
+      });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'sap.aiadm',
+        nsType: 'systemNamespace',
+        template: systemTemplate,
+        formData: {
+          namespace: 'sap.aiadm',
+          description: 'Example description',
+          contact: '@resolvedOwner',
+          visibility: 'public',
+        },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (String(path) === 'data/vendors/sap.yaml') {
+          return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(postedBodies()).not.toContain('Contact owner approval required');
+    });
+
+    test('issue_comment: already-approved contact markers do not trigger approval handling again', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 573,
+        title: 'System Namespace: sap.aiadm',
+        body: 'body\n\n<!-- nsreq:contact-approval = {"v":1,"target":"sap.aiadm","owners":["resolvedOwner"],"approvedBy":"resolvedOwner","approvedAt":"2026-01-01T00:00:00.000Z"} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      loadTemplate.mockResolvedValue(systemTemplate);
+      parseForm.mockReturnValue({
+        namespace: 'sap.aiadm',
+        description: 'Example description',
+        contact: '@resolvedOwner',
+        visibility: 'public',
+      });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'hello', user: { login: 'resolvedOwner' } },
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postOnce).not.toHaveBeenCalled();
+    });
+
+    test('issues.opened: malformed parent approval markers are ignored safely', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 574,
+        title: 'Product: ABC',
+        body: '### Product\n\nABC\n\n<!-- nsreq:parent-approval = {not-json} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const productTemplate = {
+        _meta: { requestType: 'product', root: '/data/products', schema: 'x', path: 'x' },
+        title: 'Product',
+        labels: [],
+        body: [],
+        name: 'Product',
+      };
+
+      loadTemplate.mockResolvedValue(productTemplate);
+      parseForm.mockReturnValue({ identifier: 'ABC' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'ABC',
+        nsType: 'product',
+        template: productTemplate,
+        formData: { identifier: 'ABC' },
+      });
+
+      const ctx = mkIssuesContext({ issue, action: 'opened' });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:parent-approval');
+    });
+
+    test('issues.opened: malformed contact approval markers are ignored safely', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 580,
+        title: 'Product: ABC',
+        body: '### Product\n\nABC\n\n<!-- nsreq:contact-approval = {not-json} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const productTemplate = {
+        _meta: { requestType: 'product', root: '/data/products', schema: 'x', path: 'x' },
+        title: 'Product',
+        labels: [],
+        body: [],
+        name: 'Product',
+      };
+
+      loadTemplate.mockResolvedValue(productTemplate);
+      parseForm.mockReturnValue({ identifier: 'ABC' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'ABC',
+        nsType: 'product',
+        template: productTemplate,
+        formData: { identifier: 'ABC' },
+      });
+
+      const ctx = mkIssuesContext({ issue, action: 'opened' });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:contact-approval');
+    });
+
+    test('issues.opened: parent approval marker cleanup failures are tolerated', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 575,
+        title: 'Product: ABC',
+        body:
+          '### Product\n\nABC\n' +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"]} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const productTemplate = {
+        _meta: { requestType: 'product', root: '/data/products', schema: 'x', path: 'x' },
+        title: 'Product',
+        labels: [],
+        body: [],
+        name: 'Product',
+      };
+
+      loadTemplate.mockResolvedValue(productTemplate);
+      parseForm.mockReturnValue({ identifier: 'ABC' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'ABC',
+        nsType: 'product',
+        template: productTemplate,
+        formData: { identifier: 'ABC' },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:parent-approval');
+    });
+
+    test('issues.opened: identical pending parent approval markers are not rewritten', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const target = 'sap.css.bar.foo';
+      const issue = {
+        number: 576,
+        title: 'Sub-Context Namespace',
+        body:
+          `### Namespace\n\n${target}\n` +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"]} -->\n',
+        labels: [{ name: 'Sub-Context Namespace' }],
+        user: { type: 'User', login: 'requester' },
+        state: 'open',
+      };
+
+      const template = {
+        _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+        title: 'Sub-Context Namespace',
+        labels: ['Sub-Context Namespace'],
+        body: [],
+      };
+
+      loadTemplate.mockResolvedValue(template);
+      parseForm.mockReturnValue({ identifier: target, description: 'x' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: target,
+        nsType: 'subContextNamespace',
+        template,
+        formData: { identifier: target, description: 'x' },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (path === 'data/vendors/sap.yaml') {
+          return {
+            data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
+          };
+        }
+        if (path === 'data/namespaces/sap.css.yaml' || path === 'data/namespaces/sap.css.bar.yaml') {
+          return {
+            data: {
+              content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'),
+              encoding: 'base64',
+            },
+          };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(issue.body).toContain('nsreq:parent-approval');
+      expect(postedBodies()).toContain('Parent owner approval required');
+    });
+
+    test('issues.opened: parent approval marker update failures still keep the request gated', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const target = 'sap.css.bar.foo';
+      const issue = {
+        number: 577,
+        title: 'Sub-Context Namespace',
+        body: `### Namespace\n\n${target}\n`,
+        labels: [{ name: 'Sub-Context Namespace' }],
+        user: { type: 'User', login: 'requester' },
+        state: 'open',
+      };
+
+      const template = {
+        _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+        title: 'Sub-Context Namespace',
+        labels: ['Sub-Context Namespace'],
+        body: [],
+      };
+
+      loadTemplate.mockResolvedValue(template);
+      parseForm.mockReturnValue({ identifier: target, description: 'x' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: target,
+        nsType: 'subContextNamespace',
+        template,
+        formData: { identifier: target, description: 'x' },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.issues.update.mockImplementation(async (args: any) => {
+        if (Object.prototype.hasOwnProperty.call(args, 'body')) throw new Error('update failed');
+        return {};
+      });
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (path === 'data/vendors/sap.yaml') {
+          return {
+            data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
+          };
+        }
+        if (path === 'data/namespaces/sap.css.yaml' || path === 'data/namespaces/sap.css.bar.yaml') {
+          return {
+            data: {
+              content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'),
+              encoding: 'base64',
+            },
+          };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(postedBodies()).toContain('Parent owner approval required');
+      expect(issue.body).not.toContain('nsreq:parent-approval');
+    });
+
+    test('issues.opened: already-approved parent markers skip renewed parent gating', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const target = 'sap.css.bar.foo';
+      const issue = {
+        number: 578,
+        title: 'Sub-Context Namespace',
+        body:
+          `### Namespace\n\n${target}\n` +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"],"approvedBy":"barOwner","approvedAt":"2026-01-01T00:00:00.000Z"} -->\n',
+        labels: [{ name: 'Sub-Context Namespace' }],
+        user: { type: 'User', login: 'requester' },
+        state: 'open',
+      };
+
+      const template = {
+        _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+        title: 'Sub-Context Namespace',
+        labels: ['Sub-Context Namespace'],
+        body: [],
+      };
+
+      loadTemplate.mockResolvedValue(template);
+      parseForm.mockReturnValue({ identifier: target, description: 'x' });
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: target,
+        nsType: 'subContextNamespace',
+        template,
+        formData: { identifier: target, description: 'x' },
+      });
+
+      const ctx: any = mkIssuesContext({ issue, action: 'opened' });
+      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+        if (path === 'data/vendors/sap.yaml') {
+          return {
+            data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
+          };
+        }
+        if (path === 'data/namespaces/sap.css.yaml' || path === 'data/namespaces/sap.css.bar.yaml') {
+          return {
+            data: {
+              content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'),
+              encoding: 'base64',
+            },
+          };
+        }
+        throw httpErr(404);
+      });
+
+      await handlers['issues.opened'][0](ctx);
+
+      expect(postedBodies()).not.toContain('Parent owner approval required');
+    });
+
+    test('issue_comment: already-approved parent markers do not trigger approval handling again', async () => {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const target = 'sap.css.bar.foo';
+      const issue = {
+        number: 579,
+        title: 'System Namespace',
+        body:
+          `### Namespace\n\n${target}\n` +
+          '\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css.bar","target":"sap.css.bar.foo","owners":["barOwner"],"approvedBy":"barOwner","approvedAt":"2026-01-01T00:00:00.000Z"} -->\n',
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const template = {
+        _meta: { requestType: 'systemNamespace', root: '/data/namespaces', schema: 'x' },
+        title: 'System Namespace',
+        labels: [],
+        body: [],
+      };
+
+      loadTemplate.mockResolvedValue(template);
+      parseForm.mockReturnValue({ namespace: target, contact: '@owner', visibility: 'public' });
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: { body: 'hello', user: { login: 'barOwner' } },
+      });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postOnce).not.toHaveBeenCalled();
+    });
+  });
+
   test('issue_comment: review feedback mentioning approved does not trigger approval', async () => {
     const cfg = {
       workflow: {
@@ -1861,6 +2932,9 @@ public
     });
 
     ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (String(path) === 'data/vendors/sap.yaml') {
+        return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
+      }
       if (String(path) === 'data/namespaces/sap.aiadm.yaml') {
         const err: any = new Error('Not Found');
         err.status = 404;
@@ -2221,6 +3295,9 @@ public
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
     (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return { data: { content: b64(topYaml), encoding: 'base64' } };
       }
