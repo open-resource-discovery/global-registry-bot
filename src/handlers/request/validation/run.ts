@@ -10,6 +10,10 @@ import type { ValidateFunction } from 'ajv';
 import { runHookInWorker } from './hook-pool.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
+import {
+  buildAllowedFieldIdsFromSchema as buildAllowedFieldIdsFromSchemaRaw,
+  filterParsedFormData as filterParsedFormDataRaw,
+} from '../../../utils/parser.js';
 
 const moduleFileName = fileURLToPath(import.meta.url);
 const dirName = dirname(moduleFileName);
@@ -421,8 +425,14 @@ type LoadTemplateFn = (
 
 type ParseFormFn = (body: string, template: TemplateLike) => FormData;
 
+type BuildAllowedFieldIdsFromSchemaFn = (schema: unknown, extraAllowedFieldIds?: Iterable<string> | null) => string[];
+
+type FilterParsedFormDataFn = (parsed: FormData, allowedFieldIds?: Iterable<string> | null) => FormData;
+
 const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
 const parseForm = parseFormRaw as unknown as ParseFormFn;
+const buildAllowedFieldIdsFromSchema = buildAllowedFieldIdsFromSchemaRaw as unknown as BuildAllowedFieldIdsFromSchemaFn;
+const filterParsedFormData = filterParsedFormDataRaw as unknown as FilterParsedFormDataFn;
 
 // Error buckets + formatting
 function newBuckets(): ValidationBuckets {
@@ -2318,13 +2328,28 @@ export async function validateRequestIssue(
   });
 
   // 3) form
-  const formData = givenFormData || parseForm(String(issue.body || ''), template);
+  const rawFormData = givenFormData || parseForm(String(issue.body || ''), template);
+
+  let formData = rawFormData;
+  let allowedTemplateFieldIds: Set<string> | null = null;
 
   const resolvedTemplate = resolveTemplateAndRequestType(context, template, formData, errors, buckets);
   if ('result' in resolvedTemplate) return resolvedTemplate.result;
 
   template = resolvedTemplate.template;
   const { requestType, requestCfg } = resolvedTemplate;
+
+  const schemaPathForParseFilter = String(template?._meta?.schema || '').trim();
+  if (schemaPathForParseFilter) {
+    try {
+      const schemaObjForParseFilter = await loadSchemaFromRepoOrLocal(context, owner, repo, schemaPathForParseFilter);
+      const allowedFieldIds = buildAllowedFieldIdsFromSchema(schemaObjForParseFilter);
+      formData = filterParsedFormData(rawFormData, allowedFieldIds);
+      allowedTemplateFieldIds = new Set(allowedFieldIds);
+    } catch {
+      formData = rawFormData;
+    }
+  }
 
   if (DBG && context.log?.info) context.log.info({ formData }, 'ns:parsedFormData');
 
@@ -2409,7 +2434,9 @@ export async function validateRequestIssue(
   }
 
   // 5) Required field check from template
-  const requiredFields = (template?.body || []).filter((f) => f?.id && f.validations?.required);
+  const requiredFields = (template?.body || []).filter(
+    (f) => f?.id && f.validations?.required && (!allowedTemplateFieldIds || allowedTemplateFieldIds.has(String(f.id)))
+  );
 
   const missingRequired = requiredFields
     .filter((f) => isEmpty((formData as Record<string, unknown>)?.[String(f.id)]))

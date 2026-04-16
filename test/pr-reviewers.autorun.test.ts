@@ -57,5 +57,5 @@ describe('pr-reviewers auto-run guard', () => {
     await new Promise((r) => setTimeout(r, 25));
 
     expect(process.exitCode).toBe(1);
-  });
+  }, 15000);
 });

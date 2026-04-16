@@ -16,6 +16,10 @@ import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type Reg
 import { getDocLinksFromConfig } from './constants.js';
 import type { Context, Probot } from 'probot';
 import YAML from 'yaml';
+import {
+  buildAllowedFieldIdsFromSchema as buildAllowedFieldIdsFromSchemaRaw,
+  filterParsedFormData as filterParsedFormDataRaw,
+} from '../../utils/parser.js';
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -1359,6 +1363,10 @@ type LoadTemplateFn = (
 
 type ParseFormFn = (body: string, template: TemplateLike) => FormData;
 
+type BuildAllowedFieldIdsFromSchemaFn = (schema: unknown, extraAllowedFieldIds?: Iterable<string> | null) => string[];
+
+type FilterParsedFormDataFn = (parsed: FormData, allowedFieldIds?: Iterable<string> | null) => FormData;
+
 type ValidateRequestIssueFn = (
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1428,6 +1436,9 @@ const postOnce = postOnceRaw as unknown as PostOnceFn;
 const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as CollapseBotCommentsByPrefixFn;
 const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
 const parseForm = parseFormRaw as unknown as ParseFormFn;
+const buildAllowedFieldIdsFromSchema = buildAllowedFieldIdsFromSchemaRaw as unknown as BuildAllowedFieldIdsFromSchemaFn;
+
+const filterParsedFormData = filterParsedFormDataRaw as unknown as FilterParsedFormDataFn;
 const validateRequestIssue = validateRequestIssueRaw as unknown as ValidateRequestIssueFn;
 const runApprovalHook = runApprovalHookRaw as unknown as RunApprovalHookFn;
 const calcSnapshotHash = calcSnapshotHashRaw as unknown as CalcSnapshotHashFn;
@@ -2030,6 +2041,91 @@ function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
   if (contacts && !out.contact) out.contact = contacts;
 
   return out;
+}
+
+const PARSED_FORM_SCHEMA_CACHE = new Map<string, Promise<unknown | null>>();
+
+function buildTemplateSchemaRepoCandidates(schemaPath: string): string[] {
+  const raw = toStringTrim(schemaPath);
+  if (!raw) return [];
+
+  if (raw.startsWith('/')) return [raw.replace(/^\/+/, '')];
+
+  const cleaned = raw.replace(/^\.?\//, '');
+  const out = new Set<string>();
+
+  if (cleaned.startsWith('.github/')) out.add(cleaned);
+  else out.add(`.github/registry-bot/${cleaned}`);
+
+  out.add(cleaned);
+
+  return Array.from(out);
+}
+
+function resolveEffectiveTemplateSchemaPathForParsing(
+  context: BotContext<RequestEvents>,
+  template: TemplateLike,
+  parsedFormData: FormData
+): string {
+  const defaultSchemaPath = toStringTrim(template?._meta?.schema);
+
+  if (toStringTrim(template?._meta?.requestType).toLowerCase() !== 'partnernamespace') {
+    return defaultSchemaPath;
+  }
+
+  const effectiveRequestType = resolveEffectiveRequestType(template, parsedFormData);
+  const cfg = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
+  const entry = isPlainObject(reqs[effectiveRequestType]) ? reqs[effectiveRequestType] : null;
+
+  return toStringTrim(entry?.['schema']) || defaultSchemaPath;
+}
+
+async function loadTemplateSchemaForParsing(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  template: TemplateLike,
+  parsedFormData: FormData
+): Promise<unknown | null> {
+  const schemaPath = resolveEffectiveTemplateSchemaPathForParsing(context, template, parsedFormData);
+  const candidates = buildTemplateSchemaRepoCandidates(schemaPath);
+  if (!candidates.length) return null;
+
+  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${candidates.join('|')}`;
+  const cached = PARSED_FORM_SCHEMA_CACHE.get(cacheKey);
+  if (cached) return await cached;
+
+  const pending = (async (): Promise<unknown | null> => {
+    for (const candidate of candidates) {
+      const raw = await readRepoFileText(context, repoInfo, candidate);
+      if (!raw) continue;
+
+      try {
+        return JSON.parse(raw) as unknown;
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  })();
+
+  PARSED_FORM_SCHEMA_CACHE.set(cacheKey, pending);
+  return await pending;
+}
+
+async function parseFilteredIssueForm(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  issueBody: unknown,
+  template: TemplateLike
+): Promise<FormData> {
+  const rawFormData = parseForm(readIssueBodyForProcessing(issueBody), template);
+  const schemaObj = await loadTemplateSchemaForParsing(context, repoInfo, template, rawFormData);
+
+  if (!schemaObj) return rawFormData;
+
+  return filterParsedFormData(rawFormData, buildAllowedFieldIdsFromSchema(schemaObj));
 }
 
 function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: string): boolean {
@@ -2777,7 +2873,9 @@ async function processIssueEvent(
     return;
   }
 
-  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+  const parsedFormData = template
+    ? await parseFilteredIssueForm(context, { owner: params.owner, repo: params.repo }, issue.body, template)
+    : {};
   if (!isRequestIssue(context, template, parsedFormData)) {
     if (DBG) {
       log(
@@ -3062,7 +3160,12 @@ async function handleAuthorUpdateComment(
     } = reval;
 
     if (Array.isArray(revalErrors) && revalErrors.length === 0 && tpl) {
-      const parsedAfterUpdate = parseForm(readIssueBodyForProcessing(issue.body), tpl);
+      const parsedAfterUpdate = await parseFilteredIssueForm(
+        context,
+        { owner: params.owner, repo: params.repo },
+        issue.body,
+        tpl
+      );
       const snapshotHash = calcSnapshotHash(parsedAfterUpdate, tpl, readIssueBodyForProcessing(issue.body));
 
       try {
@@ -3844,7 +3947,7 @@ ${mentions}`,
 
   const tpl = reval.template || template;
   const bodyStr = readIssueBodyForProcessing(issue.body);
-  const parsedNow = parseForm(bodyStr, tpl);
+  const parsedNow = await parseFilteredIssueForm(context, { owner: params.owner, repo: params.repo }, issue.body, tpl);
   const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
   const effRt = resolveEffectiveRequestType(tpl, parsedNow);
 
@@ -4116,8 +4219,7 @@ async function closeOutdatedRequestPrs(
 
     const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
     const issue = data as unknown as IssueLike;
-    const bodyStr = readIssueBodyForProcessing(issue.body);
-    const form = parseForm(bodyStr, template);
+    const form = await parseFilteredIssueForm(context, { owner, repo }, issue.body, template);
     const hash = calcSnapshotHash(form, template, readIssueBodyForProcessing(issue.body));
     return { parsedFormData: form, currentHash: hash };
   };
@@ -4341,7 +4443,7 @@ export default function requestHandler(app: Probot): void {
       return;
     }
 
-    const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+    const parsedFormData = template ? await parseFilteredIssueForm(context, { owner, repo }, issue.body, template) : {};
     if (!isRequestIssue(context, template, parsedFormData)) return;
 
     const eff = resolveEffectiveConstants(context);
@@ -4443,7 +4545,7 @@ export default function requestHandler(app: Probot): void {
 
       try {
         template = await loadTemplateWithLabelRefresh(context, params, issue);
-        parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+        parsedFormData = template ? await parseFilteredIssueForm(context, { owner, repo }, issue.body, template) : {};
       } catch {
         if (!hasRoutingLock) return;
       }
@@ -4655,7 +4757,9 @@ export default function requestHandler(app: Probot): void {
         return;
       }
 
-      const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+      const parsedFormData = template
+        ? await parseFilteredIssueForm(context, { owner, repo }, issue.body, template)
+        : {};
       if (!isRequestIssue(context, template, parsedFormData)) {
         if (DBG) {
           log(
@@ -4772,7 +4876,9 @@ export default function requestHandler(app: Probot): void {
         continue;
       }
 
-      const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+      const parsedFormData = template
+        ? await parseFilteredIssueForm(context, { owner, repo }, issue.body, template)
+        : {};
       if (!isRequestIssue(context, template, parsedFormData)) continue;
 
       const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));

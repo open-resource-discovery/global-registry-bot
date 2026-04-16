@@ -684,7 +684,7 @@ describe('validation/run.ts extra coverage', () => {
     restore();
   });
 
-  it('validateRequestIssue: schema has x-form-field="identifier" but template lacks identifier field => config error message', async () => {
+  it('validateRequestIssue: schema identifier mapping without matching parsed field falls back to generic primary-id error', async () => {
     const { mod, mocks, restore } = await loadSubject();
 
     mocks.loadStaticConfig.mockResolvedValue({
@@ -735,7 +735,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const res = await mod.validateRequestIssue(ctx, { owner: 'o', repo: 'r' }, { body: 'body' }, { template });
 
-    expect(res.errors.join('\n')).toMatch(/schema marks a primary identifier/i);
+    expect(res.errors.join('\n')).toMatch(/Cannot resolve primary identifier from template/i);
 
     restore();
   });
@@ -1236,7 +1236,7 @@ describe('validation/run.ts extra coverage', () => {
     const schemaObj = {
       type: 'object',
       required: ['type', 'name'],
-      properties: { type: { const: 'weird' }, name: { type: 'string' } },
+      properties: { type: { const: 'weird' }, name: { 'type': 'string', 'x-form-field': 'identifier' } },
     };
 
     const getContent = jest.fn(async ({ path }: { path: string }) => {

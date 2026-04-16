@@ -2430,7 +2430,7 @@ describe('parent owner approval gating', () => {
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
       ctx.octokit.issues.update.mockImplementation(async (args: any) => {
-        if (Object.prototype.hasOwnProperty.call(args, 'body')) throw new Error('update failed');
+        if (Object.hasOwn(args, 'body')) throw new Error('update failed');
         return {};
       });
       ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {

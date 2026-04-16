@@ -5,10 +5,6 @@ type TemplateField = {
   };
 };
 
-type TemplateLike = {
-  body?: TemplateField[];
-};
-
 const NO_RESPONSE_RE = /^_?\s*no\s*response\s*(?:provided)?\s*_?\.?$/i;
 
 function normLabel(s: unknown): string {
@@ -25,6 +21,89 @@ function sanitizeScalar(v: unknown): string {
   if (!s) return '';
   if (NO_RESPONSE_RE.test(s)) return '';
   return s;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const INTERNAL_ALLOWED_FIELD_IDS = [
+  'requestType',
+  'request-type',
+  'open-system',
+  'system-description',
+  'sub-context-description',
+  'shortDescription',
+  'short-description',
+  'correlationIds',
+  'correlation-ids',
+  'correlationIdTypes',
+  'correlation-id-types',
+];
+
+function addAllowedFieldId(out: Set<string>, value: unknown): void {
+  const id = String(value ?? '').trim();
+  if (id) out.add(id);
+}
+
+function collectAllowedFieldIdsFromSchema(schema: unknown, out: Set<string>): void {
+  if (!isPlainObject(schema)) return;
+
+  const props = isPlainObject(schema['properties']) ? schema['properties'] : null;
+  if (props) {
+    for (const [propName, propDef] of Object.entries(props)) {
+      addAllowedFieldId(out, propName);
+      if (isPlainObject(propDef)) addAllowedFieldId(out, propDef['x-form-field']);
+    }
+  }
+
+  for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
+    const entries = schema[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) collectAllowedFieldIdsFromSchema(entry, out);
+  }
+
+  const defs = schema['$defs'];
+  if (isPlainObject(defs)) {
+    for (const entry of Object.values(defs)) collectAllowedFieldIdsFromSchema(entry, out);
+  }
+}
+
+export function buildAllowedFieldIdsFromSchema(
+  schema: unknown,
+  extraAllowedFieldIds: Iterable<string> | null = null
+): string[] {
+  const out = new Set<string>();
+
+  for (const id of INTERNAL_ALLOWED_FIELD_IDS) addAllowedFieldId(out, id);
+
+  if (extraAllowedFieldIds) {
+    for (const id of extraAllowedFieldIds) addAllowedFieldId(out, id);
+  }
+
+  collectAllowedFieldIdsFromSchema(schema, out);
+
+  return Array.from(out);
+}
+
+export function filterParsedFormData(
+  parsed: Record<string, string>,
+  allowedFieldIds: Iterable<string> | null = null
+): Record<string, string> {
+  if (!allowedFieldIds) return { ...parsed };
+
+  const allowed = new Set<string>();
+  for (const id of allowedFieldIds) addAllowedFieldId(allowed, id);
+
+  if (!allowed.size) return { ...parsed };
+
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed || {})) {
+    if (!allowed.has(key)) continue;
+    out[key] = value;
+  }
+
+  return out;
 }
 
 function extractValue(raw: string): string {
@@ -112,7 +191,53 @@ function fallbackKvScan(text: string, fieldMap: Record<string, string>): Record<
   return out;
 }
 
-export function parseForm(body: unknown, template: TemplateLike): Record<string, string> {
+type TemplateMeta = {
+  parseAllowedFieldIds?: string[];
+};
+
+type TemplateLike = {
+  body?: TemplateField[];
+  _meta?: TemplateMeta;
+};
+
+function normalizeFieldId(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+function toAllowedFieldSet(value: Iterable<string> | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!value) return out;
+
+  for (const item of value) {
+    const id = normalizeFieldId(item);
+    if (id) out.add(id);
+  }
+
+  return out;
+}
+
+function filterParsedValues(
+  values: Record<string, string>,
+  template: TemplateLike,
+  allowedFieldIds?: Iterable<string>
+): Record<string, string> {
+  const allowed = toAllowedFieldSet(allowedFieldIds ?? template?._meta?.parseAllowedFieldIds);
+  if (!allowed.size) return values;
+
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (!allowed.has(key)) continue;
+    out[key] = value;
+  }
+
+  return out;
+}
+
+export function parseForm(
+  body: unknown,
+  template: TemplateLike,
+  options: { allowedFieldIds?: Iterable<string> } = {}
+): Record<string, string> {
   const result: Record<string, string> = {};
   if (!body || !template) return result;
 
@@ -155,5 +280,5 @@ export function parseForm(body: unknown, template: TemplateLike): Record<string,
     for (const [k, v] of Object.entries(kv)) result[k] = v;
   }
 
-  return result;
+  return filterParsedValues(result, template, options.allowedFieldIds);
 }

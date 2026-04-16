@@ -278,11 +278,8 @@ test('adds required-field messages and returns "Cannot resolve primary identifie
     { template: tpl as any, formData: {} as any }
   );
 
-  expect(res.errors).toEqual([
-    'Required field is missing in form: Identifier',
-    'Cannot resolve primary identifier from template',
-  ]);
-  expect(res.errorsFormatted).toMatch(/Required field is missing/i);
+  expect(res.errors).toEqual(['Cannot resolve primary identifier from template']);
+  expect(res.errorsFormatted).toMatch(/Cannot resolve primary identifier/i);
 });
 
 test('resolvePrimaryIdFromTemplate can use schema x-form-field="identifier" mapping', async () => {
@@ -344,7 +341,7 @@ test('full flow: valid schema + hooks.customValidate + registry-exists adds buck
     additionalProperties: true,
     properties: {
       type: { const: 'system' },
-      name: { type: 'string' },
+      name: { 'type': 'string', 'x-form-field': 'identifier' },
       description: { type: 'string' },
       visibility: { type: 'string' },
     },
@@ -530,7 +527,7 @@ test('falls back to local schema loader when repo does not contain schema', asyn
     return JSON.stringify({
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
-      properties: { type: { const: 'system' }, name: { type: 'string' } },
+      properties: { type: { const: 'system' }, name: { 'type': 'string', 'x-form-field': 'identifier' } },
       required: ['type', 'name'],
     });
   });

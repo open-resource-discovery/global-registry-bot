@@ -64,6 +64,232 @@ type LabelIndex = {
   expectedLabels: string[];
 };
 
+type ParseAllowedIdsRepoInfo = {
+  owner: string;
+  repo: string;
+};
+
+type ParseAllowedIdsContext = {
+  octokit: {
+    repos: {
+      getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data?: unknown }>;
+    };
+  };
+};
+
+type ParseAllowedIdsTemplateField = {
+  id?: string;
+};
+
+type ParseAllowedIdsTemplate = {
+  body?: ParseAllowedIdsTemplateField[];
+  _meta?: {
+    schema?: string;
+    parseAllowedFieldIds?: string[];
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+};
+
+const TEMPLATE_PARSE_ALLOWED_FIELD_IDS_CACHE = new Map<string, Promise<string[]>>();
+
+const PARSE_CONTROL_FIELD_IDS = new Set<string>(['requestType', 'request-type', 'open-system']);
+
+const SCHEMA_PARSE_COMPAT_FIELD_ALIASES: Record<string, string[]> = {
+  contact: ['contacts'],
+  contacts: ['contact'],
+  description: ['system-description', 'sub-context-description'],
+  shortDescription: ['short-description'],
+  correlationIds: ['correlation-ids'],
+  correlationIdTypes: ['correlation-id-types'],
+};
+
+function parseAllowedToString(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+function parseAllowedIsPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseAllowedNormalizeRepoPath(value: unknown): string {
+  return parseAllowedToString(value)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/{2,}/g, '/');
+}
+
+function parseAllowedToKebabCase(value: string): string {
+  return parseAllowedToString(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[_\s]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function parseAllowedToSnakeCase(value: string): string {
+  return parseAllowedToString(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function buildTemplateFieldIdSetForParseFilter(template: ParseAllowedIdsTemplate): Set<string> {
+  const out = new Set<string>();
+
+  for (const field of template?.body || []) {
+    const id = parseAllowedToString(field?.id);
+    if (id) out.add(id);
+  }
+
+  return out;
+}
+
+function addTemplateFieldCandidateForParseFilter(
+  templateFieldIds: Set<string>,
+  allowed: Set<string>,
+  candidate: unknown
+): void {
+  const raw = parseAllowedToString(candidate);
+  if (!raw) return;
+
+  const variants = [raw, parseAllowedToKebabCase(raw), parseAllowedToSnakeCase(raw)];
+  for (const variant of variants) {
+    if (!variant) continue;
+    if (!templateFieldIds.has(variant)) continue;
+    allowed.add(variant);
+  }
+}
+
+function addSchemaPropertyCandidatesForParseFilter(
+  templateFieldIds: Set<string>,
+  allowed: Set<string>,
+  propertyName: string,
+  propertyDef: unknown
+): void {
+  const prop = parseAllowedIsPlainObject(propertyDef) ? propertyDef : {};
+  const mappedFieldId = parseAllowedToString(prop['x-form-field']);
+
+  if (mappedFieldId) {
+    addTemplateFieldCandidateForParseFilter(templateFieldIds, allowed, mappedFieldId);
+  } else {
+    const isConstOnly = Object.hasOwn(prop, 'const');
+    if (!isConstOnly) {
+      addTemplateFieldCandidateForParseFilter(templateFieldIds, allowed, propertyName);
+    }
+  }
+
+  for (const alias of SCHEMA_PARSE_COMPAT_FIELD_ALIASES[propertyName] || []) {
+    addTemplateFieldCandidateForParseFilter(templateFieldIds, allowed, alias);
+  }
+}
+
+function buildParseAllowedFieldIds(template: ParseAllowedIdsTemplate, schemaObj: unknown): string[] {
+  const templateFieldIds = buildTemplateFieldIdSetForParseFilter(template);
+  if (!templateFieldIds.size) return [];
+
+  const allowed = new Set<string>();
+  const props =
+    parseAllowedIsPlainObject(schemaObj) && parseAllowedIsPlainObject(schemaObj['properties'])
+      ? schemaObj['properties']
+      : null;
+
+  if (props) {
+    for (const [propertyName, propertyDef] of Object.entries(props)) {
+      addSchemaPropertyCandidatesForParseFilter(templateFieldIds, allowed, propertyName, propertyDef);
+    }
+  }
+
+  for (const controlFieldId of PARSE_CONTROL_FIELD_IDS) {
+    if (templateFieldIds.has(controlFieldId)) allowed.add(controlFieldId);
+  }
+
+  return Array.from(allowed);
+}
+
+async function readSchemaTextForParseFilter(
+  context: ParseAllowedIdsContext,
+  repoInfo: ParseAllowedIdsRepoInfo,
+  schemaPath: string
+): Promise<string | null> {
+  const rawPath = parseAllowedToString(schemaPath);
+  if (!rawPath) return null;
+
+  const cleaned = rawPath.replace(/^\.?\//, '');
+  const candidates = rawPath.startsWith('/')
+    ? [rawPath.replace(/^\/+/, '')]
+    : cleaned.startsWith('.github/')
+      ? [cleaned]
+      : [`.github/registry-bot/${cleaned}`, cleaned];
+
+  for (const candidate of Array.from(new Set(candidates.map(parseAllowedNormalizeRepoPath).filter(Boolean)))) {
+    try {
+      const res = await context.octokit.repos.getContent({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        path: candidate,
+      });
+
+      const data = (res as { data?: unknown }).data;
+      if (Array.isArray(data)) continue;
+      if (!parseAllowedIsPlainObject(data)) continue;
+      if (typeof data['content'] !== 'string') continue;
+
+      const encoding = typeof data['encoding'] === 'string' ? data['encoding'] : 'base64';
+      return Buffer.from(String(data['content'] || ''), encoding as BufferEncoding).toString('utf8');
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function resolveTemplateParseAllowedFieldIds(
+  context: ParseAllowedIdsContext,
+  repoInfo: ParseAllowedIdsRepoInfo,
+  template: ParseAllowedIdsTemplate
+): Promise<string[]> {
+  const schemaPath = parseAllowedToString(template?._meta?.schema);
+  const templateFieldIds = Array.from(buildTemplateFieldIdSetForParseFilter(template)).sort();
+
+  if (!schemaPath || !templateFieldIds.length) return [];
+
+  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${schemaPath}:${templateFieldIds.join(',')}`;
+  const cached = TEMPLATE_PARSE_ALLOWED_FIELD_IDS_CACHE.get(cacheKey);
+  if (cached) return await cached;
+
+  const pending = (async (): Promise<string[]> => {
+    const raw = await readSchemaTextForParseFilter(context, repoInfo, schemaPath);
+    if (!raw) return [];
+
+    try {
+      const schemaObj = JSON.parse(raw) as unknown;
+      return buildParseAllowedFieldIds(template, schemaObj);
+    } catch {
+      return [];
+    }
+  })();
+
+  TEMPLATE_PARSE_ALLOWED_FIELD_IDS_CACHE.set(cacheKey, pending);
+  return await pending;
+}
+
+async function attachParseAllowedFieldIds(
+  context: ParseAllowedIdsContext,
+  repoInfo: ParseAllowedIdsRepoInfo,
+  template: ParseAllowedIdsTemplate
+): Promise<void> {
+  const parseAllowedFieldIds = await resolveTemplateParseAllowedFieldIds(context, repoInfo, template);
+  if (!parseAllowedFieldIds.length) return;
+
+  template._meta = {
+    ...(template._meta || {}),
+    parseAllowedFieldIds,
+  };
+}
+
 const TEMPLATE_CACHE = new Map<string, CacheEntry<unknown>>();
 const TEMPLATE_FILE_CACHE = new Map<string, CacheEntry<Template>>();
 
@@ -189,6 +415,27 @@ const applyRequestMeta = (template: Template, requestType: string, rc: RequestCo
 
   return template;
 };
+
+async function applyRequestMetaAndAttachParseAllowedFieldIds(
+  context: ContextLike,
+  owner: string,
+  repo: string,
+  template: Template,
+  requestType: string,
+  rc: RequestConfigEntry
+): Promise<Template> {
+  applyRequestMeta(template, requestType, rc);
+
+  if (context.octokit) {
+    await attachParseAllowedFieldIds(
+      { octokit: context.octokit },
+      { owner, repo },
+      template as ParseAllowedIdsTemplate
+    );
+  }
+
+  return template;
+}
 
 const buildLabelIndexFromTemplates = async (
   context: ContextLike,
@@ -496,7 +743,9 @@ export async function loadTemplate(
     const tpl = await fetchFile(resolvedPath);
 
     const byTpl = findRequestByTemplatePath(context, resolvedPath);
-    if (byTpl) applyRequestMeta(tpl, byTpl.requestType, byTpl.rc);
+    if (byTpl) {
+      await applyRequestMetaAndAttachParseAllowedFieldIds(context, owner, repo, tpl, byTpl.requestType, byTpl.rc);
+    }
 
     const cacheKey = `${owner}/${repo}:path:${resolvedPath}`;
     TEMPLATE_CACHE.set(cacheKey, { ts: now(), data: tpl });
@@ -533,7 +782,7 @@ export async function loadTemplate(
   }
 
   const tpl = await fetchFile(resolvedTplPath);
-  applyRequestMeta(tpl, requestType, rc);
+  await applyRequestMetaAndAttachParseAllowedFieldIds(context, owner, repo, tpl, requestType, rc);
 
   if (!tpl._meta?.requestType) {
     if (!tpl._meta) {
@@ -570,5 +819,12 @@ function isTemplateField(value: unknown): value is TemplateFieldMinimal {
 export function parseForm(body: string, template: Template): Record<string, string> {
   const bodyFields: TemplateFieldMinimal[] = Array.isArray(template.body) ? template.body.filter(isTemplateField) : [];
 
-  return parseFormRaw(body || '', { body: bodyFields });
+  return parseFormRaw(body || '', {
+    body: bodyFields,
+    _meta: {
+      parseAllowedFieldIds: Array.isArray(template._meta?.parseAllowedFieldIds)
+        ? template._meta.parseAllowedFieldIds
+        : [],
+    },
+  });
 }
