@@ -2886,6 +2886,37 @@ async function processIssueEvent(
 
   if (gated) return;
 
+  const contactGated = await maybeRequireSystemContactOwnerApproval(
+    context,
+    params,
+    issue,
+    parsedFormData,
+    effectiveRequestType,
+    validatedNamespace
+  );
+
+  if (contactGated) return;
+
+  const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, validatedNamespace);
+  if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
+    const approvalOutcome = await maybeHandleApprovalDecision(
+      context,
+      params,
+      issue,
+      result.template || template,
+      parsedFormData,
+      effectiveRequestType,
+      validatedNamespace
+    );
+
+    if (approvalOutcome !== 'continue') return;
+
+    await finalizeApprovedRequest(context, params, issue, result.template || template, parsedFormData, {
+      approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
+    });
+    return;
+  }
+
   const approvalOutcome = await maybeHandleApprovalDecision(
     context,
     params,
@@ -3082,6 +3113,37 @@ async function handleAuthorUpdateComment(
 
       if (gated) return;
 
+      const contactGated = await maybeRequireSystemContactOwnerApproval(
+        context,
+        params,
+        issue,
+        parsedAfterUpdate,
+        effectiveRequestType,
+        namespace
+      );
+
+      if (contactGated) return;
+
+      const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, namespace);
+      if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
+        const approvalOutcome = await maybeHandleApprovalDecision(
+          context,
+          params,
+          issue,
+          tpl,
+          parsedAfterUpdate,
+          effectiveRequestType,
+          namespace
+        );
+
+        if (approvalOutcome !== 'continue') return;
+
+        await finalizeApprovedRequest(context, params, issue, tpl, parsedAfterUpdate, {
+          approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
+        });
+        return;
+      }
+
       const approvalOutcome = await maybeHandleApprovalDecision(
         context,
         params,
@@ -3126,6 +3188,30 @@ async function handleAuthorUpdateComment(
   }
 }
 
+function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestEvents>): string {
+  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
+  const vendorEntry = isPlainObject(reqs['vendor']) ? reqs['vendor'] : null;
+  return normalizeRepoPath(vendorEntry ? vendorEntry['folderName'] : '') || 'data/vendors';
+}
+
+async function repoYamlExists(context: BotContext<RequestEvents>, repo: RepoInfo, basePath: string): Promise<boolean> {
+  for (const ext of ['yaml', 'yml']) {
+    try {
+      await context.octokit.repos.getContent({
+        owner: repo.owner,
+        repo: repo.repo,
+        path: `${basePath}.${ext}`,
+      });
+      return true;
+    } catch (e: unknown) {
+      if (getHttpStatus(e) !== 404) throw e;
+    }
+  }
+
+  return false;
+}
+
 async function checkParentChainExistsInFlatStructure(
   context: BotContext<RequestEvents>,
   { owner, repo }: RepoInfo,
@@ -3134,34 +3220,34 @@ async function checkParentChainExistsInFlatStructure(
   explicitResourceName?: string
 ): Promise<string | null> {
   const rootRaw = toStringTrim(template?._meta?.root);
-  const STRUCT_ROOT = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!STRUCT_ROOT) return null;
+  const structRoot = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!structRoot) return null;
 
   const rt = toStringTrim(template?._meta?.requestType).toLowerCase();
   const isNamespaceLike = rt.includes('namespace') || rt === 'subcontext' || rt === 'system' || rt === 'authority';
-
   if (!isNamespaceLike) return null;
 
   const resourceName = toStringTrim(explicitResourceName) || extractResourceNameFromForm(formData, template);
   const parts = toStringTrim(resourceName).split('.').filter(Boolean);
-
-  // Needs at least 2 segments like "sap.cds"
   if (parts.length < 2) return null;
 
-  // Check parents from closest to last top-level:
-  // sap.cds.foo.bar.test -> sap.cds.foo.bar -> sap.cds.foo -> sap.cds
-  for (let i = parts.length - 1; i >= 2; i -= 1) {
-    const parentName = parts.slice(0, i).join('.');
-    const parentFilePath = `${STRUCT_ROOT}/${parentName}.yaml`;
+  const repoInfo: RepoInfo = { owner, repo };
+  const vendorRoot = resolveVendorRegistryRootForRequestHandler(context);
 
-    try {
-      await context.octokit.repos.getContent({ owner, repo, path: parentFilePath });
-    } catch (e: unknown) {
-      if (getHttpStatus(e) === 404) {
-        return `Parent resource '${parentName}' is not present. Please register the parent first.`;
-      }
-      throw e;
-    }
+  for (let i = parts.length - 1; i >= 1; i -= 1) {
+    const parentName = parts.slice(0, i).join('.');
+    if (!parentName) continue;
+
+    const exists =
+      i === 1
+        ? await repoYamlExists(context, repoInfo, `${vendorRoot}/${parentName}`)
+        : await repoYamlExists(context, repoInfo, `${structRoot}/${parentName}`);
+
+    if (exists) continue;
+
+    return i === 1
+      ? `Vendor '${parentName}' is not present. Please register the vendor first.`
+      : `Parent resource '${parentName}' is not present. Please register the parent first.`;
   }
 
   return null;
@@ -3236,6 +3322,297 @@ type ParentApprovalMeta = {
   approvedBy?: string;
   approvedAt?: string;
 };
+
+type ContactApprovalMeta = {
+  v: 1;
+  target: string;
+  owners: string[];
+  approvedBy?: string;
+  approvedAt?: string;
+};
+
+const CONTACT_APPROVAL_READ_RE = /<!--\s*nsreq:contact-approval\s*=\s*({[\s\S]*?})\s*-->/i;
+const CONTACT_APPROVAL_STRIP_RE = /<!--\s*nsreq:contact-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
+
+function sameNormalizedLoginSet(a: string[], b: string[]): boolean {
+  return uniqLogins(a).join('|').toLowerCase() === uniqLogins(b).join('|').toLowerCase();
+}
+
+function isSubContextRequestType(requestType: unknown): boolean {
+  const rt = normalizeTypeToken(requestType);
+  return rt === 'subcontextnamespace' || rt === 'subcontext';
+}
+
+function getApprovedParentOwnerLogin(issueBody: unknown, target: string): string {
+  const meta = readParentApprovalMeta(issueBody);
+  if (!meta) return '';
+
+  const approvedBy = normalizeLogin(meta.approvedBy);
+  if (!approvedBy) return '';
+
+  return normalizeKey(meta.target) === normalizeKey(target) ? approvedBy : '';
+}
+
+function stripContactApprovalFromBody(issueBody: unknown): string {
+  const body = String(issueBody || '');
+  return body.replace(CONTACT_APPROVAL_STRIP_RE, '').trimEnd();
+}
+
+function readContactApprovalMeta(issueBody: unknown): ContactApprovalMeta | null {
+  const body = String(issueBody || '');
+  const m = body.match(CONTACT_APPROVAL_READ_RE);
+  if (!m) return null;
+
+  try {
+    const raw = JSON.parse(String(m[1] || ''));
+    if (!isPlainObject(raw)) return null;
+    if (raw['v'] !== 1) return null;
+
+    const target = toStringTrim(raw['target']);
+    const ownersRaw = raw['owners'];
+    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
+    const approvedBy = normalizeLogin(raw['approvedBy']);
+    const approvedAt = toStringTrim(raw['approvedAt']);
+
+    if (!target || !owners.length) return null;
+
+    const out: ContactApprovalMeta = { v: 1, target, owners };
+    if (approvedBy) out.approvedBy = approvedBy;
+    if (approvedAt) out.approvedAt = approvedAt;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureContactApprovalMarker(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  meta: ContactApprovalMeta | null
+): Promise<boolean> {
+  const current = readContactApprovalMeta(issue.body);
+  const cleaned = stripContactApprovalFromBody(issue.body);
+
+  if (!meta) {
+    if (!current) return false;
+
+    try {
+      const nextBody = `${cleaned}\n`;
+      await context.octokit.issues.update({ ...params, body: nextBody });
+      issue.body = nextBody;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const next: ContactApprovalMeta = {
+    v: 1,
+    target: toStringTrim(meta.target),
+    owners: uniqLogins(meta.owners || []),
+  };
+
+  const approvedBy = normalizeLogin(meta.approvedBy);
+  const approvedAt = toStringTrim(meta.approvedAt);
+
+  if (approvedBy) next.approvedBy = approvedBy;
+  if (approvedAt) next.approvedAt = approvedAt;
+
+  if (!next.target || !next.owners.length) return false;
+
+  const same =
+    current &&
+    normalizeKey(current.target) === normalizeKey(next.target) &&
+    sameNormalizedLoginSet(current.owners, next.owners) &&
+    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
+    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
+
+  if (same) return false;
+
+  const metaStr = JSON.stringify(next);
+  const nextBody = `${cleaned}\n\n<!-- nsreq:contact-approval = ${metaStr} -->\n`;
+
+  try {
+    await context.octokit.issues.update({ ...params, body: nextBody });
+    issue.body = nextBody;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRequestContactOwnerLogins(
+  context: BotContext<RequestEvents>,
+  formData: FormData
+): Promise<string[]> {
+  const contacts = formData['contact'] ?? formData['contacts'] ?? '';
+  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
+
+  const resolved: string[] = [...directLogins];
+  for (const email of emails.slice(0, 10)) {
+    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
+  }
+
+  return uniqLogins(resolved);
+}
+
+async function maybeRequireSystemContactOwnerApproval(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  parsedFormData: FormData,
+  requestType: string,
+  validatedNamespace: string
+): Promise<boolean> {
+  if (normalizeTypeToken(requestType) !== 'systemnamespace') {
+    await ensureContactApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const target = toStringTrim(validatedNamespace);
+  const owners = await resolveRequestContactOwnerLogins(context, parsedFormData);
+  const requester = normalizeLogin(issue.user?.login);
+
+  if (!target || !owners.length) {
+    await ensureContactApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  if (requester && owners.some((owner) => owner.toLowerCase() === requester.toLowerCase())) {
+    await ensureContactApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const current = readContactApprovalMeta(issue.body);
+  const alreadyApproved =
+    current &&
+    normalizeKey(current.target) === normalizeKey(target) &&
+    sameNormalizedLoginSet(current.owners, owners) &&
+    Boolean(normalizeLogin(current.approvedBy));
+
+  if (alreadyApproved) return false;
+
+  await ensureContactApprovalMarker(context, params, issue, { v: 1, target, owners });
+
+  const mentions = owners.map((owner) => `@${owner}`).join(' ');
+  const tag = `nsreq:contact-approval:${normalizeKey(target)}`;
+
+  await postOnce(
+    context,
+    params,
+    `### 🔒 Contact owner approval required
+
+Requester @${requester || 'unknown'} is not listed in the contact owners for \`${target}\`.
+
+${mentions}
+
+Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
+    { minimizeTag: tag }
+  );
+
+  await setStateLabel(context, params, issue, 'author');
+  return true;
+}
+
+async function handleSystemContactOwnerApprovalIfNeeded(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  commenter: string
+): Promise<boolean> {
+  const meta = readContactApprovalMeta(issue.body);
+  if (!meta) return false;
+  if (normalizeLogin(meta.approvedBy)) return false;
+
+  const commenterLogin = normalizeLogin(commenter);
+  const owners = uniqLogins(meta.owners || []);
+  const isOwner = owners.some((owner) => owner.toLowerCase() === commenterLogin.toLowerCase());
+  const tagBase = `nsreq:contact-approval:${normalizeKey(meta.target)}`;
+
+  if (!isOwner) {
+    const mentions = owners.map((owner) => `@${owner}`).join(' ');
+    await postOnce(
+      context,
+      params,
+      `Approval ignored: this request requires contact owner approval for \`${meta.target}\` first.
+
+${mentions}`,
+      { minimizeTag: `${tagBase}:pending` }
+    );
+    return true;
+  }
+
+  const reval = await validateRequestIssue(context, params, issue, {
+    template,
+    formData: parsedFormData,
+  });
+
+  if (reval.errors?.length) {
+    const listFallback = (reval.errors || []).map((error) => `- ${error}`).join('\n');
+    const message =
+      reval.errorsFormattedSingle?.trim() ||
+      reval.errorsFormatted?.trim() ||
+      listFallback ||
+      'Unknown validation error.';
+
+    await postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(
+        message,
+        normalizeMachineReadableIssues(
+          (reval.validationIssues || []).map((validationIssue) => ({
+            field: toStringTrim(validationIssue.path) || 'details',
+            message: toStringTrim(validationIssue.message),
+          }))
+        )
+      ),
+      { minimizeTag: 'nsreq:validation' }
+    );
+    await setStateLabel(context, params, issue, 'author');
+    return true;
+  }
+
+  const tpl = reval.template || template;
+  const bodyStr = readIssueBodyForProcessing(issue.body);
+  const parsedNow = parseForm(bodyStr, tpl);
+  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
+  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
+
+  await ensureContactApprovalMarker(context, params, issue, {
+    v: 1,
+    target: meta.target,
+    owners,
+    approvedBy: commenterLogin,
+    approvedAt: new Date().toISOString(),
+  });
+
+  const approvalOutcome = await maybeHandleApprovalDecision(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt,
+    reval.namespace
+  );
+
+  if (approvalOutcome !== 'continue') return true;
+
+  await postOnce(context, params, `Contact owner approved by @${commenterLogin}. Continuing with standard review.`, {
+    minimizeTag: `${tagBase}:approved`,
+  });
+
+  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
+    snapshotHash,
+    requestType: effRt,
+  });
+
+  return true;
+}
 
 function stripParentApprovalFromBody(issueBody: unknown): string {
   const body = String(issueBody || '');
@@ -3492,6 +3869,13 @@ ${mentions}`,
 
   if (approvalOutcome !== 'continue') return true;
 
+  if (isSubContextRequestType(effRt)) {
+    await finalizeApprovedRequest(context, params, issue, tpl, parsedNow, {
+      approvalPrefix: `Approved by parent namespace owner @${commenterLogin}`,
+    });
+    return true;
+  }
+
   await postOnce(context, params, `Parent namespace approved by @${commenterLogin}. Continuing with standard review.`, {
     minimizeTag: `${tagBase}:approved`,
   });
@@ -3569,7 +3953,7 @@ function stripRoutingLockFromBody(issueBody: unknown): string {
 }
 
 function readIssueBodyForProcessing(issueBody: unknown): string {
-  return toStringTrim(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody)));
+  return toStringTrim(stripContactApprovalFromBody(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody))));
 }
 
 async function detectRoutingLabels(
@@ -4296,6 +4680,16 @@ export default function requestHandler(app: Probot): void {
           commenter
         );
         if (handled) return;
+
+        const contactHandled = await handleSystemContactOwnerApprovalIfNeeded(
+          context,
+          params,
+          issue,
+          template,
+          parsedFormData,
+          commenter
+        );
+        if (contactHandled) return;
 
         await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
         return;
