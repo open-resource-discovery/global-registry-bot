@@ -25,8 +25,7 @@
     "test:coverage": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --coverage",
     "prettier": "prettier --write \"**/*.{js,ts,json,yml,yaml,md}\"",
     "prettier:ci": "prettier --check \"**/*.{js,ts,json,yml,yaml,md}\"",
-    "lint:staged": "lint-staged",
-    "deploy": "cf login -a https://api.cf.sap.hana.ondemand.com -o CORE_CF -s open-discovery && cf push global-registry-bot --docker-image ghcr-remote.common.repositories.cloud.sap/open-resource-discovery/global-registry-bot:latest --docker-username C5388932 --random-route -m 256M -k 512M"
+    "lint:staged": "lint-staged"
   },
   "dependencies": {
     "ajv": "8.18.0",
