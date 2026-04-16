@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+- Improved namespace approval flow:
+  - subcontext requests approved by parent owners now go directly to PR
+  - system namespace requests require an extra contact-owner gate if requester is not in contacts
+  - parent chain validation now checks the full chain down to root
+
+- Improved issue form parsing:
+  - extra UI-only fields are allowed in issue templates
+  - non-schema fields are filtered before validation and YAML generation
+  - fields like `justification` stay visible in GitHub issues without affecting registry data
+
 ## [[0.1.0](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v/0.1.0)] - 2026-04-14
 
 ## Added
