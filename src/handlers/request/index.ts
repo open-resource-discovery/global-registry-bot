@@ -4737,7 +4737,25 @@ export default function requestHandler(app: Probot): void {
   ): Promise<void> => {
     await getStaticConfig(context);
 
-    const candidates = (await listOpenPullRequests(context, repoInfo)).filter((pr) => pr.head?.sha === headSha);
+    const normalizedHeadSha = toStringTrim(headSha);
+    if (!normalizedHeadSha) return;
+
+    const headIsGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
+    if (!headIsGreen) {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          { owner: repoInfo.owner, repo: repoInfo.repo, headSha: normalizedHeadSha },
+          'skip direct PR approval until full validation pipeline is green'
+        );
+      }
+      return;
+    }
+
+    const candidates = (await listOpenPullRequests(context, repoInfo)).filter(
+      (pr) => toStringTrim(pr.head?.sha) === normalizedHeadSha
+    );
 
     for (const pr of candidates) {
       try {
