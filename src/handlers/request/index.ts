@@ -30,7 +30,10 @@ type RequestEvents =
   | 'issue_comment.edited'
   | 'check_suite.completed'
   | 'check_run.completed'
-  | 'status';
+  | 'status'
+  | 'pull_request.reopened'
+  | 'pull_request.synchronize'
+  | 'push';
 
 type ResourceBotContextExt = {
   resourceBotConfig?: NormalizedStaticConfig;
@@ -109,6 +112,12 @@ type PullRequestFileLike = {
 type PullRequestCommitLike = {
   author?: UserLike | null;
   committer?: UserLike | null;
+};
+
+type PullRequestReviewLike = {
+  state?: string | null;
+  body?: string | null;
+  user?: UserLike | null;
 };
 
 type CheckRunPullRequestRef = { number?: number | null };
@@ -1789,6 +1798,7 @@ async function createAutomatedApprovalReview(
 ): Promise<boolean> {
   const body =
     toStringTrim(decision.comment) || toStringTrim(decision.message) || 'Approved automatically by onApproval hook.';
+  const reviewBody = `${body}\n\n${buildAutoApprovalReviewMarker(pr.head?.sha || '')}`;
 
   try {
     await (
@@ -1806,7 +1816,7 @@ async function createAutomatedApprovalReview(
       repo: repoInfo.repo,
       pull_number: pr.number,
       event: 'APPROVE',
-      body,
+      body: reviewBody,
     });
 
     return true;
@@ -1896,6 +1906,279 @@ async function addApprovedLabelToPr(
     });
   } catch {
     // ignore
+  }
+}
+
+const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
+
+function buildAutoApprovalReviewMarker(headSha: string): string {
+  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
+}
+
+async function hasApprovedLabelOnPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<boolean> {
+  const eff = resolveEffectiveConstants(context);
+  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+
+  try {
+    const labels = await fetchIssueLabels(context, {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: prNumber,
+    });
+
+    return labelsMatching(labels, approvedLabel).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function hasAutoApprovalReviewForHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number,
+  headSha: string
+): Promise<boolean> {
+  const marker = buildAutoApprovalReviewMarker(headSha);
+
+  try {
+    const res = await (
+      context.octokit.pulls as unknown as {
+        listReviews: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          per_page?: number;
+        }) => Promise<{ data?: PullRequestReviewLike[] }>;
+      }
+    ).listReviews({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: prNumber,
+      per_page: 100,
+    });
+
+    const reviews = Array.isArray(res?.data) ? res.data : [];
+
+    return reviews.some(
+      (review) =>
+        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
+  const raw = toStringTrim(body);
+  const match = /source:\s*#(\d+)/i.exec(raw) ?? /issue\s*#(\d+)/i.exec(raw);
+  if (!match?.[1]) return null;
+
+  const value = Number.parseInt(match[1], 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isSnapshotManagedRequestPr(pr: PullRequestLike): boolean {
+  return Boolean(extractHashFromPrBody(toStringTrim(pr.body)));
+}
+
+async function listOpenPullRequests(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo
+): Promise<PullRequestLike[]> {
+  const out: PullRequestLike[] = [];
+  let page = 1;
+
+  while (true) {
+    const { data } = await context.octokit.pulls.list({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      state: 'open',
+      per_page: 100,
+      page,
+    });
+
+    const prs = (data || []) as unknown as PullRequestLike[];
+    if (!prs.length) break;
+
+    out.push(...prs);
+
+    if (prs.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+
+  return out;
+}
+
+async function processPullRequestForAutoMerge(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<void> {
+  const issueNumber = parseLinkedIssueNumberFromPrBody(pr.body);
+
+  if (issueNumber === null) {
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeIfGreen(context, {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      prNumber: pr.number,
+      mergeMethod: 'squash',
+      prData: pr,
+    });
+    return;
+  }
+
+  const params: IssueParams = {
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    issue_number: issueNumber,
+  };
+
+  let issue: IssueLike;
+  try {
+    const res = await context.octokit.issues.get(params);
+    issue = res.data as unknown as IssueLike;
+  } catch {
+    return;
+  }
+
+  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) return;
+
+  let template: TemplateLike;
+  try {
+    template = await loadTemplateWithLabelRefresh(context, params, issue);
+  } catch {
+    return;
+  }
+
+  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+  if (!isRequestIssue(context, template, parsedFormData)) return;
+
+  const body = toStringTrim(pr.body);
+  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const prHash = extractHashFromPrBody(body);
+
+  if (prHash) {
+    if (prHash !== currentHash) {
+      await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+      return;
+    }
+
+    await tryMergeIfGreen(context, {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      prNumber: pr.number,
+      mergeMethod: 'squash',
+      prData: pr,
+    });
+    return;
+  }
+
+  const directPrOutcome = await maybeHandleDirectPrApprovalForMerge(
+    context,
+    repoInfo,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    pr
+  );
+
+  if (directPrOutcome !== 'approved') return;
+
+  await tryMergeIfGreen(context, {
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    prNumber: pr.number,
+    mergeMethod: 'squash',
+    prData: pr,
+  });
+}
+
+function isApprovalConfigChangePath(filePath: string): boolean {
+  return /^\.github\/registry-bot\/config\.(?:[cm]?js|ts|ya?ml)$/i.test(normalizeRepoPath(filePath));
+}
+
+function readPushChangedFiles(payload: unknown): string[] {
+  if (!isPlainObject(payload)) return [];
+
+  const commits = Array.isArray(payload['commits']) ? payload['commits'] : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const commit of commits) {
+    if (!isPlainObject(commit)) continue;
+
+    for (const key of ['added', 'modified', 'removed'] as const) {
+      const files = Array.isArray(commit[key]) ? commit[key] : [];
+      for (const file of files) {
+        const normalized = normalizeRepoPath(file);
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        out.push(normalized);
+      }
+    }
+  }
+
+  return out;
+}
+
+function isRelevantDefaultBranchPushForApprovalReevaluation(payload: unknown): boolean {
+  if (!isPlainObject(payload)) return false;
+
+  const ref = toStringTrim(payload['ref']);
+  const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
+  const defaultBranch = repoObj ? toStringTrim(repoObj['default_branch']) : '';
+
+  if (!ref || !defaultBranch || ref !== `refs/heads/${defaultBranch}`) return false;
+
+  return readPushChangedFiles(payload).some(isApprovalConfigChangePath);
+}
+
+async function reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo
+): Promise<void> {
+  const openPrs = await listOpenPullRequests(context, repoInfo);
+
+  for (const pr of openPrs) {
+    if (isSnapshotManagedRequestPr(pr)) continue;
+
+    try {
+      const alreadyApproved =
+        (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
+        (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, pr.head?.sha || ''));
+
+      if (alreadyApproved) {
+        await tryMergeIfGreen(context, {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          prNumber: pr.number,
+          mergeMethod: 'squash',
+          prData: pr,
+        });
+        continue;
+      }
+
+      await processPullRequestForAutoMerge(context, repoInfo, pr);
+    } catch (e: unknown) {
+      log(
+        context,
+        'warn',
+        {
+          err: e instanceof Error ? e.message : String(e),
+          prNumber: pr.number,
+        },
+        'failed to re-evaluate direct pull request after approval config change'
+      );
+    }
   }
 }
 
@@ -2227,10 +2510,20 @@ async function maybeHandleStandaloneDirectPrApproval(
   const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr);
 
   if (decision.status === 'approved') {
-    const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-    if (!approved) return 'continue';
+    const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(
+      context,
+      repoInfo,
+      pr.number,
+      pr.head?.sha || ''
+    );
 
-    await addApprovedLabelToPr(context, repoInfo, pr.number);
+    if (!hasCurrentHeadAutoApproval) {
+      const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+      if (!approved) return 'continue';
+
+      await addApprovedLabelToPr(context, repoInfo, pr.number);
+    }
+
     return 'approved';
   }
 
@@ -2458,10 +2751,20 @@ async function maybeHandleDirectPrApprovalForMerge(
   );
 
   if (decision.status === 'approved') {
-    const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-    if (!approved) return 'continue';
+    const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(
+      context,
+      repoInfo,
+      pr.number,
+      pr.head?.sha || ''
+    );
 
-    await addApprovedLabelToPr(context, repoInfo, pr.number);
+    if (!hasCurrentHeadAutoApproval) {
+      const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+      if (!approved) return 'continue';
+
+      await addApprovedLabelToPr(context, repoInfo, pr.number);
+    }
+
     await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
     return 'approved';
   }
@@ -3788,6 +4091,30 @@ async function closeOutdatedRequestPrs(
   }
 }
 
+function readPullRequestFromPayload(payload: unknown): PullRequestLike | null {
+  if (!isPlainObject(payload)) return null;
+
+  const pr = payload['pull_request'];
+  if (!isPlainObject(pr)) return null;
+
+  return pr as PullRequestLike;
+}
+
+function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
+  if (!isPlainObject(payload)) return null;
+
+  const repoObj = payload['repository'];
+  if (!isPlainObject(repoObj)) return null;
+
+  const repoName = toStringTrim(repoObj['name']);
+  const ownerObj = isPlainObject(repoObj['owner']) ? repoObj['owner'] : null;
+  const ownerLogin = ownerObj ? toStringTrim(ownerObj['login']) : '';
+
+  if (!ownerLogin || !repoName) return null;
+
+  return { owner: ownerLogin, repo: repoName };
+}
+
 export default function requestHandler(app: Probot): void {
   const getStaticConfig = async (context: BotContext<RequestEvents>): Promise<NormalizedStaticConfig> => {
     if (context.resourceBotConfig && context.resourceBotHooks !== undefined) return context.resourceBotConfig;
@@ -4310,117 +4637,60 @@ export default function requestHandler(app: Probot): void {
   );
 
   const tryAutoMerge = async (
-    context: BotContext<'check_suite.completed' | 'check_run.completed' | 'status'>,
+    context: BotContext<RequestEvents>,
     repoInfo: RepoInfo,
     headSha: string
   ): Promise<void> => {
-    const { owner, repo } = repoInfo;
     await getStaticConfig(context);
 
-    let page = 1;
-    const candidates: PullRequestLike[] = [];
-
-    while (true) {
-      const { data } = await context.octokit.pulls.list({
-        owner,
-        repo,
-        state: 'open',
-        per_page: 100,
-        page,
-      });
-
-      const prs = (data || []) as unknown as PullRequestLike[];
-      if (!prs.length) break;
-
-      candidates.push(...prs.filter((pr) => pr.head?.sha === headSha));
-      if (prs.length < 100) break;
-
-      page += 1;
-    }
+    const candidates = (await listOpenPullRequests(context, repoInfo)).filter((pr) => pr.head?.sha === headSha);
 
     for (const pr of candidates) {
-      const body = String(pr.body || '');
-      const m = /source:\s*#(\d+)/i.exec(body) ?? /issue\s*#(\d+)/i.exec(body);
-
-      if (!m) {
-        const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, { owner, repo }, pr);
-        if (standaloneOutcome !== 'approved') continue;
-
-        await tryMergeIfGreen(context, {
-          owner,
-          repo,
-          prNumber: pr.number,
-          mergeMethod: 'squash',
-          prData: pr,
-        });
-        continue;
-      }
-
-      const issueNumber = Number.parseInt(m[1], 10);
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-
-      let issue: IssueLike;
       try {
-        const res = await context.octokit.issues.get({ owner, repo, issue_number: issueNumber });
-        issue = res.data as unknown as IssueLike;
-      } catch {
-        continue;
+        await processPullRequestForAutoMerge(context, repoInfo, pr);
+      } catch (e: unknown) {
+        log(
+          context,
+          'warn',
+          {
+            err: e instanceof Error ? e.message : String(e),
+            prNumber: pr.number,
+          },
+          'auto-merge candidate processing failed'
+        );
       }
-
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) continue;
-      }
-
-      let template: TemplateLike;
-      try {
-        template = await loadTemplateWithLabelRefresh(context, params, issue);
-      } catch {
-        continue;
-      }
-
-      const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-      if (!isRequestIssue(context, template, parsedFormData)) continue;
-
-      const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
-      const prHash = extractHashFromPrBody(body);
-
-      if (prHash) {
-        if (prHash !== currentHash) {
-          await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
-          continue;
-        }
-
-        await tryMergeIfGreen(context, {
-          owner,
-          repo,
-          prNumber: pr.number,
-          mergeMethod: 'squash',
-          prData: pr,
-        });
-        continue;
-      }
-
-      const directPrOutcome = await maybeHandleDirectPrApprovalForMerge(
-        context,
-        { owner, repo },
-        params,
-        issue,
-        template,
-        parsedFormData,
-        pr
-      );
-
-      if (directPrOutcome !== 'approved') continue;
-
-      await tryMergeIfGreen(context, {
-        owner,
-        repo,
-        prNumber: pr.number,
-        mergeMethod: 'squash',
-        prData: pr,
-      });
     }
   };
+
+  app.on(
+    ['pull_request.reopened', 'pull_request.synchronize'],
+    async (context: BotContext<'pull_request.reopened' | 'pull_request.synchronize'>): Promise<void> => {
+      await getStaticConfig(context);
+
+      const payload = context.payload as unknown;
+      const pr = readPullRequestFromPayload(payload);
+      const repoInfo = readRepoInfoFromPayload(payload);
+
+      if (!pr || !repoInfo) return;
+
+      const headSha = toStringTrim(pr.head?.sha);
+      if (!headSha) return;
+
+      await tryAutoMerge(context, repoInfo, headSha);
+    }
+  );
+
+  app.on('push', async (context: BotContext<'push'>): Promise<void> => {
+    await getStaticConfig(context);
+
+    const payload = context.payload as unknown;
+    if (!isRelevantDefaultBranchPushForApprovalReevaluation(payload)) return;
+
+    const repoInfo = readRepoInfoFromPayload(payload);
+    if (!repoInfo) return;
+
+    await reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(context, repoInfo);
+  });
 
   app.on(
     ['check_suite.completed', 'check_run.completed'],
