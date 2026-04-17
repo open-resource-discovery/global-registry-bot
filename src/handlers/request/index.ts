@@ -31,8 +31,6 @@ type RequestEvents =
   | 'check_suite.completed'
   | 'check_run.completed'
   | 'status'
-  | 'pull_request.reopened'
-  | 'pull_request.synchronize'
   | 'push';
 
 type ResourceBotContextExt = {
@@ -118,6 +116,13 @@ type PullRequestReviewLike = {
   state?: string | null;
   body?: string | null;
   user?: UserLike | null;
+};
+
+type RefCheckRunLike = {
+  id?: number | null;
+  name?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
 };
 
 type CheckRunPullRequestRef = { number?: number | null };
@@ -1915,27 +1920,6 @@ function buildAutoApprovalReviewMarker(headSha: string): string {
   return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
-async function hasApprovedLabelOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  const eff = resolveEffectiveConstants(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-
-  try {
-    const labels = await fetchIssueLabels(context, {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      issue_number: prNumber,
-    });
-
-    return labelsMatching(labels, approvedLabel).length > 0;
-  } catch {
-    return false;
-  }
-}
-
 async function hasAutoApprovalReviewForHead(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -1967,6 +1951,120 @@ async function hasAutoApprovalReviewForHead(
       (review) =>
         toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
     );
+  } catch {
+    return false;
+  }
+}
+
+function isGreenCheckConclusion(conclusion: string): boolean {
+  const value = toStringTrim(conclusion).toLowerCase();
+  return value === 'success' || value === 'neutral' || value === 'skipped';
+}
+
+function isBlockingCheckConclusion(conclusion: string): boolean {
+  const value = toStringTrim(conclusion).toLowerCase();
+  return (
+    value === 'failure' ||
+    value === 'cancelled' ||
+    value === 'timed_out' ||
+    value === 'action_required' ||
+    value === 'startup_failure' ||
+    value === 'stale'
+  );
+}
+
+async function isHeadGreenForApprovalReevaluation(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  headSha: string
+): Promise<boolean> {
+  const ref = toStringTrim(headSha);
+  if (!ref) return false;
+
+  try {
+    const all: RefCheckRunLike[] = [];
+    let page = 1;
+
+    while (true) {
+      const res = await (
+        context.octokit.checks as unknown as {
+          listForRef: (args: {
+            owner: string;
+            repo: string;
+            ref: string;
+            per_page?: number;
+            page?: number;
+          }) => Promise<{ data?: unknown }>;
+        }
+      ).listForRef({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        ref,
+        per_page: 100,
+        page,
+      });
+
+      const data = (res as { data?: unknown }).data;
+      const runs =
+        isPlainObject(data) && Array.isArray(data['check_runs'])
+          ? (data['check_runs'] as unknown as RefCheckRunLike[])
+          : [];
+
+      all.push(...runs);
+
+      if (runs.length < 100) break;
+      page += 1;
+      if (page > 20) break;
+    }
+
+    const latestByName = new Map<string, RefCheckRunLike>();
+
+    for (const run of all) {
+      const name = toStringTrim(run?.name) || '__unnamed__';
+      const currentId = typeof run?.id === 'number' ? run.id : -1;
+      const prev = latestByName.get(name);
+      const prevId = typeof prev?.id === 'number' ? prev.id : -1;
+
+      if (!prev || currentId > prevId) {
+        latestByName.set(name, run);
+      }
+    }
+
+    if (latestByName.size > 0) {
+      let sawSuccess = false;
+
+      for (const run of latestByName.values()) {
+        const status = toStringTrim(run?.status).toLowerCase();
+        const conclusion = toStringTrim(run?.conclusion).toLowerCase();
+
+        if (status !== 'completed') return false;
+        if (isBlockingCheckConclusion(conclusion)) return false;
+        if (!isGreenCheckConclusion(conclusion)) return false;
+        if (conclusion === 'success') sawSuccess = true;
+      }
+
+      return sawSuccess;
+    }
+  } catch {
+    // fallback below
+  }
+
+  try {
+    const res = await (
+      context.octokit.repos as unknown as {
+        getCombinedStatusForRef: (args: {
+          owner: string;
+          repo: string;
+          ref: string;
+        }) => Promise<{ data?: { state?: string | null } }>;
+      }
+    ).getCombinedStatusForRef({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      ref,
+    });
+
+    return toStringTrim(res?.data?.state).toLowerCase() === 'success';
   } catch {
     return false;
   }
@@ -2150,13 +2248,18 @@ async function reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(
 
   for (const pr of openPrs) {
     if (isSnapshotManagedRequestPr(pr)) continue;
+    if (parseLinkedIssueNumberFromPrBody(pr.body) !== null) continue;
+
+    const headSha = toStringTrim(pr.head?.sha);
+    if (!headSha) continue;
+
+    const isGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
+    if (!isGreen) continue;
 
     try {
-      const alreadyApproved =
-        (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
-        (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, pr.head?.sha || ''));
+      const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha);
 
-      if (alreadyApproved) {
+      if (hasCurrentHeadAutoApproval) {
         await tryMergeIfGreen(context, {
           owner: repoInfo.owner,
           repo: repoInfo.repo,
@@ -4091,15 +4194,6 @@ async function closeOutdatedRequestPrs(
   }
 }
 
-function readPullRequestFromPayload(payload: unknown): PullRequestLike | null {
-  if (!isPlainObject(payload)) return null;
-
-  const pr = payload['pull_request'];
-  if (!isPlainObject(pr)) return null;
-
-  return pr as PullRequestLike;
-}
-
 function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
   if (!isPlainObject(payload)) return null;
 
@@ -4661,24 +4755,6 @@ export default function requestHandler(app: Probot): void {
       }
     }
   };
-
-  app.on(
-    ['pull_request.reopened', 'pull_request.synchronize'],
-    async (context: BotContext<'pull_request.reopened' | 'pull_request.synchronize'>): Promise<void> => {
-      await getStaticConfig(context);
-
-      const payload = context.payload as unknown;
-      const pr = readPullRequestFromPayload(payload);
-      const repoInfo = readRepoInfoFromPayload(payload);
-
-      if (!pr || !repoInfo) return;
-
-      const headSha = toStringTrim(pr.head?.sha);
-      if (!headSha) return;
-
-      await tryAutoMerge(context, repoInfo, headSha);
-    }
-  );
 
   app.on('push', async (context: BotContext<'push'>): Promise<void> => {
     await getStaticConfig(context);
