@@ -1854,7 +1854,20 @@ async function resolvePullRequestRequestAuthorId(
   pr: PullRequestLike
 ): Promise<string> {
   let page = 1;
-  let lastCommitter = '';
+
+  const blockedServiceUsers = new Set<string>(['web-flow-serviceuser']);
+
+  const isUsableRequesterLogin = (value: unknown): string => {
+    const login = normalizeLogin(value);
+    if (!login) return '';
+    if (blockedServiceUsers.has(login.toLowerCase())) return '';
+    return login;
+  };
+
+  let lastAuthorLogin = '';
+  let lastCommitterLogin = '';
+  let firstAuthorLogin = '';
+  let firstCommitterLogin = '';
 
   try {
     while (true) {
@@ -1879,18 +1892,33 @@ async function resolvePullRequestRequestAuthorId(
       const commits = Array.isArray(res?.data) ? res.data : [];
       if (!commits.length) break;
 
-      const last = commits.at(-1);
-      lastCommitter = normalizeLogin(last?.committer?.login) || normalizeLogin(last?.author?.login) || lastCommitter;
+      for (const commit of commits) {
+        const authorLogin = isUsableRequesterLogin(commit?.author?.login);
+        const committerLogin = isUsableRequesterLogin(commit?.committer?.login);
+
+        if (!firstAuthorLogin && authorLogin) firstAuthorLogin = authorLogin;
+        if (!firstCommitterLogin && committerLogin) firstCommitterLogin = committerLogin;
+
+        if (authorLogin) lastAuthorLogin = authorLogin;
+        if (committerLogin) lastCommitterLogin = committerLogin;
+      }
 
       if (commits.length < 100) break;
       page += 1;
       if (page > 20) break;
     }
   } catch {
-    return lastCommitter || normalizeLogin(pr.user?.login);
+    // Fall through to PR author fallback below
   }
 
-  return lastCommitter || normalizeLogin(pr.user?.login);
+  return (
+    lastAuthorLogin ||
+    lastCommitterLogin ||
+    firstAuthorLogin ||
+    firstCommitterLogin ||
+    isUsableRequesterLogin(pr.user?.login) ||
+    normalizeLogin(pr.user?.login)
+  );
 }
 
 async function addApprovedLabelToPr(
