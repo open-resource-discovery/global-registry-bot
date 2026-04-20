@@ -1900,7 +1900,7 @@ async function resolvePullRequestRequestAuthorId(
 ): Promise<string> {
   let page = 1;
 
-  const blockedServiceUsers = new Set<string>(['web-flow-serviceuser']);
+  const blockedServiceUsers = new Set<string>(['web-flow-serviceuser', 'global-registry-bot', 'my-registry-bot']);
 
   const isUsableRequesterLogin = (value: unknown): string => {
     const login = normalizeLogin(value);
