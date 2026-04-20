@@ -114,8 +114,10 @@ type PullRequestCommitLike = {
 };
 
 type PullRequestReviewLike = {
+  id?: number | null;
   state?: string | null;
   body?: string | null;
+  submitted_at?: string | null;
   user?: UserLike | null;
 };
 
@@ -2012,7 +2014,33 @@ async function hasApprovedReviewOnPr(
   try {
     const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
 
-    return reviews.some((review) => toStringTrim(review?.state).toUpperCase() === 'APPROVED');
+    const sorted = reviews.slice().sort((a, b) => {
+      const at = Date.parse(toStringTrim(a.submitted_at));
+      const bt = Date.parse(toStringTrim(b.submitted_at));
+
+      if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+
+      const aid = typeof a.id === 'number' ? a.id : 0;
+      const bid = typeof b.id === 'number' ? b.id : 0;
+      return aid - bid;
+    });
+
+    const latestByReviewer = new Map<string, string>();
+
+    for (const review of sorted) {
+      const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
+      const state = toStringTrim(review?.state).toUpperCase();
+
+      if (!reviewer || !state) continue;
+
+      latestByReviewer.set(reviewer, state);
+    }
+
+    const latestStates = Array.from(latestByReviewer.values());
+
+    if (latestStates.includes('CHANGES_REQUESTED')) return false;
+
+    return latestStates.includes('APPROVED');
   } catch {
     return false;
   }
@@ -2219,6 +2247,8 @@ function isBenignUpdateBranchFailure(error: unknown): boolean {
     msg.includes('head sha') ||
     msg.includes('head branch was modified') ||
     msg.includes('not behind') ||
+    msg.includes('up to date') ||
+    msg.includes('up-to-date') ||
     msg.includes('already up') ||
     msg.includes('already up-to-date') ||
     msg.includes('already up to date')
@@ -2967,14 +2997,14 @@ async function maybeHandleStandaloneDirectPrApproval(
   const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr);
 
   if (decision.status === 'approved') {
-    const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(
-      context,
-      repoInfo,
-      pr.number,
-      pr.head?.sha || ''
-    );
+    const headSha = toStringTrim(pr.head?.sha);
 
-    if (!hasCurrentHeadAutoApproval) {
+    const alreadyApproved =
+      (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) ||
+      (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
+      (await hasApprovedReviewOnPr(context, repoInfo, pr.number));
+
+    if (!alreadyApproved) {
       const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
       if (!approved) return 'continue';
 
@@ -3208,14 +3238,14 @@ async function maybeHandleDirectPrApprovalForMerge(
   );
 
   if (decision.status === 'approved') {
-    const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(
-      context,
-      repoInfo,
-      pr.number,
-      pr.head?.sha || ''
-    );
+    const headSha = toStringTrim(pr.head?.sha);
 
-    if (!hasCurrentHeadAutoApproval) {
+    const alreadyApproved =
+      (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) ||
+      (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
+      (await hasApprovedReviewOnPr(context, repoInfo, pr.number));
+
+    if (!alreadyApproved) {
       const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
       if (!approved) return 'continue';
 
