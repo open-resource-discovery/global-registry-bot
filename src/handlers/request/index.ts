@@ -2010,6 +2010,51 @@ async function listPullRequestReviews(
   return out;
 }
 
+const ACTIONABLE_REVIEW_STATES = new Set<string>(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
+
+function sortPullRequestReviewsChronologically(reviews: PullRequestReviewLike[]): PullRequestReviewLike[] {
+  return reviews.slice().sort((a, b) => {
+    const at = Date.parse(toStringTrim(a.submitted_at));
+    const bt = Date.parse(toStringTrim(b.submitted_at));
+
+    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+
+    const aid = typeof a.id === 'number' ? a.id : 0;
+    const bid = typeof b.id === 'number' ? b.id : 0;
+    return aid - bid;
+  });
+}
+
+function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<string, string> {
+  const latestByReviewer = new Map<string, string>();
+
+  for (const review of sortPullRequestReviewsChronologically(reviews)) {
+    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
+    const state = toStringTrim(review?.state).toUpperCase();
+
+    if (!reviewer || !ACTIONABLE_REVIEW_STATES.has(state)) continue;
+
+    latestByReviewer.set(reviewer, state);
+  }
+
+  return latestByReviewer;
+}
+
+async function hasBlockingChangesRequestedReviewOnPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<boolean> {
+  try {
+    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
+    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
+
+    return latestStates.has('CHANGES_REQUESTED');
+  } catch {
+    return false;
+  }
+}
+
 async function hasApprovedReviewOnPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2018,33 +2063,11 @@ async function hasApprovedReviewOnPr(
   try {
     const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
 
-    const sorted = reviews.slice().sort((a, b) => {
-      const at = Date.parse(toStringTrim(a.submitted_at));
-      const bt = Date.parse(toStringTrim(b.submitted_at));
+    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
 
-      if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+    if (latestStates.has('CHANGES_REQUESTED')) return false;
 
-      const aid = typeof a.id === 'number' ? a.id : 0;
-      const bid = typeof b.id === 'number' ? b.id : 0;
-      return aid - bid;
-    });
-
-    const latestByReviewer = new Map<string, string>();
-
-    for (const review of sorted) {
-      const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
-      const state = toStringTrim(review?.state).toUpperCase();
-
-      if (!reviewer || !state) continue;
-
-      latestByReviewer.set(reviewer, state);
-    }
-
-    const latestStates = Array.from(latestByReviewer.values());
-
-    if (latestStates.includes('CHANGES_REQUESTED')) return false;
-
-    return latestStates.includes('APPROVED');
+    return latestStates.has('APPROVED');
   } catch {
     return false;
   }
@@ -2076,6 +2099,10 @@ async function isPullRequestApprovedForBranchMaintenance(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<boolean> {
+  if (await hasBlockingChangesRequestedReviewOnPr(context, repoInfo, pr.number)) {
+    return false;
+  }
+
   // Bot-created request PRs are only created after issue approval.
   if (isSnapshotManagedRequestPr(pr)) return true;
 
@@ -2233,10 +2260,6 @@ async function isHeadGreenForApprovalReevaluation(
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -2566,6 +2589,11 @@ async function tryMergeApprovedPrOrUpdateBranch(
       }
 
       if (merged === true) {
+        return;
+      }
+
+      if (merged === false) {
+        await requestPullRequestBranchUpdate(context, repoInfo, afterMergeAttempt, `${reason}:merge-returned-false`);
         return;
       }
 
@@ -2935,14 +2963,28 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRe
     'default-branch-push'
   );
 
-  await sleep(DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
+  const retryTimer = setTimeout(() => {
+    void updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
+      context,
+      repoInfo,
+      baseBranch,
+      'default-branch-push:delayed-retry'
+    ).catch((error: unknown) => {
+      log(
+        context,
+        'warn',
+        {
+          err: getErrorMessage(error),
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          baseBranch,
+        },
+        'failed to run delayed approved pull request branch update retry'
+      );
+    });
+  }, DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
 
-  await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
-    context,
-    repoInfo,
-    baseBranch,
-    'default-branch-push:delayed-retry'
-  );
+  retryTimer.unref?.();
 }
 
 function normalizeRepoPath(path: unknown): string {
@@ -4894,42 +4936,6 @@ export default function requestHandler(app: Probot): void {
       context.resourceBotHooksSource = null;
       return context.resourceBotConfig;
     }
-  };
-
-  const isRequestIssue = (
-    context: BotContext<RequestEvents>,
-    template: TemplateLike | null | undefined,
-    parsedFormData: FormData
-  ): boolean => {
-    const parsedKeys = Object.keys(parsedFormData || {}).filter(Boolean);
-
-    const meta = template?._meta || {};
-    const requestType = String(meta.requestType || '').trim();
-    const root = String(meta.root || '').trim();
-    const schema = String(meta.schema || '').trim();
-
-    const hasTemplateMeta = Boolean(requestType && root && schema);
-    const hasFormData = parsedKeys.length > 0;
-
-    const isReq = Boolean(template) && hasTemplateMeta && hasFormData;
-
-    if (DBG) {
-      log(
-        context,
-        'debug',
-        {
-          tplPath: String(meta.path || '').trim(),
-          requestType,
-          root,
-          schema,
-          parsedKeys,
-          isReq,
-        },
-        'isRequestIssue(new-requests-only)'
-      );
-    }
-
-    return isReq;
   };
 
   const shouldSkipIssueEditedEvent = (

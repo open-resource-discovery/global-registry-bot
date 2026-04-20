@@ -2863,6 +2863,14 @@ public
     ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
       data: [{ committer: { login: 'merge-helper-user' } }],
     });
+    ctx.octokit.pulls.get.mockResolvedValue({
+      data: {
+        number: 155,
+        state: 'open',
+        body: 'manual direct pr',
+        head: { ref: 'feature/merge-false', sha: 'sha-merge-false' },
+      },
+    });
 
     runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
     tryMergeIfGreen.mockResolvedValueOnce(false as never);
@@ -3435,6 +3443,155 @@ test('push: default branch push updates approved green registry PR branches', as
       expected_head_sha: 'sha-approved-green',
     })
   );
+});
+
+test('push: approved review remains eligible for branch update after later comment-only review', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['push'][0];
+  const ctx = mkBaseContext({
+    owner: 'o1',
+    repo: 'r1',
+    withCachedConfig: true,
+    config: {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    },
+  });
+
+  ctx.name = 'push';
+  ctx.payload = {
+    ref: 'refs/heads/main',
+    repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+    commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
+  };
+
+  ctx.octokit.pulls.list
+    .mockResolvedValueOnce({
+      data: [
+        {
+          number: 202,
+          body: 'manual direct pr',
+          title: 'Direct',
+          head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
+          base: { ref: 'main', sha: 'base-sha' },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ data: [] });
+
+  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    data: [{ filename: 'resources/product-commented.yaml', status: 'modified' }],
+  });
+
+  ctx.octokit.issues.get.mockResolvedValueOnce({
+    data: { number: 202, labels: [] },
+  });
+
+  ctx.octokit.pulls.listReviews.mockResolvedValue({
+    data: [
+      {
+        id: 1,
+        state: 'APPROVED',
+        submitted_at: '2026-04-20T10:00:00Z',
+        user: { login: 'reviewer' },
+      },
+      {
+        id: 2,
+        state: 'COMMENTED',
+        submitted_at: '2026-04-20T10:05:00Z',
+        user: { login: 'reviewer' },
+      },
+    ],
+  });
+
+  await handler(ctx);
+
+  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      owner: 'o1',
+      repo: 'r1',
+      pull_number: 202,
+      expected_head_sha: 'sha-review-commented',
+    })
+  );
+});
+
+test('push: changes requested review blocks approved-label based branch update', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['push'][0];
+  const ctx = mkBaseContext({
+    owner: 'o1',
+    repo: 'r1',
+    withCachedConfig: true,
+    config: {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    },
+  });
+
+  ctx.name = 'push';
+  ctx.payload = {
+    ref: 'refs/heads/main',
+    repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+    commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
+  };
+
+  ctx.octokit.pulls.list
+    .mockResolvedValueOnce({
+      data: [
+        {
+          number: 203,
+          body: 'manual direct pr',
+          title: 'Direct',
+          head: { ref: 'feature/changes-requested', sha: 'sha-changes-requested' },
+          base: { ref: 'main', sha: 'base-sha' },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ data: [] });
+
+  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    data: [{ filename: 'resources/product-changes-requested.yaml', status: 'modified' }],
+  });
+
+  ctx.octokit.issues.get.mockResolvedValueOnce({
+    data: { number: 203, labels: [{ name: 'Approved' }] },
+  });
+
+  ctx.octokit.pulls.listReviews.mockResolvedValue({
+    data: [
+      {
+        id: 1,
+        state: 'APPROVED',
+        submitted_at: '2026-04-20T10:00:00Z',
+        user: { login: 'reviewer' },
+      },
+      {
+        id: 2,
+        state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-04-20T10:05:00Z',
+        user: { login: 'reviewer' },
+      },
+    ],
+  });
+
+  await handler(ctx);
+
+  expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
 });
 
 test('issues.opened: partner namespace maps request type and matches normalized request config keys', async () => {
