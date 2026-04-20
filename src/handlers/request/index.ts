@@ -1826,10 +1826,23 @@ async function createAutomatedApprovalReview(
 
     return true;
   } catch (e: unknown) {
+    const errObj = isPlainObject(e) ? e : {};
+    const status = typeof errObj['status'] === 'number' ? errObj['status'] : undefined;
+
+    const response = isPlainObject(errObj['response']) ? errObj['response'] : {};
+    const responseData = response['data'];
+
+    const message = e instanceof Error ? e.message : String(e);
+
     log(
       context,
       'warn',
-      { err: e instanceof Error ? e.message : String(e), prNumber: pr.number },
+      {
+        prNumber: pr.number,
+        status,
+        message,
+        responseData,
+      },
       'failed to create automated PR approval review'
     );
 
@@ -1838,9 +1851,11 @@ async function createAutomatedApprovalReview(
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
       `## onApproval matched, but automatic PR approval failed
 
-${body}
+  ${body}
 
-The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
+  Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
+
+  The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
       { minimizeTag: 'nsreq:on-approval:approve-failed' }
     );
 
