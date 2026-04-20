@@ -3427,6 +3427,18 @@ test('push: default branch push updates approved green registry PR branches', as
     data: { number: 201, labels: [{ name: 'Approved' }] },
   });
 
+  ctx.octokit.pulls.get.mockResolvedValue({
+    data: {
+      number: 201,
+      state: 'open',
+      body: 'manual direct pr',
+      head: { ref: 'feature/approved-green', sha: 'sha-approved-green' },
+      base: { ref: 'main', sha: 'base-sha' },
+      mergeable: true,
+      mergeable_state: 'behind',
+    },
+  });
+
   ctx.octokit.checks.listForRef.mockResolvedValueOnce({
     data: {
       check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
@@ -3492,6 +3504,18 @@ test('push: approved review remains eligible for branch update after later comme
 
   ctx.octokit.issues.get.mockResolvedValueOnce({
     data: { number: 202, labels: [] },
+  });
+
+  ctx.octokit.pulls.get.mockResolvedValue({
+    data: {
+      number: 202,
+      state: 'open',
+      body: 'manual direct pr',
+      head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
+      base: { ref: 'main', sha: 'base-sha' },
+      mergeable: true,
+      mergeable_state: 'behind',
+    },
   });
 
   ctx.octokit.pulls.listReviews.mockResolvedValue({
