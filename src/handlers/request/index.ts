@@ -1906,6 +1906,8 @@ async function resolvePullRequestRequestAuthorId(
     'global-registry-bot[bot]',
     'my-registry-bot',
     'my-registry-bot[bot]',
+    'github-actions[bot]',
+    'github-actions',
   ]);
 
   const isUsableRequesterLogin = (value: unknown): string => {
