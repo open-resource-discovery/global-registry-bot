@@ -91,9 +91,12 @@ type PullsUpdateFn = (args: unknown) => Promise<unknown>;
 type PullsCreateReviewFn = (args: unknown) => Promise<unknown>;
 type PullsListFilesFn = (args: unknown) => Promise<{ data: unknown[] }>;
 type PullsListCommitsFn = (args: unknown) => Promise<{ data: unknown[] }>;
+type PullsListReviewsFn = (args: unknown) => Promise<{ data: unknown[] }>;
+type PullsUpdateBranchFn = (args: unknown) => Promise<unknown>;
 
 type ChecksListAnnotationsFn = (args: any) => Promise<{ data: any[] }>;
 type ChecksListForSuiteFn = (args: any) => Promise<{ data: { check_runs: any[] } }>;
+type ChecksListForRefFn = (args: any) => Promise<{ data: { check_runs: any[] } }>;
 
 type PullsGetFn = (args: unknown) => Promise<{ data: unknown }>;
 
@@ -145,8 +148,10 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
         list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
         listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
         listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
+        listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
         createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
         update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
+        updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
       },
       git: {
         deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
@@ -157,6 +162,11 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
       checks: {
         listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
         listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
+        listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
+          data: {
+            check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
+          },
+        }),
       },
     },
   };
@@ -322,7 +332,12 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
+
+  setStateLabel.mockImplementation(async () => {});
+  ensureAssigneesOnce.mockImplementation(async () => {});
+  postOnce.mockImplementation(async () => {});
+  collapseBotCommentsByPrefix.mockImplementation(async () => {});
 
   loadStaticConfig.mockResolvedValue({
     config: DEFAULT_CONFIG,
@@ -362,6 +377,7 @@ beforeEach(() => {
   extractHashFromPrBody.mockReturnValue('h1');
   findOpenIssuePrs.mockResolvedValue([]);
   createRequestPr.mockResolvedValue({ number: 10 });
+  tryMergeIfGreen.mockResolvedValue(undefined);
 });
 
 test('issue_comment: skips bot sender', async () => {
@@ -2310,7 +2326,7 @@ public
     expect(runApprovalHook).toHaveBeenCalledWith(
       ctx,
       { owner: 'o1', repo: 'r1' },
-      expect.objectContaining({ requestAuthorId: 'last-committer' })
+      expect.objectContaining({ requestAuthorId: 'ignored-author' })
     );
     expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(expect.objectContaining({ labels: ['Approved'] }));
   });
@@ -2393,7 +2409,7 @@ public
         requestType: 'product',
         namespace: 'product-one',
         resourceName: 'product-one',
-        requestAuthorId: 'direct-last-committer',
+        requestAuthorId: 'ignored-author',
         formData: expect.objectContaining({
           identifier: 'product-one',
           namespace: 'product-one',
@@ -2407,7 +2423,7 @@ public
         repo: 'r1',
         pull_number: 51,
         event: 'APPROVE',
-        body: 'approved from standalone hook',
+        body: expect.stringContaining('approved from standalone hook'),
       })
     );
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
@@ -2786,11 +2802,84 @@ public
       })
     );
     expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'Approved automatically by onApproval hook.' })
+      expect.objectContaining({ body: expect.stringContaining('Approved automatically by onApproval hook.') })
     );
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 55, mergeMethod: 'squash' })
+    );
+    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: standalone direct PR requests branch update when merge helper returns false', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-merge-false',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 155,
+            body: 'manual direct pr',
+            title: 'Direct',
+            head: { ref: 'feature/merge-false', sha: 'sha-merge-false' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-merge-false.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-merge-false\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ committer: { login: 'merge-helper-user' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+    tryMergeIfGreen.mockResolvedValueOnce(false as never);
+
+    await handler(ctx);
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 155, mergeMethod: 'squash' })
+    );
+    expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        pull_number: 155,
+        expected_head_sha: 'sha-merge-false',
+      })
     );
   });
 
@@ -3279,6 +3368,73 @@ test('status: without jest worker id skips non-form linked issues outside test r
   } finally {
     if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
   }
+});
+
+test('push: default branch push updates approved green registry PR branches', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['push'][0];
+  const ctx = mkBaseContext({
+    owner: 'o1',
+    repo: 'r1',
+    withCachedConfig: true,
+    config: {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    },
+  });
+
+  ctx.name = 'push';
+  ctx.payload = {
+    ref: 'refs/heads/main',
+    repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+    commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
+  };
+
+  ctx.octokit.pulls.list
+    .mockResolvedValueOnce({
+      data: [
+        {
+          number: 201,
+          body: 'manual direct pr',
+          title: 'Direct',
+          head: { ref: 'feature/approved-green', sha: 'sha-approved-green' },
+          base: { ref: 'main', sha: 'base-sha' },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ data: [] });
+
+  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    data: [{ filename: 'resources/product-approved.yaml', status: 'modified' }],
+  });
+
+  ctx.octokit.issues.get.mockResolvedValueOnce({
+    data: { number: 201, labels: [{ name: 'Approved' }] },
+  });
+
+  ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+    data: {
+      check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
+    },
+  });
+
+  await handler(ctx);
+
+  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      owner: 'o1',
+      repo: 'r1',
+      pull_number: 201,
+      expected_head_sha: 'sha-approved-green',
+    })
+  );
 });
 
 test('issues.opened: partner namespace maps request type and matches normalized request config keys', async () => {

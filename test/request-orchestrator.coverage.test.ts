@@ -59,6 +59,14 @@ type PullsUpdate = (args: {
   state: 'open' | 'closed';
 }) => Promise<void>;
 
+type ChecksListForRef = (args: {
+  owner: string;
+  repo: string;
+  ref: string;
+  per_page?: number;
+  page?: number;
+}) => Promise<{ data: { check_runs: unknown[] } }>;
+
 type GitDeleteRef = (args: { owner: string; repo: string; ref: string }) => Promise<void>;
 
 type ReposGetContent = (args: { owner: string; repo: string; path: string }) => Promise<{ data: unknown }>;
@@ -73,6 +81,9 @@ type Octokit = {
   pulls: {
     list: jest.MockedFunction<PullsList>;
     update: jest.MockedFunction<PullsUpdate>;
+  };
+  checks: {
+    listForRef: jest.MockedFunction<ChecksListForRef>;
   };
   git: {
     deleteRef: jest.MockedFunction<GitDeleteRef>;
@@ -224,6 +235,13 @@ function mkOctokit(): Octokit {
     pulls: {
       list: jest.fn<PullsList>(),
       update: jest.fn<PullsUpdate>(),
+    },
+    checks: {
+      listForRef: jest.fn<ChecksListForRef>().mockResolvedValue({
+        data: {
+          check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
+        },
+      }),
     },
     git: {
       deleteRef: jest.fn<GitDeleteRef>(),
