@@ -1968,7 +1968,7 @@ async function resolvePullRequestRequestAuthorId(
     firstAuthorLogin ||
     firstCommitterLogin ||
     isUsableRequesterLogin(pr.user?.login) ||
-    normalizeLogin(pr.user?.login)
+    ''
   );
 }
 
