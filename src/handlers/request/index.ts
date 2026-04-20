@@ -101,6 +101,10 @@ type PullRequestLike = {
   user?: UserLike | null;
   head: { ref: string; sha: string };
   base?: { ref?: string | null; sha?: string | null };
+
+  mergeable?: boolean | null;
+  mergeable_state?: string | null;
+  draft?: boolean | null;
 };
 
 type PullRequestFileLike = {
@@ -2393,42 +2397,231 @@ function shouldTryBranchUpdateAfterMergeFailure(error: unknown): boolean {
   );
 }
 
+const MERGEABILITY_POLL_ATTEMPTS = 6;
+const MERGEABILITY_POLL_DELAY_MS = 1500;
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readFreshPullRequest(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<PullRequestLike | null> {
+  try {
+    const res = await (
+      context.octokit.pulls as unknown as {
+        get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data?: PullRequestLike }>;
+      }
+    ).get({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: prNumber,
+    });
+
+    return res.data || null;
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'failed to refresh pull request'
+    );
+
+    return null;
+  }
+}
+
+function readMergeableState(pr: PullRequestLike | null | undefined): string {
+  return toStringTrim(pr?.mergeable_state).toLowerCase();
+}
+
+function isPullRequestOpen(pr: PullRequestLike | null | undefined): boolean {
+  return toStringTrim(pr?.state).toLowerCase() === 'open';
+}
+
+function isMergeabilityPending(pr: PullRequestLike | null | undefined): boolean {
+  const state = readMergeableState(pr);
+
+  return pr?.mergeable === null || state === 'unknown' || state === 'checking';
+}
+
+function isPullRequestBehindBase(pr: PullRequestLike | null | undefined): boolean {
+  return readMergeableState(pr) === 'behind';
+}
+
+function isPullRequestDirty(pr: PullRequestLike | null | undefined): boolean {
+  const state = readMergeableState(pr);
+
+  return state === 'dirty' || state === 'conflicting';
+}
+
+async function waitForPullRequestMergeability(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<PullRequestLike> {
+  let current = pr;
+
+  for (let attempt = 1; attempt <= MERGEABILITY_POLL_ATTEMPTS; attempt += 1) {
+    const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
+    if (fresh) current = fresh;
+
+    const mergeable = current.mergeable;
+    const mergeableState = readMergeableState(current);
+
+    log(
+      context,
+      DBG ? 'debug' : 'info',
+      {
+        prNumber: current.number,
+        attempt,
+        headSha: toStringTrim(current.head?.sha),
+        mergeable,
+        mergeableState,
+        reason,
+      },
+      'pull-request mergeability state'
+    );
+
+    if (!isPullRequestOpen(current)) return current;
+    if (!isMergeabilityPending(current)) return current;
+
+    await delayMs(MERGEABILITY_POLL_DELAY_MS);
+  }
+
+  return current;
+}
+
 async function tryMergeApprovedPrOrUpdateBranch(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   reason: string
 ): Promise<void> {
-  try {
-    const merged = await tryMergeIfGreen(context, {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      prNumber: pr.number,
-      mergeMethod: 'squash',
-      prData: pr,
-    });
+  let currentPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-merge`);
 
-    if (merged === true) return;
+  if (!isPullRequestOpen(currentPr)) return;
 
-    const latestPr = await readPullRequest(context, repoInfo, pr.number);
-    if (!latestPr) return;
+  if (isPullRequestDirty(currentPr)) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: currentPr.number,
+        mergeableState: readMergeableState(currentPr),
+      },
+      'pull-request has merge conflicts, auto-merge skipped'
+    );
+    return;
+  }
 
-    if (toStringTrim(latestPr.state).toLowerCase() !== 'open') return;
+  if (isPullRequestBehindBase(currentPr)) {
+    await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-before-merge`);
+    return;
+  }
 
-    const approved = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, latestPr);
-    if (!approved) return;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const beforeHeadSha = toStringTrim(currentPr.head?.sha);
 
-    await requestPullRequestBranchUpdate(context, repoInfo, latestPr, `${reason}:merge-not-completed`);
-  } catch (error: unknown) {
-    if (shouldTryBranchUpdateAfterMergeFailure(error)) {
-      const latestPr = await readPullRequest(context, repoInfo, pr.number);
-      if (!latestPr || toStringTrim(latestPr.state).toLowerCase() !== 'open') return;
+    try {
+      const merged = await tryMergeIfGreen(context, {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        prNumber: currentPr.number,
+        mergeMethod: 'squash',
+        prData: currentPr,
+      });
 
-      await requestPullRequestBranchUpdate(context, repoInfo, latestPr, `${reason}:merge-failed-outdated`);
+      const afterMergeAttempt = await readFreshPullRequest(context, repoInfo, currentPr.number);
+      if (!afterMergeAttempt) return;
+
+      if (!isPullRequestOpen(afterMergeAttempt)) {
+        return;
+      }
+
+      const afterHeadSha = toStringTrim(afterMergeAttempt.head?.sha);
+
+      // updateBranch or another actor changed the PR head.
+      // Do not immediately merge; wait for new CI.
+      if (beforeHeadSha && afterHeadSha && beforeHeadSha !== afterHeadSha) {
+        log(
+          context,
+          'info',
+          {
+            prNumber: currentPr.number,
+            beforeHeadSha,
+            afterHeadSha,
+            reason,
+          },
+          'pull-request head changed after merge attempt'
+        );
+        return;
+      }
+
+      if (merged === true) {
+        return;
+      }
+
+      currentPr = await waitForPullRequestMergeability(
+        context,
+        repoInfo,
+        afterMergeAttempt,
+        `${reason}:after-merge-attempt-${attempt}`
+      );
+
+      if (!isPullRequestOpen(currentPr)) return;
+
+      if (isPullRequestDirty(currentPr)) {
+        log(
+          context,
+          'warn',
+          {
+            prNumber: currentPr.number,
+            mergeableState: readMergeableState(currentPr),
+          },
+          'pull-request has merge conflicts after mergeability refresh'
+        );
+        return;
+      }
+
+      if (isPullRequestBehindBase(currentPr)) {
+        await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-after-merge-attempt`);
+        return;
+      }
+
+      // GitHub was still calculating mergeability. Retry once.
+      if (attempt < 2 && isMergeabilityPending(currentPr)) {
+        continue;
+      }
+
+      log(
+        context,
+        'info',
+        {
+          prNumber: currentPr.number,
+          mergeable: currentPr.mergeable,
+          mergeableState: readMergeableState(currentPr),
+          reason,
+        },
+        'pull-request not merged after green check'
+      );
+
       return;
-    }
+    } catch (error: unknown) {
+      if (shouldTryBranchUpdateAfterMergeFailure(error)) {
+        await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:merge-failed-outdated`);
+        return;
+      }
 
-    throw error;
+      throw error;
+    }
   }
 }
 
@@ -2472,28 +2665,6 @@ async function listOpenPullRequests(
   }
 
   return out;
-}
-
-async function readPullRequest(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<PullRequestLike | null> {
-  try {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data?: PullRequestLike }>;
-      }
-    ).get({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: prNumber,
-    });
-
-    return res?.data || null;
-  } catch {
-    return null;
-  }
 }
 
 async function processPullRequestForAutoMerge(
