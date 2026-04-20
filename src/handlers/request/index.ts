@@ -136,7 +136,10 @@ type CheckRunPullRequestRef = { number?: number | null };
 
 type CheckRunLike = {
   id?: number | null;
+  name?: string | null;
+  status?: string | null;
   conclusion?: string | null;
+  head_sha?: string | null;
   html_url?: string | null;
   pull_requests?: CheckRunPullRequestRef[] | null;
 };
@@ -1457,7 +1460,27 @@ const findOpenIssuePrs = findOpenIssuePRsRaw as unknown as FindOpenIssuePrsFn;
 const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
 const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
 
-// Helpers moved to outer scope to satisfy linting
+function readCheckRunFromPayload(payload: unknown): CheckRunLike | null {
+  if (!isPlainObject(payload)) return null;
+
+  const run = payload['check_run'];
+  if (!isPlainObject(run)) return null;
+
+  return run as unknown as CheckRunLike;
+}
+
+function readCheckRunPrNumbers(run: CheckRunLike | null): number[] {
+  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
+  const out: number[] = [];
+
+  for (const pr of prs) {
+    const n = pr?.number;
+    if (typeof n === 'number' && Number.isFinite(n)) out.push(n);
+  }
+
+  return Array.from(new Set(out));
+}
+
 function extractResourceNameFromForm(formData: FormData, template: TemplateLike): string {
   const rt = toStringTrim(template?._meta?.requestType).toLowerCase();
   const isProduct = rt === 'product';
@@ -2351,17 +2374,21 @@ async function requestPullRequestBranchUpdate(
       const status = getHttpStatus(error);
 
       if (isBenignUpdateBranchFailure(error)) {
+        const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
+
         log(
           context,
           'debug',
           {
             prNumber: pr.number,
-            headSha,
+            oldHeadSha: headSha,
+            freshHeadSha: toStringTrim(fresh?.head?.sha),
             status,
             err: msg,
             reason,
+            freshMergeableState: readMergeableState(fresh),
           },
-          'pull-request branch update skipped'
+          'pull-request branch update skipped after head race'
         );
 
         return false;
@@ -2922,20 +2949,47 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
         continue;
       }
 
-      const green = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-      if (!green) {
+      const freshPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-update-branch`);
+
+      if (!isPullRequestOpen(freshPr)) {
+        if (DBG) {
+          log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: PR is not open');
+        }
+        continue;
+      }
+
+      if (isPullRequestDirty(freshPr)) {
+        log(
+          context,
+          'warn',
+          {
+            prNumber: freshPr.number,
+            mergeableState: readMergeableState(freshPr),
+            reason,
+          },
+          'skip branch update: PR has merge conflicts'
+        );
+        continue;
+      }
+
+      if (!isPullRequestBehindBase(freshPr)) {
         if (DBG) {
           log(
             context,
             'debug',
-            { prNumber: pr.number, headSha, reason },
-            'skip branch update: PR head checks are not green'
+            {
+              prNumber: freshPr.number,
+              mergeable: freshPr.mergeable,
+              mergeableState: readMergeableState(freshPr),
+              reason,
+            },
+            'skip branch update: PR is not behind base'
           );
         }
         continue;
       }
 
-      await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
+      await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
     } catch (error: unknown) {
       log(
         context,
@@ -5465,8 +5519,43 @@ export default function requestHandler(app: Probot): void {
     async (context: BotContext<'check_suite.completed' | 'check_run.completed'>): Promise<void> => {
       const payload = context.payload as unknown;
 
-      // Avoid duplicate posting (both events fire). Handle only check_suite.
-      if (context.name === 'check_run.completed') return;
+      if (context.name === 'check_run.completed') {
+        const payload = context.payload as unknown;
+        const run = readCheckRunFromPayload(payload);
+
+        const conclusion = toStringTrim(run?.conclusion).toLowerCase();
+        const status = toStringTrim(run?.status).toLowerCase();
+        const headShaStr = toStringTrim(run?.head_sha);
+
+        if (status !== 'completed') return;
+        if (conclusion !== 'success') return;
+        if (!headShaStr) return;
+
+        const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
+        const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
+        const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
+        const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
+
+        if (!ownerLogin || !repoName) return;
+
+        const repoInfo = { owner: ownerLogin, repo: repoName };
+        const prNumbers = readCheckRunPrNumbers(run);
+
+        for (const prNumber of prNumbers) {
+          await collapseBotCommentsByPrefix(
+            context,
+            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
+            {
+              tagPrefix: 'nsreq:ci-validation',
+              collapseBody: 'Validation issues resolved.',
+              classifier: 'RESOLVED',
+            }
+          );
+        }
+
+        await tryAutoMerge(context, repoInfo, headShaStr);
+        return;
+      }
 
       if (DBG) {
         log(
