@@ -2228,6 +2228,12 @@ async function isHeadGreenForApprovalReevaluation(
 
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
 
+const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -2402,12 +2408,23 @@ async function tryMergeApprovedPrOrUpdateBranch(
       prData: pr,
     });
 
-    if (merged === false) {
-      await requestPullRequestBranchUpdate(context, repoInfo, pr, `${reason}:merge-returned-false`);
-    }
+    if (merged === true) return;
+
+    const latestPr = await readPullRequest(context, repoInfo, pr.number);
+    if (!latestPr) return;
+
+    if (toStringTrim(latestPr.state).toLowerCase() !== 'open') return;
+
+    const approved = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, latestPr);
+    if (!approved) return;
+
+    await requestPullRequestBranchUpdate(context, repoInfo, latestPr, `${reason}:merge-not-completed`);
   } catch (error: unknown) {
     if (shouldTryBranchUpdateAfterMergeFailure(error)) {
-      await requestPullRequestBranchUpdate(context, repoInfo, pr, `${reason}:merge-failed-outdated`);
+      const latestPr = await readPullRequest(context, repoInfo, pr.number);
+      if (!latestPr || toStringTrim(latestPr.state).toLowerCase() !== 'open') return;
+
+      await requestPullRequestBranchUpdate(context, repoInfo, latestPr, `${reason}:merge-failed-outdated`);
       return;
     }
 
@@ -2455,6 +2472,28 @@ async function listOpenPullRequests(
   }
 
   return out;
+}
+
+async function readPullRequest(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<PullRequestLike | null> {
+  try {
+    const res = await (
+      context.octokit.pulls as unknown as {
+        get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data?: PullRequestLike }>;
+      }
+    ).get({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: prNumber,
+    });
+
+    return res?.data || null;
+  } catch {
+    return null;
+  }
 }
 
 async function processPullRequestForAutoMerge(
@@ -2634,27 +2673,70 @@ function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): bool
 async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  baseBranch: string
+  baseBranch: string,
+  reason = 'default-branch-push'
 ): Promise<void> {
   const openPrs = await listOpenPullRequests(context, repoInfo);
 
   for (const pr of openPrs) {
     const headSha = toStringTrim(pr.head?.sha);
-    if (!headSha) continue;
 
-    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
+    if (!headSha) {
+      if (DBG) {
+        log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: missing head sha');
+      }
+      continue;
+    }
+
+    if (!pullRequestTargetsBranch(pr, baseBranch)) {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          {
+            prNumber: pr.number,
+            prBase: toStringTrim(pr.base?.ref),
+            baseBranch,
+            reason,
+          },
+          'skip branch update: different base branch'
+        );
+      }
+      continue;
+    }
 
     try {
       const changedRegistryFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
-      if (!changedRegistryFiles.length) continue;
+
+      if (!changedRegistryFiles.length) {
+        if (DBG) {
+          log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: no registry yaml files changed');
+        }
+        continue;
+      }
 
       const approved = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, pr);
-      if (!approved) continue;
+      if (!approved) {
+        if (DBG) {
+          log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: PR is not approved');
+        }
+        continue;
+      }
 
       const green = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-      if (!green) continue;
+      if (!green) {
+        if (DBG) {
+          log(
+            context,
+            'debug',
+            { prNumber: pr.number, headSha, reason },
+            'skip branch update: PR head checks are not green'
+          );
+        }
+        continue;
+      }
 
-      await requestPullRequestBranchUpdate(context, repoInfo, pr, 'default-branch-push');
+      await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
     } catch (error: unknown) {
       log(
         context,
@@ -2662,11 +2744,34 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
         {
           err: getErrorMessage(error),
           prNumber: pr.number,
+          reason,
         },
         'failed to update approved pull request branch after default branch push'
       );
     }
   }
+}
+
+async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  baseBranch: string
+): Promise<void> {
+  await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
+    context,
+    repoInfo,
+    baseBranch,
+    'default-branch-push'
+  );
+
+  await sleep(DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
+
+  await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
+    context,
+    repoInfo,
+    baseBranch,
+    'default-branch-push:delayed-retry'
+  );
 }
 
 function normalizeRepoPath(path: unknown): string {
@@ -5175,7 +5280,7 @@ export default function requestHandler(app: Probot): void {
     }
 
     // after main changed, keep already-approved green registry PRs up to date
-    await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(context, repoInfo, baseBranch);
+    await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
   });
 
   app.on(
