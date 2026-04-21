@@ -2688,13 +2688,36 @@ async function tryMergeApprovedPrOrUpdateBranch(
   }
 }
 
-function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
-  const raw = toStringTrim(body);
-  const match = /source:\s*#(\d+)/i.exec(raw) ?? /issue\s*#(\d+)/i.exec(raw);
-  if (!match?.[1]) return null;
+function parsePositiveIssueNumber(value: string | undefined): number | null {
+  if (!value) return null;
 
-  const value = Number.parseInt(match[1], 10);
-  return Number.isFinite(value) ? value : null;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseIssueNumberFromText(value: unknown, patterns: RegExp[]): number | null {
+  const raw = toStringTrim(value);
+  if (!raw) return null;
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(raw);
+    const parsed = parsePositiveIssueNumber(match?.[1]);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
+
+function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
+  return parseIssueNumberFromText(body, [/source:\s*#(\d+)/i, /\bissue\s*#\s*(\d+)\b/i, /\bissue\s+(\d+)\b/i]);
+}
+
+function parseLinkedIssueNumberFromPr(pr: PullRequestLike): number | null {
+  return (
+    parseLinkedIssueNumberFromPrBody(pr.body) ??
+    parseIssueNumberFromText(pr.head?.ref, [/(?:^|[-_/])issue[-_/]?(\d+)(?:$|[-_/])/i]) ??
+    parseIssueNumberFromText(pr.title, [/\bissue\s*#?\s*(\d+)\b/i])
+  );
 }
 
 function isSnapshotManagedRequestPr(pr: PullRequestLike): boolean {
@@ -2735,7 +2758,7 @@ async function processPullRequestForAutoMerge(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<void> {
-  const issueNumber = parseLinkedIssueNumberFromPrBody(pr.body);
+  const issueNumber = parseLinkedIssueNumberFromPr(pr);
 
   if (issueNumber === null) {
     const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
@@ -2840,28 +2863,93 @@ function isRelevantDefaultBranchPushForApprovalReevaluation(payload: unknown): b
   return readPushChangedFiles(payload).some(isApprovalConfigChangePath);
 }
 
-async function reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(
+async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
   context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo
+  repoInfo: RepoInfo,
+  baseBranch: string,
+  reason = 'default-branch-push:direct-pr-reevaluation'
 ): Promise<void> {
   const openPrs = await listOpenPullRequests(context, repoInfo);
 
   for (const pr of openPrs) {
+    // Snapshot-managed request PRs are already treated as approved branch-maintenance candidates.
+    // This pass is for direct/manual registry PRs that need onApproval re-evaluation.
     if (isSnapshotManagedRequestPr(pr)) continue;
-    if (parseLinkedIssueNumberFromPrBody(pr.body) !== null) continue;
 
     const headSha = toStringTrim(pr.head?.sha);
-    if (!headSha) continue;
+    if (!headSha) {
+      if (DBG) {
+        log(context, 'debug', { prNumber: pr.number, reason }, 'skip direct PR re-evaluation: missing head sha');
+      }
+      continue;
+    }
 
-    const isGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-    if (!isGreen) continue;
+    if (!pullRequestTargetsBranch(pr, baseBranch)) {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          {
+            prNumber: pr.number,
+            prBase: toStringTrim(pr.base?.ref),
+            baseBranch,
+            reason,
+          },
+          'skip direct PR re-evaluation: different base branch'
+        );
+      }
+      continue;
+    }
 
     try {
+      const changedRegistryFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+
+      if (!changedRegistryFiles.length) {
+        if (DBG) {
+          log(
+            context,
+            'debug',
+            { prNumber: pr.number, reason },
+            'skip direct PR re-evaluation: no registry yaml files changed'
+          );
+        }
+        continue;
+      }
+
+      const isGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
+      if (!isGreen) {
+        if (DBG) {
+          log(
+            context,
+            'debug',
+            { prNumber: pr.number, headSha, reason },
+            'skip direct PR re-evaluation: PR head checks are not green'
+          );
+        }
+        continue;
+      }
+
       const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha);
 
       if (hasCurrentHeadAutoApproval) {
-        await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
+        await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason);
         continue;
+      }
+
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          {
+            prNumber: pr.number,
+            headSha,
+            baseBranch,
+            changedRegistryFiles,
+            linkedIssueNumber: parseLinkedIssueNumberFromPr(pr),
+            reason,
+          },
+          're-evaluate direct PR against latest default-branch config'
+        );
       }
 
       await processPullRequestForAutoMerge(context, repoInfo, pr);
@@ -2872,8 +2960,9 @@ async function reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(
         {
           err: e instanceof Error ? e.message : String(e),
           prNumber: pr.number,
+          reason,
         },
-        'failed to re-evaluate direct pull request after approval config change'
+        'failed to re-evaluate direct pull request after default branch push'
       );
     }
   }
@@ -3612,7 +3701,7 @@ async function maybeHandleDirectPrApprovalForMerge(
       namespace: toStringTrim(parsedFormData['namespace'] || parsedFormData['identifier']),
       resourceName: extractResourceNameFromForm(parsedFormData, template),
       formData: parsedFormData,
-      requestAuthorId,
+      requestAuthorId: requestAuthorId || undefined,
       issue,
     })
   );
@@ -5513,12 +5602,20 @@ export default function requestHandler(app: Probot): void {
 
     const baseBranch = readDefaultBranchFromPush(payload);
 
-    // if approval config changed, re-evaluate old direct PRs
-    if (isRelevantDefaultBranchPushForApprovalReevaluation(payload)) {
-      await reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(context, repoInfo);
-    }
+    const directPrReevaluationReason = isRelevantDefaultBranchPushForApprovalReevaluation(payload)
+      ? 'default-branch-push:approval-config-change'
+      : 'default-branch-push:direct-pr-reevaluation';
 
-    // after main changed, keep already-approved green registry PRs up to date
+    // Re-evaluate old open direct registry PRs against the latest default-branch config.
+    // This also covers PRs that existed before the current bot version was deployed.
+    await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
+      context,
+      repoInfo,
+      baseBranch,
+      directPrReevaluationReason
+    );
+
+    // after main changed, keep already-approved registry PRs up to date
     await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
   });
 

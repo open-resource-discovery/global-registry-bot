@@ -2753,7 +2753,11 @@ function buildApprovalHookArgs(
 ): OnApprovalArgs {
   const namespace = resolveApprovalNamespace(args);
   const resourceName = resolveApprovalResourceName(args, namespace);
-  const requesterId = toStringSafe(args.requestAuthorId) || toStringSafe(args.issue?.user?.login);
+
+  const hasExplicitRequestAuthorId = args.requestAuthorId !== undefined && args.requestAuthorId !== null;
+  const requesterId = hasExplicitRequestAuthorId
+    ? toStringSafe(args.requestAuthorId)
+    : toStringSafe(args.issue?.user?.login);
 
   return {
     requestType: toStringSafe(args.requestType),
