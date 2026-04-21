@@ -3398,6 +3398,10 @@ test('push: default branch push updates approved green registry PR branches', as
     },
   });
 
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout);
+
   ctx.name = 'push';
   ctx.payload = {
     ref: 'refs/heads/main',
@@ -3410,6 +3414,7 @@ test('push: default branch push updates approved green registry PR branches', as
       data: [
         {
           number: 201,
+          state: 'open',
           body: 'manual direct pr',
           title: 'Direct',
           head: { ref: 'feature/approved-green', sha: 'sha-approved-green' },
@@ -3419,12 +3424,16 @@ test('push: default branch push updates approved green registry PR branches', as
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-approved.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.issues.get.mockResolvedValue({
     data: { number: 201, labels: [{ name: 'Approved' }] },
+  });
+
+  ctx.octokit.pulls.listReviews.mockResolvedValue({
+    data: [],
   });
 
   ctx.octokit.pulls.get.mockResolvedValue({
@@ -3432,16 +3441,11 @@ test('push: default branch push updates approved green registry PR branches', as
       number: 201,
       state: 'open',
       body: 'manual direct pr',
+      title: 'Direct',
       head: { ref: 'feature/approved-green', sha: 'sha-approved-green' },
       base: { ref: 'main', sha: 'base-sha' },
       mergeable: true,
       mergeable_state: 'behind',
-    },
-  });
-
-  ctx.octokit.checks.listForRef.mockResolvedValueOnce({
-    data: {
-      check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
     },
   });
 
@@ -3455,6 +3459,8 @@ test('push: default branch push updates approved green registry PR branches', as
       expected_head_sha: 'sha-approved-green',
     })
   );
+
+  setTimeoutSpy.mockRestore();
 });
 
 test('push: approved review remains eligible for branch update after later comment-only review', async () => {
@@ -3477,6 +3483,10 @@ test('push: approved review remains eligible for branch update after later comme
     },
   });
 
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout);
+
   ctx.name = 'push';
   ctx.payload = {
     ref: 'refs/heads/main',
@@ -3489,6 +3499,7 @@ test('push: approved review remains eligible for branch update after later comme
       data: [
         {
           number: 202,
+          state: 'open',
           body: 'manual direct pr',
           title: 'Direct',
           head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
@@ -3498,24 +3509,12 @@ test('push: approved review remains eligible for branch update after later comme
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-commented.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.issues.get.mockResolvedValue({
     data: { number: 202, labels: [] },
-  });
-
-  ctx.octokit.pulls.get.mockResolvedValue({
-    data: {
-      number: 202,
-      state: 'open',
-      body: 'manual direct pr',
-      head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
-      base: { ref: 'main', sha: 'base-sha' },
-      mergeable: true,
-      mergeable_state: 'behind',
-    },
   });
 
   ctx.octokit.pulls.listReviews.mockResolvedValue({
@@ -3535,6 +3534,19 @@ test('push: approved review remains eligible for branch update after later comme
     ],
   });
 
+  ctx.octokit.pulls.get.mockResolvedValue({
+    data: {
+      number: 202,
+      state: 'open',
+      body: 'manual direct pr',
+      title: 'Direct',
+      head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
+      base: { ref: 'main', sha: 'base-sha' },
+      mergeable: true,
+      mergeable_state: 'behind',
+    },
+  });
+
   await handler(ctx);
 
   expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
@@ -3545,6 +3557,8 @@ test('push: approved review remains eligible for branch update after later comme
       expected_head_sha: 'sha-review-commented',
     })
   );
+
+  setTimeoutSpy.mockRestore();
 });
 
 test('push: changes requested review blocks approved-label based branch update', async () => {
@@ -3567,6 +3581,10 @@ test('push: changes requested review blocks approved-label based branch update',
     },
   });
 
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout);
+
   ctx.name = 'push';
   ctx.payload = {
     ref: 'refs/heads/main',
@@ -3579,6 +3597,7 @@ test('push: changes requested review blocks approved-label based branch update',
       data: [
         {
           number: 203,
+          state: 'open',
           body: 'manual direct pr',
           title: 'Direct',
           head: { ref: 'feature/changes-requested', sha: 'sha-changes-requested' },
@@ -3616,6 +3635,8 @@ test('push: changes requested review blocks approved-label based branch update',
   await handler(ctx);
 
   expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+
+  setTimeoutSpy.mockRestore();
 });
 
 test('issues.opened: partner namespace maps request type and matches normalized request config keys', async () => {

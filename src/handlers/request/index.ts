@@ -3135,7 +3135,9 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRe
     });
   }, DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
 
-  retryTimer.unref?.();
+  if (retryTimer && typeof (retryTimer as { unref?: () => void }).unref === 'function') {
+    retryTimer.unref();
+  }
 }
 
 function normalizeRepoPath(path: unknown): string {
