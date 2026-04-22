@@ -39,6 +39,10 @@ type ResourceBotContextExt = {
   resourceBotHooksSource?: string | null;
 };
 
+type StaticConfigLoadOptions = {
+  forceReload?: boolean;
+};
+
 type BotContext<E extends RequestEvents> = Context<E> & ResourceBotContextExt;
 
 type RepoInfo = { owner: string; repo: string };
@@ -150,6 +154,21 @@ type CheckRunAnnotationLike = {
   title?: string | null;
   annotation_level?: string | null;
   raw_details?: string | null;
+};
+
+type HeadGreenRunSummary = {
+  id?: number;
+  name: string;
+  status: string;
+  conclusion: string;
+};
+
+type HeadGreenEvaluation = {
+  green: boolean;
+  reason: string;
+  latestRuns: HeadGreenRunSummary[];
+  blockingRuns: HeadGreenRunSummary[];
+  statusState?: string;
 };
 
 type ValidateRequestIssueResult = {
@@ -726,8 +745,10 @@ type CheckSuitePullRequestRef = { number?: number | null };
 
 type CheckSuiteLike = {
   id?: number | null;
+  status?: string | null;
   conclusion?: string | null;
   head_sha?: string | null;
+  head_branch?: string | null;
   pull_requests?: CheckSuitePullRequestRef[] | null;
 };
 
@@ -2191,13 +2212,31 @@ function isBlockingCheckConclusion(conclusion: string): boolean {
   );
 }
 
-async function isHeadGreenForApprovalReevaluation(
+function summarizeHeadGreenRun(run: RefCheckRunLike): HeadGreenRunSummary {
+  const id = typeof run?.id === 'number' && Number.isFinite(run.id) ? run.id : undefined;
+
+  return {
+    ...(id !== undefined ? { id } : {}),
+    name: toStringTrim(run?.name) || '__unnamed__',
+    status: toStringTrim(run?.status).toLowerCase(),
+    conclusion: toStringTrim(run?.conclusion).toLowerCase(),
+  };
+}
+
+async function evaluateHeadGreenForApprovalReevaluation(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   headSha: string
-): Promise<boolean> {
+): Promise<HeadGreenEvaluation> {
   const ref = toStringTrim(headSha);
-  if (!ref) return false;
+  if (!ref) {
+    return {
+      green: false,
+      reason: 'missing-head-sha',
+      latestRuns: [],
+      blockingRuns: [],
+    };
+  }
 
   try {
     const all: RefCheckRunLike[] = [];
@@ -2249,22 +2288,61 @@ async function isHeadGreenForApprovalReevaluation(
     }
 
     if (latestByName.size > 0) {
-      let sawSuccess = false;
+      const latestRuns = Array.from(latestByName.values()).map(summarizeHeadGreenRun);
 
-      for (const run of latestByName.values()) {
-        const status = toStringTrim(run?.status).toLowerCase();
-        const conclusion = toStringTrim(run?.conclusion).toLowerCase();
-
-        if (status !== 'completed') return false;
-        if (isBlockingCheckConclusion(conclusion)) return false;
-        if (!isGreenCheckConclusion(conclusion)) return false;
-        if (conclusion === 'success') sawSuccess = true;
+      const incompleteRuns = latestRuns.filter((run) => run.status !== 'completed');
+      if (incompleteRuns.length) {
+        return {
+          green: false,
+          reason: 'check-runs-not-completed',
+          latestRuns,
+          blockingRuns: incompleteRuns,
+        };
       }
 
-      return sawSuccess;
+      const blockingRuns = latestRuns.filter(
+        (run) => isBlockingCheckConclusion(run.conclusion) || !isGreenCheckConclusion(run.conclusion)
+      );
+
+      if (blockingRuns.length) {
+        return {
+          green: false,
+          reason: 'check-runs-blocking-or-not-green',
+          latestRuns,
+          blockingRuns,
+        };
+      }
+
+      const sawSuccess = latestRuns.some((run) => run.conclusion === 'success');
+      if (!sawSuccess) {
+        return {
+          green: false,
+          reason: 'no-success-check-run',
+          latestRuns,
+          blockingRuns: [],
+        };
+      }
+
+      return {
+        green: true,
+        reason: 'check-runs-green',
+        latestRuns,
+        blockingRuns: [],
+      };
     }
-  } catch {
-    // fallback below
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: ref,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'head-green:check-runs-fetch-failed'
+    );
   }
 
   try {
@@ -2282,9 +2360,22 @@ async function isHeadGreenForApprovalReevaluation(
       ref,
     });
 
-    return toStringTrim(res?.data?.state).toLowerCase() === 'success';
-  } catch {
-    return false;
+    const statusState = toStringTrim(res?.data?.state).toLowerCase();
+
+    return {
+      green: statusState === 'success',
+      reason: statusState === 'success' ? 'combined-status-success' : 'combined-status-not-success',
+      latestRuns: [],
+      blockingRuns: [],
+      statusState,
+    };
+  } catch (_error: unknown) {
+    return {
+      green: false,
+      reason: 'combined-status-fetch-failed',
+      latestRuns: [],
+      blockingRuns: [],
+    };
   }
 }
 
@@ -2709,14 +2800,23 @@ function parseIssueNumberFromText(value: unknown, patterns: RegExp[]): number | 
 }
 
 function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
-  return parseIssueNumberFromText(body, [/source:\s*#(\d+)/i, /\bissue\s*#\s*(\d+)\b/i, /\bissue\s+(\d+)\b/i]);
+  return parseIssueNumberFromText(body, [
+    /<!--\s*nsreq:issue:(\d+)\s*-->/i,
+    /\bsource\s*:\s*#(\d+)\b/i,
+    /\bissue\s*#\s*(\d+)\b/i,
+    /\bissue\s+(\d+)\b/i,
+    /\b(?:fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s*:?\s*#(\d+)\b/i,
+  ]);
 }
 
 function parseLinkedIssueNumberFromPr(pr: PullRequestLike): number | null {
   return (
     parseLinkedIssueNumberFromPrBody(pr.body) ??
     parseIssueNumberFromText(pr.head?.ref, [/(?:^|[-_/])issue[-_/]?(\d+)(?:$|[-_/])/i]) ??
-    parseIssueNumberFromText(pr.title, [/\bissue\s*#?\s*(\d+)\b/i])
+    parseIssueNumberFromText(pr.title, [
+      /\bissue\s*#?\s*(\d+)\b/i,
+      /\b(?:fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s*:?\s*#(\d+)\b/i,
+    ])
   );
 }
 
@@ -2778,21 +2878,81 @@ async function processPullRequestForAutoMerge(
   try {
     const res = await context.octokit.issues.get(params);
     issue = res.data as unknown as IssueLike;
-  } catch {
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        issueNumber,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'direct-pr:linked-issue-read-failed'
+    );
     return;
   }
 
-  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) return;
+  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        issueNumber,
+      },
+      'direct-pr:linked-issue-not-request-form-fallback-standalone'
+    );
+
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
+    return;
+  }
 
   let template: TemplateLike;
   try {
     template = await loadTemplateWithLabelRefresh(context, params, issue);
-  } catch {
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        issueNumber,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'direct-pr:linked-issue-template-load-failed-fallback-standalone'
+    );
+
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
     return;
   }
 
   const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-  if (!isRequestIssue(context, template, parsedFormData)) return;
+  if (!isRequestIssue(context, template, parsedFormData)) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        issueNumber,
+        parsedKeys: Object.keys(parsedFormData || {}),
+      },
+      'direct-pr:linked-issue-not-request-issue-fallback-standalone'
+    );
+
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
+    return;
+  }
 
   const body = toStringTrim(pr.body);
   const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
@@ -2851,18 +3011,6 @@ function readPushChangedFiles(payload: unknown): string[] {
   return out;
 }
 
-function isRelevantDefaultBranchPushForApprovalReevaluation(payload: unknown): boolean {
-  if (!isPlainObject(payload)) return false;
-
-  const ref = toStringTrim(payload['ref']);
-  const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
-  const defaultBranch = repoObj ? toStringTrim(repoObj['default_branch']) : '';
-
-  if (!ref || !defaultBranch || ref !== `refs/heads/${defaultBranch}`) return false;
-
-  return readPushChangedFiles(payload).some(isApprovalConfigChangePath);
-}
-
 async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2871,33 +3019,58 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
 ): Promise<void> {
   const openPrs = await listOpenPullRequests(context, repoInfo);
 
-  for (const pr of openPrs) {
-    // Snapshot-managed request PRs are already treated as approved branch-maintenance candidates.
-    // This pass is for direct/manual registry PRs that need onApproval re-evaluation.
-    if (isSnapshotManagedRequestPr(pr)) continue;
+  log(
+    context,
+    'info',
+    {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      baseBranch,
+      reason,
+      openPrCount: openPrs.length,
+      hooksSource: context.resourceBotHooksSource,
+    },
+    'direct-pr-reeval:start'
+  );
 
+  let processed = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const pr of openPrs) {
     const headSha = toStringTrim(pr.head?.sha);
+    const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr);
+    const snapshotManaged = isSnapshotManagedRequestPr(pr);
+
+    const baseLog = {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      prNumber: pr.number,
+      title: toStringTrim(pr.title),
+      headSha,
+      headRef: toStringTrim(pr.head?.ref),
+      prBase: toStringTrim(pr.base?.ref),
+      baseBranch,
+      linkedIssueNumber,
+      snapshotManaged,
+      reason,
+    };
+
+    if (snapshotManaged) {
+      skipped += 1;
+      log(context, 'info', { ...baseLog, skipReason: 'snapshot-managed-request-pr' }, 'direct-pr-reeval:skip');
+      continue;
+    }
+
     if (!headSha) {
-      if (DBG) {
-        log(context, 'debug', { prNumber: pr.number, reason }, 'skip direct PR re-evaluation: missing head sha');
-      }
+      skipped += 1;
+      log(context, 'info', { ...baseLog, skipReason: 'missing-head-sha' }, 'direct-pr-reeval:skip');
       continue;
     }
 
     if (!pullRequestTargetsBranch(pr, baseBranch)) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          {
-            prNumber: pr.number,
-            prBase: toStringTrim(pr.base?.ref),
-            baseBranch,
-            reason,
-          },
-          'skip direct PR re-evaluation: different base branch'
-        );
-      }
+      skipped += 1;
+      log(context, 'info', { ...baseLog, skipReason: 'different-base-branch' }, 'direct-pr-reeval:skip');
       continue;
     }
 
@@ -2905,67 +3078,102 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
       const changedRegistryFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
 
       if (!changedRegistryFiles.length) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            { prNumber: pr.number, reason },
-            'skip direct PR re-evaluation: no registry yaml files changed'
-          );
-        }
+        skipped += 1;
+        log(
+          context,
+          'info',
+          { ...baseLog, changedRegistryFiles, skipReason: 'no-registry-yaml-files-changed' },
+          'direct-pr-reeval:skip'
+        );
         continue;
       }
 
-      const isGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-      if (!isGreen) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            { prNumber: pr.number, headSha, reason },
-            'skip direct PR re-evaluation: PR head checks are not green'
-          );
-        }
+      const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
+
+      log(
+        context,
+        'info',
+        {
+          ...baseLog,
+          changedRegistryFiles,
+          green: greenResult.green,
+          greenReason: greenResult.reason,
+          statusState: greenResult.statusState,
+          blockingRuns: greenResult.blockingRuns,
+          latestRuns: greenResult.latestRuns.slice(0, 30),
+        },
+        'direct-pr-reeval:head-green'
+      );
+
+      if (!greenResult.green) {
+        skipped += 1;
+        log(
+          context,
+          'info',
+          {
+            ...baseLog,
+            changedRegistryFiles,
+            skipReason: 'pr-head-checks-not-green',
+            greenReason: greenResult.reason,
+            blockingRuns: greenResult.blockingRuns,
+          },
+          'direct-pr-reeval:skip'
+        );
         continue;
       }
 
       const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha);
 
+      log(
+        context,
+        'info',
+        {
+          ...baseLog,
+          changedRegistryFiles,
+          hasCurrentHeadAutoApproval,
+          hooksSource: context.resourceBotHooksSource,
+        },
+        'direct-pr-reeval:candidate'
+      );
+
       if (hasCurrentHeadAutoApproval) {
+        processed += 1;
         await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason);
         continue;
       }
 
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          {
-            prNumber: pr.number,
-            headSha,
-            baseBranch,
-            changedRegistryFiles,
-            linkedIssueNumber: parseLinkedIssueNumberFromPr(pr),
-            reason,
-          },
-          're-evaluate direct PR against latest default-branch config'
-        );
-      }
-
+      processed += 1;
       await processPullRequestForAutoMerge(context, repoInfo, pr);
     } catch (e: unknown) {
+      failed += 1;
       log(
         context,
         'warn',
         {
+          ...baseLog,
           err: e instanceof Error ? e.message : String(e),
-          prNumber: pr.number,
-          reason,
+          status: getHttpStatus(e),
         },
-        'failed to re-evaluate direct pull request after default branch push'
+        'direct-pr-reeval:failed'
       );
     }
   }
+
+  log(
+    context,
+    'info',
+    {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      baseBranch,
+      reason,
+      openPrCount: openPrs.length,
+      processed,
+      skipped,
+      failed,
+    },
+    'direct-pr-reeval:done'
+  );
 }
 
 function isDefaultBranchPush(payload: unknown): boolean {
@@ -2978,11 +3186,15 @@ function isDefaultBranchPush(payload: unknown): boolean {
   return Boolean(ref && defaultBranch && ref === `refs/heads/${defaultBranch}`);
 }
 
-function readDefaultBranchFromPush(payload: unknown): string {
+function readDefaultBranchFromPayload(payload: unknown): string {
   if (!isPlainObject(payload)) return '';
 
   const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
   return repoObj ? toStringTrim(repoObj['default_branch']) : '';
+}
+
+function readDefaultBranchFromPush(payload: unknown): string {
+  return readDefaultBranchFromPayload(payload);
 }
 
 function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): boolean {
@@ -3423,12 +3635,33 @@ async function evaluateChangedResourceApproval(
 async function evaluateDirectPrOnApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  pr: PullRequestLike
+  pr: PullRequestLike,
+  requestAuthorIdOverride?: string
 ): Promise<ApprovalDecision> {
   const changedFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
-  if (!changedFiles.length) return {};
 
-  const requestAuthorId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+  const fallbackRequestAuthorId = requestAuthorIdOverride
+    ? ''
+    : await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+
+  const requestAuthorId = toStringTrim(requestAuthorIdOverride) || fallbackRequestAuthorId;
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha: toStringTrim(pr.head?.sha),
+      headRef: toStringTrim(pr.head?.ref),
+      requestAuthorId,
+      changedFiles,
+      linkedIssueNumber: parseLinkedIssueNumberFromPr(pr),
+      hooksSource: context.resourceBotHooksSource,
+    },
+    'direct-pr:on-approval:start'
+  );
+
+  if (!changedFiles.length) return {};
 
   let sawApproved = false;
   let sawUnknown = false;
@@ -3436,6 +3669,21 @@ async function evaluateDirectPrOnApproval(
 
   for (const filePath of changedFiles) {
     const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        filePath,
+        requestAuthorId,
+        status: toStringTrim(decision.status) || 'none',
+        reason: toStringTrim(decision.reason),
+        message: toStringTrim(decision.message),
+        path: toStringTrim(decision.path),
+      },
+      'direct-pr:on-approval:file-decision'
+    );
 
     if (decision.status === 'rejected') {
       return decision;
@@ -3515,7 +3763,10 @@ async function closeLinkedIssuePrs(
   repoInfo: RepoInfo,
   issueNumber: number
 ): Promise<number[]> {
-  const prs = await findOpenIssuePrs(context, repoInfo, issueNumber);
+  const prs = (await listOpenPullRequests(context, repoInfo)).filter(
+    (pr) => parseLinkedIssueNumberFromPr(pr) === issueNumber
+  );
+
   const closed: number[] = [];
 
   for (const pr of prs) {
@@ -3692,20 +3943,29 @@ async function maybeHandleDirectPrApprovalForMerge(
   repoInfo: RepoInfo,
   issueParams: IssueParams,
   issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
+  _template: TemplateLike,
+  _parsedFormData: FormData,
   pr: PullRequestLike
 ): Promise<ApprovalHandlingResult> {
-  const requestAuthorId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+  const issueAuthorId = normalizeLogin(issue.user?.login);
+  const prRequesterId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+  const requestAuthorId = issueAuthorId || prRequesterId;
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      linkedIssueNumber: issue.number,
+      issueAuthorId,
+      prRequesterId,
+      requestAuthorId,
+    },
+    'direct-pr:linked-issue-requester-resolved'
+  );
+
   const decision = normalizeApprovalDecision(
-    await runApprovalHook(context, repoInfo, {
-      requestType: resolveEffectiveRequestType(template, parsedFormData),
-      namespace: toStringTrim(parsedFormData['namespace'] || parsedFormData['identifier']),
-      resourceName: extractResourceNameFromForm(parsedFormData, template),
-      formData: parsedFormData,
-      requestAuthorId: requestAuthorId || undefined,
-      issue,
-    })
+    await evaluateDirectPrOnApproval(context, repoInfo, pr, requestAuthorId || undefined)
   );
 
   if (decision.status === 'approved') {
@@ -3734,6 +3994,17 @@ async function maybeHandleDirectPrApprovalForMerge(
       buildApprovalRejectedBody(decision),
       { minimizeTag: 'nsreq:on-approval:rejected' }
     );
+
+    try {
+      await context.octokit.pulls.update({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        pull_number: pr.number,
+        state: 'closed',
+      });
+    } catch {
+      // ignore
+    }
 
     await rejectRequestFromApprovalHook(context, issueParams, issue, decision, {
       closeLinkedPrs: true,
@@ -5065,28 +5336,51 @@ function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
 }
 
 export default function requestHandler(app: Probot): void {
-  const getStaticConfig = async (context: BotContext<RequestEvents>): Promise<NormalizedStaticConfig> => {
-    if (context.resourceBotConfig && context.resourceBotHooks !== undefined) return context.resourceBotConfig;
+  const getStaticConfig = async (
+    context: BotContext<RequestEvents>,
+    options: StaticConfigLoadOptions = {}
+  ): Promise<NormalizedStaticConfig> => {
+    const forceReload = options.forceReload === true;
+
+    if (!forceReload && context.resourceBotConfig && context.resourceBotHooks !== undefined) {
+      return context.resourceBotConfig;
+    }
 
     try {
       const { config, hooks, hooksSource } = await loadStaticConfig(context, {
         validate: false,
         updateIssue: false,
+        forceReload,
       });
 
       context.resourceBotConfig = config;
       context.resourceBotHooks = hooks;
       context.resourceBotHooksSource = hooksSource || null;
 
+      log(
+        context,
+        'info',
+        {
+          forceReload,
+          hooksSource: context.resourceBotHooksSource,
+        },
+        'static-config:context-loaded'
+      );
+
       return context.resourceBotConfig;
     } catch (err: unknown) {
       (app.log || console).warn?.(
-        { err: err instanceof Error ? err.message : String(err) },
+        {
+          err: err instanceof Error ? err.message : String(err),
+          forceReload,
+        },
         'failed to load resource-bot static config, using defaults'
       );
+
       context.resourceBotConfig = DEFAULT_CONFIG;
       context.resourceBotHooks = null;
       context.resourceBotHooksSource = null;
+
       return context.resourceBotConfig;
     }
   };
@@ -5557,23 +5851,53 @@ export default function requestHandler(app: Probot): void {
     await getStaticConfig(context);
 
     const normalizedHeadSha = toStringTrim(headSha);
-    if (!normalizedHeadSha) return;
-
-    const headIsGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
-    if (!headIsGreen) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { owner: repoInfo.owner, repo: repoInfo.repo, headSha: normalizedHeadSha },
-          'skip direct PR approval until full validation pipeline is green'
-        );
-      }
+    if (!normalizedHeadSha) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+        },
+        'auto-merge:skip-missing-head-sha'
+      );
       return;
     }
 
+    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
+
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: normalizedHeadSha,
+        green: greenResult.green,
+        greenReason: greenResult.reason,
+        statusState: greenResult.statusState,
+        blockingRuns: greenResult.blockingRuns,
+        latestRuns: greenResult.latestRuns.slice(0, 30),
+      },
+      'auto-merge:head-green'
+    );
+
+    if (!greenResult.green) return;
+
     const candidates = (await listOpenPullRequests(context, repoInfo)).filter(
       (pr) => toStringTrim(pr.head?.sha) === normalizedHeadSha
+    );
+
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: normalizedHeadSha,
+        candidatePrNumbers: candidates.map((pr) => pr.number),
+      },
+      'auto-merge:candidates'
     );
 
     for (const pr of candidates) {
@@ -5593,23 +5917,130 @@ export default function requestHandler(app: Probot): void {
     }
   };
 
+  const maybeHandleDefaultBranchCheckSuiteSuccess = async (
+    context: BotContext<RequestEvents>,
+    payload: unknown,
+    checkSuite: CheckSuiteLike | null,
+    repoInfo: RepoInfo
+  ): Promise<void> => {
+    const defaultBranch = readDefaultBranchFromPayload(payload);
+    const headBranch = toStringTrim(checkSuite?.head_branch);
+    const headSha = toStringTrim(checkSuite?.head_sha);
+    const conclusion = toStringTrim(checkSuite?.conclusion).toLowerCase();
+    const status = toStringTrim(checkSuite?.status).toLowerCase();
+
+    let isDefaultBranchSuite = Boolean(defaultBranch && headBranch && headBranch === defaultBranch);
+    let defaultBranchHeadSha = '';
+
+    if (!isDefaultBranchSuite && defaultBranch && headSha) {
+      try {
+        const branch = await context.octokit.repos.getBranch({
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          branch: defaultBranch,
+        });
+
+        defaultBranchHeadSha = toStringTrim(
+          (branch as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha
+        );
+
+        isDefaultBranchSuite = Boolean(defaultBranchHeadSha && defaultBranchHeadSha === headSha);
+      } catch (error: unknown) {
+        log(
+          context,
+          'warn',
+          {
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            defaultBranch,
+            headSha,
+            err: getErrorMessage(error),
+            status: getHttpStatus(error),
+          },
+          'default-branch-check-suite:branch-head-read-failed'
+        );
+      }
+    }
+
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        defaultBranch,
+        headBranch,
+        headSha,
+        defaultBranchHeadSha,
+        conclusion,
+        status,
+        isDefaultBranchSuite,
+      },
+      'default-branch-check-suite:evaluated'
+    );
+
+    if (!isDefaultBranchSuite) return;
+    if (status && status !== 'completed') return;
+    if (conclusion !== 'success') return;
+
+    await getStaticConfig(context, { forceReload: true });
+
+    await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
+      context,
+      repoInfo,
+      defaultBranch,
+      'default-branch-check-suite:direct-pr-reevaluation'
+    );
+
+    await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, defaultBranch);
+  };
+
   app.on('push', async (context: BotContext<'push'>): Promise<void> => {
-    await getStaticConfig(context);
-
     const payload = context.payload as unknown;
-    if (!isDefaultBranchPush(payload)) return;
-
     const repoInfo = readRepoInfoFromPayload(payload);
-    if (!repoInfo) return;
-
+    const ref = isPlainObject(payload) ? toStringTrim(payload['ref']) : '';
     const baseBranch = readDefaultBranchFromPush(payload);
+    const changedFiles = readPushChangedFiles(payload);
+    const approvalConfigChangedFiles = changedFiles.filter(isApprovalConfigChangePath);
+    const defaultBranchPush = isDefaultBranchPush(payload);
 
-    const directPrReevaluationReason = isRelevantDefaultBranchPushForApprovalReevaluation(payload)
+    log(
+      context,
+      'info',
+      {
+        event: toStringTrim((context as unknown as { name?: string }).name),
+        ref,
+        defaultBranch: baseBranch,
+        isDefaultBranchPush: defaultBranchPush,
+        owner: repoInfo?.owner,
+        repo: repoInfo?.repo,
+        changedFilesCount: changedFiles.length,
+        approvalConfigChangedFiles,
+      },
+      'default-branch-push:received'
+    );
+
+    if (!defaultBranchPush) return;
+
+    if (!repoInfo) {
+      log(
+        context,
+        'warn',
+        {
+          ref,
+          defaultBranch: baseBranch,
+        },
+        'default-branch-push:missing-repo-info'
+      );
+      return;
+    }
+
+    await getStaticConfig(context, { forceReload: true });
+
+    const directPrReevaluationReason = approvalConfigChangedFiles.length
       ? 'default-branch-push:approval-config-change'
       : 'default-branch-push:direct-pr-reevaluation';
 
-    // Re-evaluate old open direct registry PRs against the latest default-branch config.
-    // This also covers PRs that existed before the current bot version was deployed.
     await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
       context,
       repoInfo,
@@ -5617,7 +6048,6 @@ export default function requestHandler(app: Probot): void {
       directPrReevaluationReason
     );
 
-    // after main changed, keep already-approved registry PRs up to date
     await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
   });
 
@@ -5625,33 +6055,78 @@ export default function requestHandler(app: Probot): void {
     ['check_suite.completed', 'check_run.completed'],
     async (context: BotContext<'check_suite.completed' | 'check_run.completed'>): Promise<void> => {
       const payload = context.payload as unknown;
+      const action = isPlainObject(payload) ? toStringTrim(payload['action']).toLowerCase() : '';
+      const eventName = toStringTrim((context as unknown as { name?: string }).name);
+      const run = readCheckRunFromPayload(payload);
+      const checkSuite = readCheckSuiteFromPayload(payload);
+      const repoInfo = readRepoInfoFromPayload(payload);
 
-      if (context.name === 'check_run.completed') {
-        const payload = context.payload as unknown;
-        const run = readCheckRunFromPayload(payload);
+      log(
+        context,
+        'info',
+        {
+          event: eventName,
+          action,
+          hasCheckRun: Boolean(run),
+          hasCheckSuite: Boolean(checkSuite),
+          checkRunHeadSha: toStringTrim(run?.head_sha),
+          checkRunStatus: toStringTrim(run?.status).toLowerCase(),
+          checkRunConclusion: toStringTrim(run?.conclusion).toLowerCase(),
+          checkSuiteHeadSha: toStringTrim(checkSuite?.head_sha),
+          checkSuiteHeadBranch: toStringTrim(checkSuite?.head_branch),
+          checkSuiteStatus: toStringTrim(checkSuite?.status).toLowerCase(),
+          checkSuiteConclusion: toStringTrim(checkSuite?.conclusion).toLowerCase(),
+          owner: repoInfo?.owner,
+          repo: repoInfo?.repo,
+        },
+        'checks:event-classification'
+      );
 
+      if (run) {
         const conclusion = toStringTrim(run?.conclusion).toLowerCase();
         const status = toStringTrim(run?.status).toLowerCase();
         const headShaStr = toStringTrim(run?.head_sha);
+
+        if (!repoInfo) {
+          log(
+            context,
+            'warn',
+            {
+              event: eventName,
+              action,
+              conclusion,
+              status,
+              headShaStr,
+            },
+            'checks:check-run-missing-repo-info'
+          );
+          return;
+        }
+
+        const prNumbers = readCheckRunPrNumbers(run);
+
+        log(
+          context,
+          'info',
+          {
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            conclusion,
+            status,
+            headShaStr,
+            prNumbers,
+          },
+          'checks:check-run resolved'
+        );
 
         if (status !== 'completed') return;
         if (conclusion !== 'success') return;
         if (!headShaStr) return;
 
-        const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
-        const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
-        const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
-        const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
-
-        if (!ownerLogin || !repoName) return;
-
-        const repoInfo = { owner: ownerLogin, repo: repoName };
-        const prNumbers = readCheckRunPrNumbers(run);
-
         for (const prNumber of prNumbers) {
           await collapseBotCommentsByPrefix(
             context,
-            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
+            { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: prNumber },
             {
               tagPrefix: 'nsreq:ci-validation',
               collapseBody: 'Validation issues resolved.',
@@ -5664,48 +6139,30 @@ export default function requestHandler(app: Probot): void {
         return;
       }
 
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { event: context.name, action: isPlainObject(payload) ? payload['action'] : undefined },
-          'dbg:checks:event received'
-        );
-      }
+      if (!checkSuite) return;
+      if (!repoInfo) return;
 
-      const suite = isPlainObject(payload) && 'check_suite' in payload ? payload['check_suite'] : undefined;
+      const conclusion = toStringTrim(checkSuite.conclusion).toLowerCase();
+      const headShaStr = toStringTrim(checkSuite.head_sha);
+      const ownerLogin = repoInfo.owner;
+      const repoName = repoInfo.repo;
 
-      let conclusionRaw: unknown;
-      if (isPlainObject(suite)) conclusionRaw = suite['conclusion'];
+      const prNumbers = await resolveCheckSuitePrNumbers(context, repoInfo, checkSuite, headShaStr);
 
-      let headShaRaw: unknown;
-      if (isPlainObject(suite)) headShaRaw = suite['head_sha'];
-
-      const conclusion = toStringTrim(conclusionRaw).toLowerCase();
-      const headShaStr = toStringTrim(headShaRaw);
-
-      const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
-      const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
-      const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
-      const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
-
-      if (!ownerLogin || !repoName) return;
-      const checkSuite = readCheckSuiteFromPayload(context.payload as unknown);
-      const prNumbers = await resolveCheckSuitePrNumbers(
+      log(
         context,
-        { owner: ownerLogin, repo: repoName },
-        checkSuite,
-        headShaStr
+        'info',
+        {
+          ownerLogin,
+          repoName,
+          conclusion,
+          headShaStr,
+          checkSuiteHeadBranch: toStringTrim(checkSuite.head_branch),
+          checkSuiteStatus: toStringTrim(checkSuite.status).toLowerCase(),
+          prNumbers,
+        },
+        'checks:context resolved'
       );
-
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { ownerLogin, repoName, conclusion, headShaStr, prNumbers },
-          'dbg:checks:context resolved'
-        );
-      }
 
       // success -> collapse old CI validation comments + keep existing auto-merge behavior
       if (conclusion === 'success') {
@@ -5720,6 +6177,11 @@ export default function requestHandler(app: Probot): void {
             }
           );
         }
+
+        await maybeHandleDefaultBranchCheckSuiteSuccess(context, payload, checkSuite, {
+          owner: ownerLogin,
+          repo: repoName,
+        });
 
         if (!headShaStr) return;
         await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, headShaStr);
