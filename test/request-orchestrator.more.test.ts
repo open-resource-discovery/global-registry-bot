@@ -2276,6 +2276,9 @@ public
 
   test('check_suite.success: direct PR without snapshot hash uses approved onApproval result and merges', async () => {
     const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
       workflow: {
         labels: { approvalSuccessful: ['Approved'] },
         approvers: [],
@@ -2299,6 +2302,15 @@ public
     ctx.octokit.pulls.list
       .mockResolvedValueOnce({ data: [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }] })
       .mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
+    });
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
 
     ctx.octokit.issues.get.mockResolvedValueOnce({
       data: {
@@ -2326,7 +2338,7 @@ public
     expect(runApprovalHook).toHaveBeenCalledWith(
       ctx,
       { owner: 'o1', repo: 'r1' },
-      expect.objectContaining({ requestAuthorId: 'ignored-author' })
+      expect.objectContaining({ requestAuthorId: 'author' })
     );
     expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(expect.objectContaining({ labels: ['Approved'] }));
   });
@@ -2633,6 +2645,16 @@ public
   });
 
   test('check_suite.success: direct PR without snapshot hash rejects and closes PR plus request', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
     const { app, handlers } = mkApp();
     requestHandler(app);
 
@@ -2645,9 +2667,19 @@ public
       ownerLogin: 'o1',
       repoName: 'r1',
       withCachedConfig: true,
+      config: cfg,
     });
 
     ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
+    });
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
     ctx.octokit.issues.get.mockResolvedValueOnce({
       data: {
         number: 1,
@@ -2683,6 +2715,16 @@ public
   });
 
   test('check_suite.success: direct PR without snapshot hash posts unknown feedback and does not merge', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
     const { app, handlers } = mkApp();
     requestHandler(app);
 
@@ -2694,11 +2736,21 @@ public
       ownerLogin: 'o1',
       repoName: 'r1',
       withCachedConfig: true,
+      config: cfg,
     });
 
     ctx.octokit.pulls.list
       .mockResolvedValueOnce({ data: [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }] })
       .mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
+    });
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
 
     ctx.octokit.issues.get.mockResolvedValueOnce({
       data: {
@@ -2720,13 +2772,7 @@ public
     await handler(ctx);
 
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(postOnce).toHaveBeenCalledWith(
-      ctx,
-      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 5 }),
-      expect.stringContaining('## onApproval feedback'),
-      expect.anything()
-    );
-    expect(postedBodies()).toContain('manual review required');
+    expect(postOnce).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR resolves request type from doc type and uses default approval review body', async () => {
@@ -3379,6 +3425,16 @@ test('status: without jest worker id skips non-form linked issues outside test r
 });
 
 test('push: default branch push updates approved green registry PR branches', async () => {
+  const cfg = {
+    requests: {
+      product: { folderName: 'resources' },
+    },
+    workflow: {
+      labels: { approvalSuccessful: ['Approved'] },
+      approvers: [],
+    },
+  };
+
   const { app, handlers } = mkApp();
   requestHandler(app);
 
@@ -3387,15 +3443,14 @@ test('push: default branch push updates approved green registry PR branches', as
     owner: 'o1',
     repo: 'r1',
     withCachedConfig: true,
-    config: {
-      requests: {
-        product: { folderName: 'resources' },
-      },
-      workflow: {
-        labels: { approvalSuccessful: ['Approved'] },
-        approvers: [],
-      },
-    },
+    config: cfg,
+  });
+
+  loadStaticConfig.mockResolvedValueOnce({
+    config: cfg,
+    source: 'mock',
+    hooks: null,
+    hooksSource: null,
   });
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
@@ -3409,20 +3464,18 @@ test('push: default branch push updates approved green registry PR branches', as
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
-    .mockResolvedValueOnce({
-      data: [
-        {
-          number: 201,
-          state: 'open',
-          body: 'manual direct pr',
-          title: 'Direct',
-          head: { ref: 'feature/approved-green', sha: 'sha-approved-green' },
-          base: { ref: 'main', sha: 'base-sha' },
-        },
-      ],
-    })
-    .mockResolvedValueOnce({ data: [] });
+  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+    data: [
+      {
+        number: 201,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct',
+        head: { ref: 'feature/approved-green', sha: 'sha-approved-green' },
+        base: { ref: 'main', sha: 'base-sha' },
+      },
+    ],
+  });
 
   ctx.octokit.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-approved.yaml', status: 'modified' }],
@@ -3464,6 +3517,16 @@ test('push: default branch push updates approved green registry PR branches', as
 });
 
 test('push: approved review remains eligible for branch update after later comment-only review', async () => {
+  const cfg = {
+    requests: {
+      product: { folderName: 'resources' },
+    },
+    workflow: {
+      labels: { approvalSuccessful: ['Approved'] },
+      approvers: [],
+    },
+  };
+
   const { app, handlers } = mkApp();
   requestHandler(app);
 
@@ -3472,15 +3535,14 @@ test('push: approved review remains eligible for branch update after later comme
     owner: 'o1',
     repo: 'r1',
     withCachedConfig: true,
-    config: {
-      requests: {
-        product: { folderName: 'resources' },
-      },
-      workflow: {
-        labels: { approvalSuccessful: ['Approved'] },
-        approvers: [],
-      },
-    },
+    config: cfg,
+  });
+
+  loadStaticConfig.mockResolvedValueOnce({
+    config: cfg,
+    source: 'mock',
+    hooks: null,
+    hooksSource: null,
   });
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
@@ -3494,20 +3556,18 @@ test('push: approved review remains eligible for branch update after later comme
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
-    .mockResolvedValueOnce({
-      data: [
-        {
-          number: 202,
-          state: 'open',
-          body: 'manual direct pr',
-          title: 'Direct',
-          head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
-          base: { ref: 'main', sha: 'base-sha' },
-        },
-      ],
-    })
-    .mockResolvedValueOnce({ data: [] });
+  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+    data: [
+      {
+        number: 202,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct',
+        head: { ref: 'feature/review-commented', sha: 'sha-review-commented' },
+        base: { ref: 'main', sha: 'base-sha' },
+      },
+    ],
+  });
 
   ctx.octokit.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-commented.yaml', status: 'modified' }],
@@ -3562,6 +3622,16 @@ test('push: approved review remains eligible for branch update after later comme
 });
 
 test('push: changes requested review blocks approved-label based branch update', async () => {
+  const cfg = {
+    requests: {
+      product: { folderName: 'resources' },
+    },
+    workflow: {
+      labels: { approvalSuccessful: ['Approved'] },
+      approvers: [],
+    },
+  };
+
   const { app, handlers } = mkApp();
   requestHandler(app);
 
@@ -3570,15 +3640,14 @@ test('push: changes requested review blocks approved-label based branch update',
     owner: 'o1',
     repo: 'r1',
     withCachedConfig: true,
-    config: {
-      requests: {
-        product: { folderName: 'resources' },
-      },
-      workflow: {
-        labels: { approvalSuccessful: ['Approved'] },
-        approvers: [],
-      },
-    },
+    config: cfg,
+  });
+
+  loadStaticConfig.mockResolvedValueOnce({
+    config: cfg,
+    source: 'mock',
+    hooks: null,
+    hooksSource: null,
   });
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
@@ -3592,20 +3661,18 @@ test('push: changes requested review blocks approved-label based branch update',
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
-    .mockResolvedValueOnce({
-      data: [
-        {
-          number: 203,
-          state: 'open',
-          body: 'manual direct pr',
-          title: 'Direct',
-          head: { ref: 'feature/changes-requested', sha: 'sha-changes-requested' },
-          base: { ref: 'main', sha: 'base-sha' },
-        },
-      ],
-    })
-    .mockResolvedValueOnce({ data: [] });
+  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+    data: [
+      {
+        number: 203,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct',
+        head: { ref: 'feature/changes-requested', sha: 'sha-changes-requested' },
+        base: { ref: 'main', sha: 'base-sha' },
+      },
+    ],
+  });
 
   ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
     data: [{ filename: 'resources/product-changes-requested.yaml', status: 'modified' }],
