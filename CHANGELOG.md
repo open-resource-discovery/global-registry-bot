@@ -12,18 +12,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Direct PR flow: update stale branches **before** approval re-evaluation
 - Approval now runs only on the **latest PR head (fresh CI state)**
 - Merge gating tightened: requires valid approval + green checks on current head
+- Cross-repo PR handling: approval + evaluation now use the **actual PR head repo/branch**, not only base repo
 
 ### Added
 
 - Automatic re-evaluation of open direct PRs on default-branch updates
 - Fallback detection for changed registry files (tree diff)
 - Robust auto-approval tied to specific commit SHA
+- Full **onApproval support for cross-repo / fork PRs**
 
 ### Fixed
 
 - Removed stale-head approvals causing blocked merges
 - Prevented merge/update loops (branch protection vs outdated handling)
-- Improved updateBranch retry handling (`expected_head_sha` + cooldown/inflight guards)
+- Improved updateBranch retry handling
+- Fixed cross-repo PRs being skipped or stuck due to missing head access / wrong issue resolution
 
 ## [[0.1.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.1)] - 2026-04-21
 

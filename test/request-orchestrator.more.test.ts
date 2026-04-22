@@ -2686,7 +2686,12 @@ public
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 51, per_page: 100, page: 1 })
     );
     expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'o1', repo: 'r1', path: 'resources/product-one.yaml', ref: 'feature/direct' })
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        path: 'resources/product-one.yaml',
+        ref: 'sha-standalone-direct',
+      })
     );
     expect(runApprovalHook).toHaveBeenCalledWith(
       ctx,
@@ -3623,7 +3628,7 @@ public
         owner: 'o1',
         repo: 'r1',
         path: 'resources/product-ok.yaml',
-        ref: 'feature/non-registry-yaml',
+        ref: 'sha-non-registry-yaml',
       })
     );
     expect(runApprovalHook).toHaveBeenCalledWith(
@@ -3641,6 +3646,247 @@ public
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 60, mergeMethod: 'squash' })
+    );
+  });
+
+  test('check_suite.success: standalone cross-repo direct PR falls back to tree diff and reads yaml from head repo', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-cross-repo-direct',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    const forkRepo = { full_name: 'fork-owner/fork-repo', name: 'fork-repo', owner: { login: 'fork-owner' } };
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 61,
+            body: 'manual direct pr',
+            title: 'Direct',
+            head: { ref: 'feature/cross-repo', sha: 'sha-cross-repo-direct', repo: forkRepo },
+            base: { ref: 'main', sha: 'base-sha' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+    ctx.octokit.git.getTree = jest.fn(async ({ owner, repo, tree_sha }: any) => {
+      if (owner === 'o1' && repo === 'r1' && tree_sha === 'base-head-sha') {
+        return {
+          data: { tree: [{ path: 'resources/product-fork.yaml', type: 'blob', sha: 'base-file-sha' }] },
+        };
+      }
+
+      if (owner === 'fork-owner' && repo === 'fork-repo' && tree_sha === 'sha-cross-repo-direct') {
+        return {
+          data: { tree: [{ path: 'resources/product-fork.yaml', type: 'blob', sha: 'fork-file-sha' }] },
+        };
+      }
+
+      return { data: { tree: [] } };
+    });
+
+    ctx.octokit.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+      if (
+        owner === 'fork-owner' &&
+        repo === 'fork-repo' &&
+        path === 'resources/product-fork.yaml' &&
+        ref === 'sha-cross-repo-direct'
+      ) {
+        return {
+          data: {
+            content: Buffer.from('type: product\nname: product-fork\ncontact: fork@example.com\n', 'utf8').toString(
+              'base64'
+            ),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      throw httpErr(404);
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'fork-author' }, committer: { login: 'fork-committer' } }],
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 61,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct',
+        head: { ref: 'feature/cross-repo', sha: 'sha-cross-repo-direct', repo: forkRepo },
+        base: { ref: 'main', sha: 'base-sha' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved cross repo' } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.git.getTree).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o1', repo: 'r1', tree_sha: 'base-head-sha', recursive: 'true' })
+    );
+    expect(ctx.octokit.git.getTree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'fork-owner',
+        repo: 'fork-repo',
+        tree_sha: 'sha-cross-repo-direct',
+        recursive: 'true',
+      })
+    );
+    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'fork-owner',
+        repo: 'fork-repo',
+        path: 'resources/product-fork.yaml',
+        ref: 'sha-cross-repo-direct',
+      })
+    );
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestType: 'product',
+        namespace: 'product-fork',
+        resourceName: 'product-fork',
+        requestAuthorId: 'fork-author',
+        formData: expect.objectContaining({
+          identifier: 'product-fork',
+          namespace: 'product-fork',
+          contact: 'fork@example.com',
+        }),
+      })
+    );
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 61, mergeMethod: 'squash' })
+    );
+  });
+
+  test('check_suite.success: standalone cross-repo direct PR ignores issue number pattern in head branch name', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-cross-repo-issue-branch',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    const forkRepo = { full_name: 'fork-owner/fork-repo', name: 'fork-repo', owner: { login: 'fork-owner' } };
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 62,
+            body: 'manual direct pr',
+            title: 'Direct from fork',
+            head: { ref: 'feature/issue-119-from-fork', sha: 'sha-cross-repo-issue-branch', repo: forkRepo },
+            base: { ref: 'main', sha: 'base-sha' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-fork-issue.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+      if (
+        owner === 'fork-owner' &&
+        repo === 'fork-repo' &&
+        path === 'resources/product-fork-issue.yaml' &&
+        ref === 'sha-cross-repo-issue-branch'
+      ) {
+        return {
+          data: {
+            content: Buffer.from('type: product\nname: product-fork-issue\n', 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      throw httpErr(404);
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'fork-author-issue' } }],
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 62,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct from fork',
+        head: { ref: 'feature/issue-119-from-fork', sha: 'sha-cross-repo-issue-branch', repo: forkRepo },
+        base: { ref: 'main', sha: 'base-sha' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.issues.get).not.toHaveBeenCalled();
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestType: 'product',
+        namespace: 'product-fork-issue',
+        resourceName: 'product-fork-issue',
+        requestAuthorId: 'fork-author-issue',
+      })
+    );
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 62, mergeMethod: 'squash' })
     );
   });
 });

@@ -3359,7 +3359,7 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
 
   for (const pr of openPrs) {
     const headSha = toStringTrim(pr.head?.sha);
-    const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr);
+    const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
     const snapshotManaged = isSnapshotManagedRequestPr(pr);
 
     const baseLog = {
