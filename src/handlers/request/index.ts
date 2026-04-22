@@ -97,14 +97,26 @@ type CollapseBotCommentsByPrefixOptions = {
   classifier?: 'OUTDATED' | 'RESOLVED' | 'DUPLICATE' | 'OFF_TOPIC' | 'SPAM' | 'ABUSE';
 };
 
+type PullRequestRepoLike = {
+  name?: string | null;
+  full_name?: string | null;
+  owner?: UserLike | null;
+};
+
+type PullRequestBranchLike = {
+  ref: string;
+  sha: string;
+  repo?: PullRequestRepoLike | null;
+};
+
 type PullRequestLike = {
   number: number;
   title?: string | null;
   body?: string | null;
   state?: string | null;
   user?: UserLike | null;
-  head: { ref: string; sha: string };
-  base?: { ref?: string | null; sha?: string | null };
+  head: PullRequestBranchLike;
+  base?: PullRequestBranchLike;
 
   mergeable?: boolean | null;
   mergeable_state?: string | null;
@@ -3096,15 +3108,20 @@ function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
   ]);
 }
 
-function parseLinkedIssueNumberFromPr(pr: PullRequestLike): number | null {
-  return (
-    parseLinkedIssueNumberFromPrBody(pr.body) ??
-    parseIssueNumberFromText(pr.head?.ref, [/(?:^|[-_/])issue[-_/]?(\d+)(?:$|[-_/])/i]) ??
-    parseIssueNumberFromText(pr.title, [
-      /\bissue\s*#?\s*(\d+)\b/i,
-      /\b(?:fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s*:?\s*#(\d+)\b/i,
-    ])
-  );
+function parseLinkedIssueNumberFromPr(pr: PullRequestLike, repoInfo?: RepoInfo): number | null {
+  const fromBody = parseLinkedIssueNumberFromPrBody(pr.body);
+  if (fromBody !== null) return fromBody;
+
+  const fromTitle = parseIssueNumberFromText(pr.title, [
+    /\bissue\s*#?\s*(\d+)\b/i,
+    /\b(?:fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s*:?\s*#(\d+)\b/i,
+  ]);
+
+  if (fromTitle !== null) return fromTitle;
+
+  if (repoInfo && isCrossRepositoryPullRequest(pr, repoInfo)) return null;
+
+  return parseIssueNumberFromText(pr.head?.ref, [/(?:^|[-_/])issue[-_/]?(\d+)(?:$|[-_/])/i]);
 }
 
 function isSnapshotManagedRequestPr(pr: PullRequestLike): boolean {
@@ -3145,7 +3162,7 @@ async function processPullRequestForAutoMerge(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<void> {
-  const issueNumber = parseLinkedIssueNumberFromPr(pr);
+  const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
 
   if (issueNumber === null) {
     const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
@@ -3179,9 +3196,20 @@ async function processPullRequestForAutoMerge(
         issueNumber,
         err: getErrorMessage(error),
         status: getHttpStatus(error),
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
       },
-      'direct-pr:linked-issue-read-failed'
+      'direct-pr:linked-issue-read-failed-fallback-standalone'
     );
+
+    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
+      baseBranch: toStringTrim(freshPr.base?.ref),
+    });
+
+    if (standaloneOutcome !== 'approved') return;
+
+    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
     return;
   }
 
@@ -4045,23 +4073,203 @@ function registryYamlTreeEntryPath(context: BotContext<RequestEvents>, entry: Gi
   return path;
 }
 
+type PullRequestHeadReadCandidate = {
+  repoInfo: RepoInfo;
+  ref: string;
+  source: string;
+};
+
+function sameRepoInfo(a: RepoInfo, b: RepoInfo): boolean {
+  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase();
+}
+
+function resolveRepoInfoFromRepoLike(repoLike: PullRequestRepoLike | null | undefined): RepoInfo | null {
+  const fullName = toStringTrim(repoLike?.full_name);
+  if (fullName) {
+    const parts = fullName
+      .split('/')
+      .map((part) => toStringTrim(part))
+      .filter(Boolean);
+
+    if (parts.length === 2) {
+      return { owner: parts[0], repo: parts[1] };
+    }
+  }
+
+  const owner = normalizeLogin(repoLike?.owner?.login);
+  const repo = toStringTrim(repoLike?.name);
+
+  return owner && repo ? { owner, repo } : null;
+}
+
+function resolvePullRequestHeadRepoInfo(pr: PullRequestLike, fallbackRepoInfo: RepoInfo): RepoInfo {
+  return resolveRepoInfoFromRepoLike(pr.head?.repo) || fallbackRepoInfo;
+}
+
+function isCrossRepositoryPullRequest(pr: PullRequestLike, baseRepoInfo: RepoInfo): boolean {
+  return !sameRepoInfo(resolvePullRequestHeadRepoInfo(pr, baseRepoInfo), baseRepoInfo);
+}
+
+function buildPullRequestHeadReadCandidates(repoInfo: RepoInfo, pr: PullRequestLike): PullRequestHeadReadCandidate[] {
+  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
+  const headSha = toStringTrim(pr.head?.sha);
+  const headRef = toStringTrim(pr.head?.ref);
+  const isCrossRepo = !sameRepoInfo(headRepoInfo, repoInfo);
+
+  const out: PullRequestHeadReadCandidate[] = [];
+  const seen = new Set<string>();
+
+  const add = (candidateRepoInfo: RepoInfo, ref: string, source: string): void => {
+    const normalizedRef = toStringTrim(ref);
+    if (!normalizedRef) return;
+
+    const key = `${candidateRepoInfo.owner}/${candidateRepoInfo.repo}:${normalizedRef}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    out.push({
+      repoInfo: candidateRepoInfo,
+      ref: normalizedRef,
+      source,
+    });
+  };
+
+  add(repoInfo, headSha, 'base-repo:head-sha');
+  add(repoInfo, `refs/pull/${pr.number}/head`, 'base-repo:pull-ref-full');
+  add(repoInfo, `pull/${pr.number}/head`, 'base-repo:pull-ref-short');
+
+  if (!isCrossRepo) {
+    add(repoInfo, headRef, 'base-repo:head-ref');
+  }
+
+  add(headRepoInfo, headSha, 'head-repo:head-sha');
+  add(headRepoInfo, headRef, 'head-repo:head-ref');
+
+  return out;
+}
+
+async function readPullRequestHeadFileText(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  path: string
+): Promise<string | null> {
+  const candidates = buildPullRequestHeadReadCandidates(repoInfo, pr);
+  const normalizedPath = normalizeRepoPath(path);
+
+  for (const candidate of candidates) {
+    const raw = await readRepoFileTextAtRef(context, candidate.repoInfo, normalizedPath, candidate.ref);
+    if (raw === null) continue;
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        path: normalizedPath,
+        source: candidate.source,
+        owner: candidate.repoInfo.owner,
+        repo: candidate.repoInfo.repo,
+        ref: candidate.ref,
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      },
+      'pull-request head file resolved'
+    );
+
+    return raw;
+  }
+
+  log(
+    context,
+    'warn',
+    {
+      prNumber: pr.number,
+      path: normalizedPath,
+      baseOwner: repoInfo.owner,
+      baseRepo: repoInfo.repo,
+      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
+      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
+      headRef: toStringTrim(pr.head?.ref),
+      headSha: toStringTrim(pr.head?.sha),
+      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      candidates: candidates.map((candidate) => ({
+        source: candidate.source,
+        owner: candidate.repoInfo.owner,
+        repo: candidate.repoInfo.repo,
+        ref: candidate.ref,
+      })),
+    },
+    'pull-request head file read failed'
+  );
+
+  return null;
+}
+
+async function readPullRequestHeadTreeEntries(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<GitTreeEntryLike[]> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return [];
+
+  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
+  const candidates: PullRequestHeadReadCandidate[] = [
+    {
+      repoInfo,
+      ref: headSha,
+      source: 'base-repo:head-sha',
+    },
+  ];
+
+  if (!sameRepoInfo(headRepoInfo, repoInfo)) {
+    candidates.push({
+      repoInfo: headRepoInfo,
+      ref: headSha,
+      source: 'head-repo:head-sha',
+    });
+  }
+
+  for (const candidate of candidates) {
+    const entries = await readRecursiveGitTreeEntries(context, candidate.repoInfo, candidate.ref);
+    if (!entries.length) continue;
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        source: candidate.source,
+        owner: candidate.repoInfo.owner,
+        repo: candidate.repoInfo.repo,
+        ref: candidate.ref,
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+        entries: entries.length,
+      },
+      'pull-request head tree resolved'
+    );
+
+    return entries;
+  }
+
+  return [];
+}
+
 async function listChangedYamlFilesForPrAgainstCurrentBase(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   baseBranch: string
 ): Promise<string[]> {
-  const headSha = toStringTrim(pr.head?.sha);
   const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-
-  if (!headSha || !baseRef) return [];
+  if (!baseRef) return [];
 
   const baseSha = await readBranchHeadSha(context, repoInfo, baseRef);
   if (!baseSha) return [];
 
   const [baseEntries, headEntries] = await Promise.all([
     readRecursiveGitTreeEntries(context, repoInfo, baseSha),
-    readRecursiveGitTreeEntries(context, repoInfo, headSha),
+    readPullRequestHeadTreeEntries(context, repoInfo, pr),
   ]);
 
   const baseByPath = new Map<string, string>();
@@ -4132,6 +4340,7 @@ async function isPullRequestBehindCurrentBase(
   baseBranch: string
 ): Promise<boolean> {
   const headSha = toStringTrim(pr.head?.sha);
+  const headRef = toStringTrim(pr.head?.ref);
   const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
 
   if (!headSha || !baseRef) return false;
@@ -4139,42 +4348,69 @@ async function isPullRequestBehindCurrentBase(
   const baseHeadSha = await readBranchHeadSha(context, repoInfo, baseRef);
   if (!baseHeadSha || baseHeadSha === headSha) return false;
 
-  try {
-    const res = await (
-      context.octokit.repos as unknown as {
-        compareCommitsWithBasehead: (args: {
-          owner: string;
-          repo: string;
-          basehead: string;
-        }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
-      }
-    ).compareCommitsWithBasehead({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      basehead: `${headSha}...${baseHeadSha}`,
-    });
+  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
+  const candidates: string[] = [`${headSha}...${baseHeadSha}`];
 
-    const status = toStringTrim(res?.data?.status).toLowerCase();
-    const aheadBy = typeof res?.data?.ahead_by === 'number' ? res.data.ahead_by : 0;
-
-    return status === 'ahead' || status === 'diverged' || aheadBy > 0;
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        headSha,
-        baseBranch: baseRef,
-        baseHeadSha,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'pull-request behind-current-base check failed'
-    );
-
-    return isPullRequestBehindBase(pr);
+  if (!sameRepoInfo(headRepoInfo, repoInfo) && headRef) {
+    candidates.push(`${headRepoInfo.owner}:${headRef}...${repoInfo.owner}:${baseRef}`);
   }
+
+  for (const basehead of candidates) {
+    try {
+      const res = await (
+        context.octokit.repos as unknown as {
+          compareCommitsWithBasehead: (args: {
+            owner: string;
+            repo: string;
+            basehead: string;
+          }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
+        }
+      ).compareCommitsWithBasehead({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        basehead,
+      });
+
+      const status = toStringTrim(res?.data?.status).toLowerCase();
+      const aheadBy = typeof res?.data?.ahead_by === 'number' ? res.data.ahead_by : 0;
+
+      log(
+        context,
+        'info',
+        {
+          prNumber: pr.number,
+          basehead,
+          status,
+          aheadBy,
+          headSha,
+          baseHeadSha,
+          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+        },
+        'pull-request behind-current-base compare'
+      );
+
+      if (status === 'ahead' || status === 'diverged' || aheadBy > 0) return true;
+      if (status === 'identical') return false;
+    } catch (error: unknown) {
+      log(
+        context,
+        'warn',
+        {
+          prNumber: pr.number,
+          basehead,
+          headSha,
+          baseBranch: baseRef,
+          baseHeadSha,
+          err: getErrorMessage(error),
+          status: getHttpStatus(error),
+          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+        },
+        'pull-request behind-current-base compare failed'
+      );
+    }
+  }
+
+  return isPullRequestBehindBase(pr);
 }
 
 async function shouldUpdatePullRequestBranch(
@@ -4222,10 +4458,10 @@ async function readRepoFileTextAtRef(
 async function readRegistryDocForApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  filePath: string,
-  ref: string
+  pr: PullRequestLike,
+  filePath: string
 ): Promise<Record<string, unknown> | null> {
-  const raw = await readRepoFileTextAtRef(context, repoInfo, filePath, ref);
+  const raw = await readPullRequestHeadFileText(context, repoInfo, pr, filePath);
   if (!raw) return null;
 
   try {
@@ -4243,8 +4479,27 @@ async function evaluateChangedResourceApproval(
   filePath: string,
   requestAuthorId?: string
 ): Promise<ApprovalDecision> {
-  const parsed = await readRegistryDocForApproval(context, repoInfo, filePath, pr.head.ref);
-  if (!parsed) return { status: 'unknown' };
+  const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+  if (!parsed) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        filePath,
+        baseOwner: repoInfo.owner,
+        baseRepo: repoInfo.repo,
+        headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
+        headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
+        headRef: toStringTrim(pr.head?.ref),
+        headSha: toStringTrim(pr.head?.sha),
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      },
+      'direct-pr:on-approval:registry-doc-read-failed'
+    );
+
+    return { status: 'unknown' };
+  }
 
   const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
   if (!requestType) return { status: 'unknown' };
@@ -4295,7 +4550,10 @@ async function evaluateDirectPrOnApproval(
       headRef: toStringTrim(pr.head?.ref),
       requestAuthorId,
       changedFiles,
-      linkedIssueNumber: parseLinkedIssueNumberFromPr(pr),
+      linkedIssueNumber: parseLinkedIssueNumberFromPr(pr, repoInfo),
+      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
+      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
       hooksSource: context.resourceBotHooksSource,
     },
     'direct-pr:on-approval:start'
@@ -4407,7 +4665,7 @@ async function closeLinkedIssuePrs(
   issueNumber: number
 ): Promise<number[]> {
   const prs = (await listOpenPullRequests(context, repoInfo)).filter(
-    (pr) => parseLinkedIssueNumberFromPr(pr) === issueNumber
+    (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
   );
 
   const closed: number[] = [];
