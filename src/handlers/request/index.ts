@@ -156,6 +156,20 @@ type CheckRunAnnotationLike = {
   raw_details?: string | null;
 };
 
+type GitTreeEntryLike = {
+  path?: string | null;
+  type?: string | null;
+  sha?: string | null;
+};
+
+type GitTreeLike = {
+  tree?: GitTreeEntryLike[];
+};
+
+type DirectPrApprovalOptions = {
+  baseBranch?: string;
+};
+
 type HeadGreenRunSummary = {
   id?: number;
   name: string;
@@ -2016,6 +2030,26 @@ async function addApprovedLabelToPr(
   }
 }
 
+async function ensureAutomatedApprovalReviewForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
+    return true;
+  }
+
+  const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+  if (!approved) return false;
+
+  await addApprovedLabelToPr(context, repoInfo, pr.number);
+  return true;
+}
+
 const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
 
 function buildAutoApprovalReviewMarker(headSha: string): string {
@@ -2125,27 +2159,6 @@ async function hasApprovedReviewOnPr(
   }
 }
 
-async function hasApprovedLabelOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  const eff = resolveEffectiveConstants(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-
-  try {
-    const labels = await fetchIssueLabels(context, {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      issue_number: prNumber,
-    });
-
-    return labelsMatching(labels, approvedLabel).length > 0;
-  } catch {
-    return false;
-  }
-}
-
 async function isPullRequestApprovedForBranchMaintenance(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2155,16 +2168,11 @@ async function isPullRequestApprovedForBranchMaintenance(
     return false;
   }
 
-  // Bot-created request PRs are only created after issue approval.
   if (isSnapshotManagedRequestPr(pr)) return true;
 
   const headSha = toStringTrim(pr.head?.sha);
 
   if (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) {
-    return true;
-  }
-
-  if (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) {
     return true;
   }
 
@@ -2377,6 +2385,12 @@ async function evaluateHeadGreenForApprovalReevaluation(
       blockingRuns: [],
     };
   }
+}
+
+const MERGE_INFLIGHT = new Map<string, Promise<void>>();
+
+function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
 }
 
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
@@ -2654,9 +2668,93 @@ async function tryMergeApprovedPrOrUpdateBranch(
   pr: PullRequestLike,
   reason: string
 ): Promise<void> {
+  const key = mergeInflightKey(repoInfo, pr);
+  const existing = MERGE_INFLIGHT.get(key);
+
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = runMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason).finally(() => {
+    MERGE_INFLIGHT.delete(key);
+  });
+
+  MERGE_INFLIGHT.set(key, pending);
+  await pending;
+}
+
+async function runMergeApprovedPrOrUpdateBranch(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<void> {
+  const originalHeadSha = toStringTrim(pr.head?.sha);
+  const baseBranch = toStringTrim(pr.base?.ref);
+
   let currentPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-merge`);
 
   if (!isPullRequestOpen(currentPr)) return;
+
+  const currentHeadSha = toStringTrim(currentPr.head?.sha);
+
+  if (originalHeadSha && currentHeadSha && originalHeadSha !== currentHeadSha) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: currentPr.number,
+        originalHeadSha,
+        currentHeadSha,
+        reason,
+      },
+      'pull-request head changed before merge, waiting for new CI'
+    );
+
+    return;
+  }
+
+  if (currentHeadSha) {
+    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, currentHeadSha);
+
+    if (!greenResult.green) {
+      log(
+        context,
+        'info',
+        {
+          prNumber: currentPr.number,
+          headSha: currentHeadSha,
+          greenReason: greenResult.reason,
+          blockingRuns: greenResult.blockingRuns,
+          reason,
+        },
+        'pull-request merge skipped: current head checks are not green'
+      );
+
+      return;
+    }
+  }
+
+  const hasMergeApproval =
+    isSnapshotManagedRequestPr(currentPr) ||
+    (currentHeadSha && (await hasAutoApprovalReviewForHead(context, repoInfo, currentPr.number, currentHeadSha))) ||
+    (await hasApprovedReviewOnPr(context, repoInfo, currentPr.number));
+
+  if (!hasMergeApproval) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: currentPr.number,
+        headSha: currentHeadSha,
+        reason,
+      },
+      'pull-request merge skipped: no current approving review'
+    );
+
+    return;
+  }
 
   if (isPullRequestDirty(currentPr)) {
     log(
@@ -2671,7 +2769,7 @@ async function tryMergeApprovedPrOrUpdateBranch(
     return;
   }
 
-  if (isPullRequestBehindBase(currentPr)) {
+  if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
     await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-before-merge`);
     return;
   }
@@ -2697,8 +2795,6 @@ async function tryMergeApprovedPrOrUpdateBranch(
 
       const afterHeadSha = toStringTrim(afterMergeAttempt.head?.sha);
 
-      // updateBranch or another actor changed the PR head.
-      // Do not immediately merge; wait for new CI.
       if (beforeHeadSha && afterHeadSha && beforeHeadSha !== afterHeadSha) {
         log(
           context,
@@ -2719,7 +2815,26 @@ async function tryMergeApprovedPrOrUpdateBranch(
       }
 
       if (merged === false) {
-        await requestPullRequestBranchUpdate(context, repoInfo, afterMergeAttempt, `${reason}:merge-returned-false`);
+        const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, afterMergeAttempt, baseBranch);
+
+        if (mustUpdate) {
+          await requestPullRequestBranchUpdate(context, repoInfo, afterMergeAttempt, `${reason}:merge-returned-false`);
+          return;
+        }
+
+        log(
+          context,
+          'info',
+          {
+            prNumber: afterMergeAttempt.number,
+            headSha: toStringTrim(afterMergeAttempt.head?.sha),
+            mergeable: afterMergeAttempt.mergeable,
+            mergeableState: readMergeableState(afterMergeAttempt),
+            reason,
+          },
+          'pull-request merge returned false, branch update not requested'
+        );
+
         return;
       }
 
@@ -2745,12 +2860,11 @@ async function tryMergeApprovedPrOrUpdateBranch(
         return;
       }
 
-      if (isPullRequestBehindBase(currentPr)) {
+      if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
         await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-after-merge-attempt`);
         return;
       }
 
-      // GitHub was still calculating mergeability. Retry once.
       if (attempt < 2 && isMergeabilityPending(currentPr)) {
         continue;
       }
@@ -2770,7 +2884,28 @@ async function tryMergeApprovedPrOrUpdateBranch(
       return;
     } catch (error: unknown) {
       if (shouldTryBranchUpdateAfterMergeFailure(error)) {
-        await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:merge-failed-outdated`);
+        const freshPr = (await readFreshPullRequest(context, repoInfo, currentPr.number)) || currentPr;
+        const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
+
+        if (mustUpdate) {
+          await requestPullRequestBranchUpdate(context, repoInfo, freshPr, `${reason}:merge-failed-outdated`);
+        } else {
+          log(
+            context,
+            'info',
+            {
+              prNumber: freshPr.number,
+              headSha: toStringTrim(freshPr.head?.sha),
+              mergeable: freshPr.mergeable,
+              mergeableState: readMergeableState(freshPr),
+              err: getErrorMessage(error),
+              status: getHttpStatus(error),
+              reason,
+            },
+            'pull-request merge failed, branch update not requested'
+          );
+        }
+
         return;
       }
 
@@ -3075,7 +3210,7 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
     }
 
     try {
-      const changedRegistryFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+      const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
 
       if (!changedRegistryFiles.length) {
         skipped += 1;
@@ -3083,40 +3218,6 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
           context,
           'info',
           { ...baseLog, changedRegistryFiles, skipReason: 'no-registry-yaml-files-changed' },
-          'direct-pr-reeval:skip'
-        );
-        continue;
-      }
-
-      const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-
-      log(
-        context,
-        'info',
-        {
-          ...baseLog,
-          changedRegistryFiles,
-          green: greenResult.green,
-          greenReason: greenResult.reason,
-          statusState: greenResult.statusState,
-          blockingRuns: greenResult.blockingRuns,
-          latestRuns: greenResult.latestRuns.slice(0, 30),
-        },
-        'direct-pr-reeval:head-green'
-      );
-
-      if (!greenResult.green) {
-        skipped += 1;
-        log(
-          context,
-          'info',
-          {
-            ...baseLog,
-            changedRegistryFiles,
-            skipReason: 'pr-head-checks-not-green',
-            greenReason: greenResult.reason,
-            blockingRuns: greenResult.blockingRuns,
-          },
           'direct-pr-reeval:skip'
         );
         continue;
@@ -3136,14 +3237,85 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
         'direct-pr-reeval:candidate'
       );
 
-      if (hasCurrentHeadAutoApproval) {
+      const approvalOutcome = hasCurrentHeadAutoApproval
+        ? 'approved'
+        : await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr, { baseBranch });
+
+      if (approvalOutcome === 'rejected') {
         processed += 1;
-        await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason);
+        continue;
+      }
+
+      if (approvalOutcome !== 'approved') {
+        skipped += 1;
+        log(
+          context,
+          'info',
+          {
+            ...baseLog,
+            changedRegistryFiles,
+            skipReason: 'on-approval-did-not-approve',
+          },
+          'direct-pr-reeval:skip'
+        );
+        continue;
+      }
+
+      const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+      const freshHeadSha = toStringTrim(freshPr.head?.sha);
+      const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
+
+      if (mustUpdate) {
+        processed += 1;
+        await requestPullRequestBranchUpdate(context, repoInfo, freshPr, `${reason}:approved-direct-pr-behind`);
+        continue;
+      }
+
+      const greenResult = freshHeadSha
+        ? await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, freshHeadSha)
+        : {
+            green: false,
+            reason: 'missing-head-sha',
+            latestRuns: [],
+            blockingRuns: [],
+          };
+
+      log(
+        context,
+        'info',
+        {
+          ...baseLog,
+          freshHeadSha,
+          changedRegistryFiles,
+          green: greenResult.green,
+          greenReason: greenResult.reason,
+          statusState: greenResult.statusState,
+          blockingRuns: greenResult.blockingRuns,
+          latestRuns: greenResult.latestRuns.slice(0, 30),
+        },
+        'direct-pr-reeval:head-green'
+      );
+
+      if (!greenResult.green) {
+        skipped += 1;
+        log(
+          context,
+          'info',
+          {
+            ...baseLog,
+            freshHeadSha,
+            changedRegistryFiles,
+            skipReason: 'approved-direct-pr-head-checks-not-green',
+            greenReason: greenResult.reason,
+            blockingRuns: greenResult.blockingRuns,
+          },
+          'direct-pr-reeval:skip'
+        );
         continue;
       }
 
       processed += 1;
-      await processPullRequestForAutoMerge(context, repoInfo, pr);
+      await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, freshPr, reason);
     } catch (e: unknown) {
       failed += 1;
       log(
@@ -3241,7 +3413,7 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
     }
 
     try {
-      const changedRegistryFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+      const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
 
       if (!changedRegistryFiles.length) {
         if (DBG) {
@@ -3281,20 +3453,20 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
         continue;
       }
 
-      if (!isPullRequestBehindBase(freshPr)) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            {
-              prNumber: freshPr.number,
-              mergeable: freshPr.mergeable,
-              mergeableState: readMergeableState(freshPr),
-              reason,
-            },
-            'skip branch update: PR is not behind base'
-          );
-        }
+      const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
+
+      if (!mustUpdate) {
+        log(
+          context,
+          'info',
+          {
+            prNumber: freshPr.number,
+            mergeable: freshPr.mergeable,
+            mergeableState: readMergeableState(freshPr),
+            reason,
+          },
+          'skip branch update: PR is not behind current base'
+        );
         continue;
       }
 
@@ -3548,6 +3720,237 @@ async function listChangedYamlFilesForPr(
   return Array.from(new Set(out));
 }
 
+async function readBranchHeadSha(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  branchName: string
+): Promise<string> {
+  const branch = toStringTrim(branchName);
+  if (!branch) return '';
+
+  try {
+    const res = await context.octokit.repos.getBranch({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      branch,
+    });
+
+    return toStringTrim((res as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha);
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        branch,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'branch-head-sha:read-failed'
+    );
+
+    return '';
+  }
+}
+
+async function readRecursiveGitTreeEntries(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  ref: string
+): Promise<GitTreeEntryLike[]> {
+  const treeSha = toStringTrim(ref);
+  if (!treeSha) return [];
+
+  try {
+    const res = await (
+      context.octokit.git as unknown as {
+        getTree: (args: {
+          owner: string;
+          repo: string;
+          tree_sha: string;
+          recursive?: 'true';
+        }) => Promise<{ data?: GitTreeLike }>;
+      }
+    ).getTree({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      tree_sha: treeSha,
+      recursive: 'true',
+    });
+
+    return Array.isArray(res?.data?.tree) ? res.data.tree : [];
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        ref: treeSha,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'git-tree:read-failed'
+    );
+
+    return [];
+  }
+}
+
+function registryYamlTreeEntryPath(context: BotContext<RequestEvents>, entry: GitTreeEntryLike): string {
+  const path = normalizeRepoPath(entry?.path);
+  const type = toStringTrim(entry?.type).toLowerCase();
+
+  if (type !== 'blob') return '';
+  if (!path || !isYamlPath(path)) return '';
+  if (!isRegistryEntryPath(context, path)) return '';
+
+  return path;
+}
+
+async function listChangedYamlFilesForPrAgainstCurrentBase(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string
+): Promise<string[]> {
+  const headSha = toStringTrim(pr.head?.sha);
+  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+
+  if (!headSha || !baseRef) return [];
+
+  const baseSha = await readBranchHeadSha(context, repoInfo, baseRef);
+  if (!baseSha) return [];
+
+  const [baseEntries, headEntries] = await Promise.all([
+    readRecursiveGitTreeEntries(context, repoInfo, baseSha),
+    readRecursiveGitTreeEntries(context, repoInfo, headSha),
+  ]);
+
+  const baseByPath = new Map<string, string>();
+
+  for (const entry of baseEntries) {
+    const path = registryYamlTreeEntryPath(context, entry);
+    if (!path) continue;
+
+    const sha = toStringTrim(entry.sha);
+    if (sha) baseByPath.set(path, sha);
+  }
+
+  const changed: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of headEntries) {
+    const path = registryYamlTreeEntryPath(context, entry);
+    if (!path || seen.has(path)) continue;
+
+    const headEntrySha = toStringTrim(entry.sha);
+    const baseEntrySha = baseByPath.get(path) || '';
+
+    if (!headEntrySha) continue;
+    if (baseEntrySha && baseEntrySha === headEntrySha) continue;
+
+    seen.add(path);
+    changed.push(path);
+  }
+
+  return changed;
+}
+
+async function listChangedYamlFilesForPrWithFallback(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch?: string
+): Promise<string[]> {
+  const fromPullFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+  if (fromPullFiles.length) return fromPullFiles;
+
+  const fallbackBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+  if (!fallbackBaseBranch) return [];
+
+  const fromTreeDiff = await listChangedYamlFilesForPrAgainstCurrentBase(context, repoInfo, pr, fallbackBaseBranch);
+
+  if (fromTreeDiff.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        baseBranch: fallbackBaseBranch,
+        changedRegistryFiles: fromTreeDiff,
+      },
+      'changed-registry-files:fallback-tree-diff'
+    );
+  }
+
+  return fromTreeDiff;
+}
+
+async function isPullRequestBehindCurrentBase(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+
+  if (!headSha || !baseRef) return false;
+
+  const baseHeadSha = await readBranchHeadSha(context, repoInfo, baseRef);
+  if (!baseHeadSha || baseHeadSha === headSha) return false;
+
+  try {
+    const res = await (
+      context.octokit.repos as unknown as {
+        compareCommitsWithBasehead: (args: {
+          owner: string;
+          repo: string;
+          basehead: string;
+        }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
+      }
+    ).compareCommitsWithBasehead({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      basehead: `${headSha}...${baseHeadSha}`,
+    });
+
+    const status = toStringTrim(res?.data?.status).toLowerCase();
+    const aheadBy = typeof res?.data?.ahead_by === 'number' ? res.data.ahead_by : 0;
+
+    return status === 'ahead' || status === 'diverged' || aheadBy > 0;
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        headSha,
+        baseBranch: baseRef,
+        baseHeadSha,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'pull-request behind-current-base check failed'
+    );
+
+    return isPullRequestBehindBase(pr);
+  }
+}
+
+async function shouldUpdatePullRequestBranch(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string
+): Promise<boolean> {
+  if (isPullRequestBehindBase(pr)) return true;
+  return await isPullRequestBehindCurrentBase(context, repoInfo, pr, baseBranch);
+}
+
 async function readRepoFileTextAtRef(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3636,9 +4039,10 @@ async function evaluateDirectPrOnApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
-  requestAuthorIdOverride?: string
+  requestAuthorIdOverride?: string,
+  options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalDecision> {
-  const changedFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
 
   const fallbackRequestAuthorId = requestAuthorIdOverride
     ? ''
@@ -3661,7 +4065,20 @@ async function evaluateDirectPrOnApproval(
     'direct-pr:on-approval:start'
   );
 
-  if (!changedFiles.length) return {};
+  if (!changedFiles.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        headRef: toStringTrim(pr.head?.ref),
+      },
+      'direct-pr:on-approval:skip-no-registry-files'
+    );
+
+    return {};
+  }
 
   let sawApproved = false;
   let sawUnknown = false;
@@ -3711,24 +4128,14 @@ async function evaluateDirectPrOnApproval(
 async function maybeHandleStandaloneDirectPrApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  pr: PullRequestLike
+  pr: PullRequestLike,
+  options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalHandlingResult> {
-  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr);
+  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
 
   if (decision.status === 'approved') {
-    const headSha = toStringTrim(pr.head?.sha);
-
-    const alreadyApproved =
-      (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) ||
-      (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
-      (await hasApprovedReviewOnPr(context, repoInfo, pr.number));
-
-    if (!alreadyApproved) {
-      const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-      if (!approved) return 'continue';
-
-      await addApprovedLabelToPr(context, repoInfo, pr.number);
-    }
+    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
+    if (!approved) return 'continue';
 
     return 'approved';
   }
@@ -3969,19 +4376,8 @@ async function maybeHandleDirectPrApprovalForMerge(
   );
 
   if (decision.status === 'approved') {
-    const headSha = toStringTrim(pr.head?.sha);
-
-    const alreadyApproved =
-      (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) ||
-      (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
-      (await hasApprovedReviewOnPr(context, repoInfo, pr.number));
-
-    if (!alreadyApproved) {
-      const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-      if (!approved) return 'continue';
-
-      await addApprovedLabelToPr(context, repoInfo, pr.number);
-    }
+    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
+    if (!approved) return 'continue';
 
     await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
     return 'approved';
