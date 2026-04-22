@@ -5,8 +5,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, jest, test } from '@
 const PREV_DEBUG_NS = process.env.DEBUG_NS;
 process.env.DEBUG_NS = '1';
 
+let currentTestNow = Date.parse('2026-04-22T09:00:00.000Z');
+const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => currentTestNow);
+
 afterAll(() => {
   process.env.DEBUG_NS = PREV_DEBUG_NS;
+  dateNowSpy.mockRestore();
 });
 
 type IssueParams = { owner: string; repo: string; issue_number: number };
@@ -332,7 +336,9 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  currentTestNow += 7 * 60 * 60 * 1000;
   jest.resetAllMocks();
+  dateNowSpy.mockImplementation(() => currentTestNow);
 
   setStateLabel.mockImplementation(async () => {});
   ensureAssigneesOnce.mockImplementation(async () => {});
@@ -4450,7 +4456,7 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
   setTimeoutSpy.mockRestore();
 });
 
-test('push: direct PR reevaluation skips merge when approved head checks are not green', async () => {
+test('push: direct PR reevaluation does not run approval when approved head checks are not green', async () => {
   const cfg = {
     requests: {
       product: { folderName: 'resources' },
@@ -4529,8 +4535,8 @@ test('push: direct PR reevaluation skips merge when approved head checks are not
 
   await handler(ctx);
 
-  expect(runApprovalHook).toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).toHaveBeenCalled();
+  expect(runApprovalHook).not.toHaveBeenCalled();
+  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
