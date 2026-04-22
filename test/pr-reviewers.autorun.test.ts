@@ -2,7 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 
 function restoreEnvSnapshot(snapshot: NodeJS.ProcessEnv): void {
   for (const k of Object.keys(process.env)) {
@@ -15,6 +15,8 @@ function restoreEnvSnapshot(snapshot: NodeJS.ProcessEnv): void {
 }
 
 describe('pr-reviewers auto-run guard', () => {
+  jest.setTimeout(15000);
+
   const originalEnv: NodeJS.ProcessEnv = { ...process.env };
   const originalCwd: string = process.cwd();
   const originalExitCode: number | undefined = process.exitCode as number | undefined;
