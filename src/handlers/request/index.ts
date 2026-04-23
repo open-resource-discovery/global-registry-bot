@@ -1612,49 +1612,6 @@ async function ensureAssigneesPresent(
   }
 }
 
-async function resolveAdditionalIssueApproversFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType: string
-): Promise<string[]> {
-  try {
-    const resourceName = extractResourceNameFromForm(parsedFormData, template);
-    const namespace = toStringTrim((parsedFormData as Record<string, unknown>)['namespace']) || resourceName;
-
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType,
-          namespace,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-        }
-      )
-    );
-
-    if (decision.status !== 'unknown') return [];
-    return uniqLogins(decision.approvers || []);
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        err: e instanceof Error ? e.message : String(e),
-        issueNumber: issue.number,
-      },
-      'failed to resolve additional issue approvers from onApproval hook'
-    );
-
-    return [];
-  }
-}
-
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1907,14 +1864,16 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
 function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
   if (decision === true) return { status: 'approved' };
   if (decision === false) return {};
+  if (!decision) return {};
 
-  const normalized = decision || {};
-  const approvers = uniqLogins(
-    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
-  );
+  const rawApprovers = Array.isArray((decision as { approvers?: unknown }).approvers)
+    ? ((decision as { approvers?: unknown[] }).approvers ?? [])
+    : [];
+
+  const approvers = uniqLogins(rawApprovers.map((value) => normalizeLogin(value)).filter(Boolean));
 
   return {
-    ...normalized,
+    ...decision,
     ...(approvers.length ? { approvers } : {}),
   };
 }
@@ -5128,8 +5087,9 @@ async function evaluateDirectPrOnApproval(
   }
 
   let sawApproved = false;
-  let sawUnknown = false;
+  let sawNonApproved = false;
   let approvedComment = '';
+  let firstUnknownDecision: ApprovalDecision | null = null;
 
   for (const filePath of changedFiles) {
     const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
@@ -5159,17 +5119,100 @@ async function evaluateDirectPrOnApproval(
       continue;
     }
 
-    sawUnknown = true;
+    sawNonApproved = true;
+    if (decision.status === 'unknown' && !firstUnknownDecision) {
+      firstUnknownDecision = decision;
+    }
   }
 
-  if (sawApproved && !sawUnknown) {
+  if (sawApproved && !sawNonApproved) {
     return {
       status: 'approved',
       ...(approvedComment ? { comment: approvedComment } : {}),
     };
   }
 
+  if (firstUnknownDecision) {
+    return firstUnknownDecision;
+  }
+
   return {};
+}
+
+async function resolveDirectPrRequestTypes(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  options: DirectPrApprovalOptions = {}
+): Promise<string[]> {
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
+  const requestTypes: string[] = [];
+
+  for (const filePath of changedFiles) {
+    const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+    if (!parsed) continue;
+
+    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
+    if (!requestType) continue;
+
+    requestTypes.push(requestType);
+  }
+
+  return Array.from(new Set(requestTypes));
+}
+
+async function handleDirectPrApprovalComment(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  commenter: string
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  const configuredApprovers = uniqLogins(
+    requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  if (approvalDecision.status === 'rejected') {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildApprovalRejectedBody(approvalDecision),
+      { minimizeTag: 'nsreq:on-approval:rejected' }
+    );
+    return;
+  }
+
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+  const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
+  if (!okApprover) {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+    return;
+  }
+
+  const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, {
+    status: 'approved',
+    comment: `Approved by @${commenter}`,
+  });
+
+  if (!approved) return;
+
+  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'direct-pr-manual-approval');
 }
 
 async function maybeHandleStandaloneDirectPrApproval(
@@ -5911,6 +5954,41 @@ async function processIssueEvent(
     requestType: effectiveRequestType,
     extraApprovers: hookApprovers,
   });
+}
+
+async function resolveAdditionalIssueApproversFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType?: string
+): Promise<string[]> {
+  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
+  const resourceName = extractResourceNameFromForm(parsedFormData, template);
+
+  if (!effectiveRequestType) return [];
+
+  try {
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType: effectiveRequestType,
+          namespace: resourceName,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+          requestAuthorId: normalizeLogin(issue.user?.login),
+        }
+      )
+    );
+
+    return uniqLogins((decision.approvers || []).filter(Boolean));
+  } catch {
+    return [];
+  }
 }
 
 async function handleApprovalComment(
@@ -7312,9 +7390,6 @@ export default function requestHandler(app: Probot): void {
       await getStaticConfig(context);
 
       const issue = context.payload.issue as unknown as IssueLike;
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) return;
-      }
       const comment = context.payload.comment as unknown as CommentLike;
       const sender = context.payload.sender as unknown as SenderLike;
 
@@ -7338,6 +7413,23 @@ export default function requestHandler(app: Probot): void {
 
       const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
       const params: IssueParams = { owner, repo, issue_number: issueNumber };
+      const repoInfo: RepoInfo = { owner, repo };
+
+      const stripped = stripQuoteAndCode(comment.body || '');
+      const isApproval = isApprovalComment(context, stripped);
+
+      if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
+        const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
+
+        if (isPullRequestConversation && isApproval) {
+          const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
+          if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
+            await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
+          }
+        }
+
+        return;
+      }
 
       let template: TemplateLike;
       try {
@@ -7365,8 +7457,6 @@ export default function requestHandler(app: Probot): void {
         return;
       }
 
-      const stripped = stripQuoteAndCode(comment.body || '');
-      const isApproval = isApprovalComment(context, stripped);
       if (isApproval) {
         const handled = await handleParentOwnerApprovalIfNeeded(
           context,
