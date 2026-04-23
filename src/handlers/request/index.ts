@@ -3663,7 +3663,6 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       const requested = await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
 
       if (requested) {
-        markSequentialRegistryPrActive(context, repoInfo, freshPr, reason);
         return true;
       }
 
@@ -4490,6 +4489,26 @@ async function isSequentialRegistryPrActiveBlocking(
         reason: active.reason,
       },
       'sequential-registry-pr:active-cleared-closed'
+    );
+
+    clearSequentialRegistryPrActive(repoInfo);
+    return false;
+  }
+
+  const baseBranch = toStringTrim(freshPr.base?.ref);
+  const isDirectRegistryPr = await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch);
+
+  if (!isDirectRegistryPr) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: active.prNumber,
+        startedHeadSha: active.startedHeadSha,
+        currentHeadSha: toStringTrim(freshPr.head?.sha),
+        reason: active.reason,
+      },
+      'sequential-registry-pr:active-cleared-non-direct'
     );
 
     clearSequentialRegistryPrActive(repoInfo);
@@ -6466,9 +6485,19 @@ ${mentions}`,
     minimizeTag: `${tagBase}:approved`,
   });
 
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt
+  );
+
   await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
     snapshotHash,
     requestType: effRt,
+    extraApprovers: hookApprovers,
   });
 
   return true;
