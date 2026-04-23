@@ -3050,11 +3050,7 @@ async function runMergeApprovedPrOrUpdateBranch(
     return;
   }
 
-  const hasCurrentHeadAutoApproval = currentHeadSha
-    ? await hasAutoApprovalReviewForHead(context, repoInfo, currentPr.number, currentHeadSha)
-    : false;
-
-  const hasMergeApproval = isSnapshotManagedRequestPr(currentPr) || hasCurrentHeadAutoApproval;
+  const hasMergeApproval = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr);
 
   if (!hasMergeApproval) {
     log(
@@ -3065,7 +3061,7 @@ async function runMergeApprovedPrOrUpdateBranch(
         headSha: currentHeadSha,
         reason,
       },
-      'pull-request merge skipped: no current automation approval'
+      'pull-request merge skipped: no qualifying approval'
     );
 
     return;
@@ -3457,12 +3453,18 @@ async function processPullRequestForAutoMerge(
   }
 
   const body = toStringTrim(pr.body);
-  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
+  const currentHash =
+    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
   const prHash = extractHashFromPrBody(body);
 
   if (prHash) {
-    if (prHash !== currentHash) {
-      await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+    if (!snapshotHashes.includes(prHash)) {
+      await closeOutdatedRequestPrs(context, params, template, {
+        parsedFormData,
+        currentHash,
+        acceptedHashes: snapshotHashes,
+      });
       return;
     }
 
@@ -4430,11 +4432,12 @@ function markSequentialRegistryPrActive(
   const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return;
 
+  const startedAt = Date.now();
   const active: SequentialRegistryPrActive = {
     prNumber: pr.number,
     startedHeadSha: headSha,
-    startedAt: Date.now(),
-    expiresAt: Date.now() + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
+    startedAt,
+    expiresAt: startedAt + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
     reason,
   };
 
@@ -4446,8 +4449,8 @@ function markSequentialRegistryPrActive(
     {
       prNumber: pr.number,
       headSha,
+      expiresAt: active.expiresAt,
       reason,
-      expiresAt: new Date(active.expiresAt).toISOString(),
     },
     'sequential-registry-pr:active-set'
   );
@@ -4776,12 +4779,14 @@ async function runOneSequentialDirectRegistryPrMaintenance(
 
     const candidates = await collectSequentialDirectRegistryPrCandidates(context, repoInfo, baseBranch, reason);
 
-    for (const candidate of candidates.filter((item) => item.mustUpdate && item.approvedForUpdate)) {
+    for (const candidate of candidates.filter((item) => item.mustUpdate)) {
       const requested = await requestPullRequestBranchUpdate(
         context,
         repoInfo,
         candidate.freshPr,
-        `${reason}:sequential-direct-pr-update-before-approval`
+        candidate.approvedForUpdate
+          ? `${reason}:sequential-direct-pr-update-approved`
+          : `${reason}:sequential-direct-pr-refresh-stale`
       );
 
       log(
@@ -4920,16 +4925,15 @@ async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
   const headSha = toStringTrim(freshPr.head?.sha);
   if (!headSha) return;
 
-  const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(context, repoInfo, freshPr.number, headSha);
-
-  if (hasCurrentHeadAutoApproval || isSnapshotManagedRequestPr(freshPr)) {
+  const approvedForMaintenance = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr);
+  if (approvedForMaintenance) {
     return;
   }
 
   const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
   if (!greenResult.green) return;
 
-  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-auto-approve');
+  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-qualify-for-approval');
   clearSequentialRegistryPrActive(repoInfo);
 
   await runOneSequentialDirectRegistryPrMaintenance(
@@ -5762,12 +5766,18 @@ async function processIssueEvent(
   // If the issue was previously closed as rejected and later reopened, clear that terminal status.
   await removeRejectedStatusLabel(context, params, toLabelNames(issue.labels));
 
-  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
+  const currentHash =
+    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
 
   await normalizeIssueTitle(context, params, issue, template, parsedFormData);
 
   try {
-    await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+    await closeOutdatedRequestPrs(context, params, template, {
+      parsedFormData,
+      currentHash,
+      acceptedHashes: snapshotHashes,
+    });
   } catch (e: unknown) {
     (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'closeOutdatedRequestPRs skipped');
   }
@@ -6571,6 +6581,23 @@ function readIssueBodyForProcessing(issueBody: unknown): string {
   return toStringTrim(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody)));
 }
 
+function buildCompatibleRequestSnapshotHashes(
+  issueBody: unknown,
+  parsedFormData: FormData,
+  template: TemplateLike
+): string[] {
+  const processedBody = readIssueBodyForProcessing(issueBody);
+  const rawBody = String(issueBody || '');
+
+  return Array.from(
+    new Set(
+      [calcSnapshotHash(parsedFormData, template, processedBody), calcSnapshotHash(parsedFormData, template, rawBody)]
+        .map((value) => toStringTrim(value))
+        .filter(Boolean)
+    )
+  );
+}
+
 async function detectRoutingLabels(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -6720,37 +6747,59 @@ async function closeOutdatedRequestPrs(
   context: BotContext<RequestEvents>,
   { owner, repo, issue_number }: IssueParams,
   template: TemplateLike,
-  options: { parsedFormData?: FormData; currentHash?: string } = {}
+  options: { parsedFormData?: FormData; currentHash?: string; acceptedHashes?: string[] } = {}
 ): Promise<void> {
   const ensureFormAndHash = async (): Promise<{
     parsedFormData: FormData;
     currentHash: string;
+    acceptedHashes: string[];
   }> => {
-    const { parsedFormData: givenForm, currentHash: givenHash } = options;
-    if (givenForm && givenHash) return { parsedFormData: givenForm, currentHash: givenHash };
+    const { parsedFormData: givenForm, currentHash: givenHash, acceptedHashes: givenAcceptedHashes } = options;
+
+    if (givenForm && givenHash) {
+      const acceptedHashes = Array.from(
+        new Set((givenAcceptedHashes || [givenHash]).map((value) => toStringTrim(value)).filter(Boolean))
+      );
+
+      return {
+        parsedFormData: givenForm,
+        currentHash: givenHash,
+        acceptedHashes: acceptedHashes.length ? acceptedHashes : [givenHash],
+      };
+    }
 
     const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
     const issue = data as unknown as IssueLike;
     const bodyStr = readIssueBodyForProcessing(issue.body);
     const form = parseForm(bodyStr, template);
-    const hash = calcSnapshotHash(form, template, readIssueBodyForProcessing(issue.body));
-    return { parsedFormData: form, currentHash: hash };
+    const acceptedHashes = buildCompatibleRequestSnapshotHashes(issue.body, form, template);
+    const currentHash = acceptedHashes[0] || calcSnapshotHash(form, template, bodyStr);
+
+    return {
+      parsedFormData: form,
+      currentHash,
+      acceptedHashes,
+    };
   };
 
   const closePr = async (prNum: number, ref: string): Promise<void> => {
     try {
       await context.octokit.pulls.update({ owner, repo, pull_number: prNum, state: 'closed' });
     } catch {
-      // ignore
+      /* empty */
     }
     try {
       await context.octokit.git.deleteRef({ owner, repo, ref: `heads/${ref}` });
     } catch {
-      // ignore
+      /* empty */
     }
   };
 
-  const { currentHash } = await ensureFormAndHash();
+  const { currentHash, acceptedHashes } = await ensureFormAndHash();
+  const acceptedHashSet = new Set((acceptedHashes || []).map((value) => toStringTrim(value)).filter(Boolean));
+
+  if (currentHash) acceptedHashSet.add(currentHash);
+
   const prs = await findOpenIssuePrs(context, { owner, repo }, issue_number);
   if (!prs.length) return;
 
@@ -6761,9 +6810,8 @@ async function closeOutdatedRequestPrs(
   for (const pr of prs) {
     const prHash = extractHashFromPrBody(toStringTrim(pr.body));
 
-    // Direct/manual PRs without request snapshot hash must not be treated as outdated
     if (!prHash) continue;
-    if (prHash === currentHash) continue;
+    if (acceptedHashSet.has(prHash)) continue;
 
     await closePr(pr.number, pr.head.ref);
     closed.push(pr.number);
@@ -6783,7 +6831,7 @@ async function closeOutdatedRequestPrs(
   try {
     await context.octokit.issues.removeLabel({ owner, repo, issue_number, name: onApproved });
   } catch {
-    // ignore
+    /* empty */
   }
 }
 
