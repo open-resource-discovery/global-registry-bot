@@ -1919,6 +1919,36 @@ function normalizeApprovalDecision(decision: ApprovalDecision | boolean): Approv
   };
 }
 
+function isApprovalDecisionAuthorizedByHookApprovers(
+  decision: ApprovalDecision,
+  requesterId: string | undefined | null
+): boolean {
+  const requester = normalizeLogin(requesterId).toLowerCase();
+  if (!requester) return false;
+
+  const approvers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
+  return approvers.some((approver) => normalizeLogin(approver).toLowerCase() === requester);
+}
+
+function promoteUnknownApprovalDecisionForDirectPrRequester(
+  decision: ApprovalDecision,
+  requesterId: string | undefined | null
+): ApprovalDecision {
+  const normalized = normalizeApprovalDecision(decision);
+
+  if (normalized.status !== 'unknown') return normalized;
+  if (!isApprovalDecisionAuthorizedByHookApprovers(normalized, requesterId)) return normalized;
+
+  return {
+    ...normalized,
+    status: 'approved',
+    comment:
+      toStringTrim(normalized.comment) ||
+      toStringTrim(normalized.message) ||
+      `Approved automatically because the PR requester is an allowed hook approver.`,
+  };
+}
+
 function buildApprovalUnknownBody(decision: ApprovalDecision): string {
   const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
   const leadBlock = lead ? `${lead}\n\n` : '';
@@ -5028,7 +5058,7 @@ async function evaluateChangedResourceApproval(
   const resourceName = resolveRegistryDocResourceName(parsed);
   if (!resourceName) return { status: 'unknown' };
 
-  return normalizeApprovalDecision(
+  const decision = normalizeApprovalDecision(
     await runApprovalHook(context, repoInfo, {
       requestType,
       namespace: resourceName,
@@ -5045,6 +5075,8 @@ async function evaluateChangedResourceApproval(
       },
     })
   );
+
+  return promoteUnknownApprovalDecisionForDirectPrRequester(decision, requestAuthorId);
 }
 
 async function evaluateDirectPrOnApproval(
