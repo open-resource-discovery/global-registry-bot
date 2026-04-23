@@ -139,6 +139,7 @@ export type ApprovalHookDecision = Readonly<{
   reason?: string;
   comment?: string;
   message?: string;
+  approvers?: readonly string[];
   error?: readonly {
     field?: string;
     message?: string;
@@ -158,6 +159,7 @@ type ApprovalHookResult =
       reason?: unknown;
       comment?: unknown;
       message?: unknown;
+      approvers?: unknown;
       error?: unknown;
       errors?: unknown;
       approved?: unknown;
@@ -488,6 +490,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
   const reason = toStringSafe(value['reason']);
   const comment = toStringSafe(value['comment']);
   const message = toStringSafe(value['message']);
+  const approvers = toLoginArray(value['approvers']);
   const errors = normalizeApprovalHookErrors(value['errors'] ?? value['error']);
 
   if (status === 'approved' || status === 'rejected' || status === 'unknown') {
@@ -497,6 +500,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
       ...(reason ? { reason } : {}),
       ...(comment ? { comment } : {}),
       ...(message ? { message } : {}),
+      ...(approvers.length ? { approvers } : {}),
       ...(errors.length ? { errors } : {}),
     };
   }

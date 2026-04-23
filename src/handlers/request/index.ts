@@ -1443,6 +1443,7 @@ type ApprovalDecision = {
   reason?: string;
   comment?: string;
   message?: string;
+  approvers?: string[];
   errors?: {
     field?: string;
     message?: string;
@@ -1801,6 +1802,49 @@ function isAuthorizedApprover(
   return Boolean(commenterLc && commenterLc !== issueAuthorLc);
 }
 
+async function resolveAdditionalIssueApproversFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType: string
+): Promise<string[]> {
+  try {
+    const resourceName = extractResourceNameFromForm(parsedFormData, template);
+    const namespace = toStringTrim((parsedFormData as Record<string, unknown>)['namespace']) || resourceName;
+
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType,
+          namespace,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+        }
+      )
+    );
+
+    if (decision.status !== 'unknown') return [];
+    return uniqLogins(decision.approvers || []);
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        err: e instanceof Error ? e.message : String(e),
+        issueNumber: issue.number,
+      },
+      'failed to resolve additional issue approvers from onApproval hook'
+    );
+
+    return [];
+  }
+}
+
 function buildApprovalDecisionJson(decision: ApprovalDecision): string {
   const payload: Record<string, unknown> = {};
   if (decision.status) payload.status = decision.status;
@@ -1808,6 +1852,7 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
   if (decision.reason) payload.reason = decision.reason;
   if (decision.comment) payload.comment = decision.comment;
   if (decision.message) payload.message = decision.message;
+  if (Array.isArray(decision.approvers) && decision.approvers.length) payload.approvers = decision.approvers;
   if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
   return JSON.stringify(payload, null, 2);
 }
@@ -1815,7 +1860,16 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
 function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
   if (decision === true) return { status: 'approved' };
   if (decision === false) return {};
-  return decision || {};
+
+  const normalized = decision || {};
+  const approvers = uniqLogins(
+    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
+  );
+
+  return {
+    ...normalized,
+    ...(approvers.length ? { approvers } : {}),
+  };
 }
 
 function buildApprovalUnknownBody(decision: ApprovalDecision): string {
@@ -5732,10 +5786,11 @@ async function handleApprovalComment(
   commenter: string
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
+  const requestType = resolveEffectiveRequestType(template, parsedFormData);
 
-  const allowedApprovers = resolveApproversForRequestType(
+  const configuredApprovers = resolveApproversForRequestType(
     context,
-    resolveEffectiveRequestType(template, parsedFormData),
+    requestType,
     eff.approverUsernames,
     eff.approverPoolUsernames
   );
@@ -5750,6 +5805,17 @@ async function handleApprovalComment(
     );
     return;
   }
+
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType
+  );
+
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
 
   const okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
   if (!okApprover) {
