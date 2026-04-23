@@ -1569,6 +1569,92 @@ async function fetchIssueLabels(
   return toLabelNames(issue.labels);
 }
 
+async function ensureAssigneesPresent(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  assignees: string[]
+): Promise<void> {
+  const targetAssignees = uniqLogins((assignees || []).map((x) => toStringTrim(x)).filter(Boolean));
+  if (!targetAssignees.length) return;
+
+  try {
+    const { data } = await context.octokit.issues.get(params);
+    const currentAssignees = uniqLogins(
+      (((data as Record<string, unknown>)['assignees'] as (Record<string, unknown> | null | undefined)[]) || [])
+        .map((item) => normalizeLogin(toStringTrim(item?.login)))
+        .filter(Boolean)
+    );
+
+    const missing = targetAssignees.filter(
+      (candidate) =>
+        !currentAssignees.some(
+          (existing) => normalizeLogin(existing).toLowerCase() === normalizeLogin(candidate).toLowerCase()
+        )
+    );
+
+    if (!missing.length) return;
+
+    await context.octokit.issues.addAssignees({
+      ...params,
+      assignees: missing,
+    });
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        err: e instanceof Error ? e.message : String(e),
+        issueNumber: params.issue_number,
+        assignees: targetAssignees,
+      },
+      'failed to ensure assignees'
+    );
+  }
+}
+
+async function resolveAdditionalIssueApproversFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType: string
+): Promise<string[]> {
+  try {
+    const resourceName = extractResourceNameFromForm(parsedFormData, template);
+    const namespace = toStringTrim((parsedFormData as Record<string, unknown>)['namespace']) || resourceName;
+
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType,
+          namespace,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+        }
+      )
+    );
+
+    if (decision.status !== 'unknown') return [];
+    return uniqLogins(decision.approvers || []);
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        err: e instanceof Error ? e.message : String(e),
+        issueNumber: issue.number,
+      },
+      'failed to resolve additional issue approvers from onApproval hook'
+    );
+
+    return [];
+  }
+}
+
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1576,7 +1662,7 @@ async function handoverToCpa(
   _nsType: string,
   _namespace: string,
   _links: string[] = [],
-  options: { snapshotHash?: string; requestType?: string } = {}
+  options: { snapshotHash?: string; requestType?: string; extraApprovers?: string[] } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
 
@@ -1593,7 +1679,10 @@ async function handoverToCpa(
     ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
     : approverRouting.approvalUsernames;
 
-  await ensureAssigneesOnce(context, params, issue, assigneesForType);
+  const mergedAssignees = uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
+
+  await ensureAssigneesOnce(context, params, issue, mergedAssignees);
+  await ensureAssigneesPresent(context, params, mergedAssignees);
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
@@ -1604,7 +1693,7 @@ async function handoverToCpa(
         labels: labelsToAdd,
       });
     } catch {
-      // ignore label add errors
+      /* empty */
     }
   }
 
@@ -1615,7 +1704,7 @@ async function handoverToCpa(
         name: eff.labelOnApproved,
       });
     } catch {
-      // ignore if not present
+      /* empty */
     }
   }
 
@@ -1624,6 +1713,7 @@ async function handoverToCpa(
   const snapshotMarker = options.snapshotHash ? `\n\n<!-- nsreq:snapshot:${options.snapshotHash} -->` : '';
 
   const handoverMsg = `### ✅ No issues detected
+
 ### ➡️ Routing to an approver for review
 
 ---
@@ -1800,49 +1890,6 @@ function isAuthorizedApprover(
 
   const issueAuthorLc = String(issueAuthor || '').toLowerCase();
   return Boolean(commenterLc && commenterLc !== issueAuthorLc);
-}
-
-async function resolveAdditionalIssueApproversFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType: string
-): Promise<string[]> {
-  try {
-    const resourceName = extractResourceNameFromForm(parsedFormData, template);
-    const namespace = toStringTrim((parsedFormData as Record<string, unknown>)['namespace']) || resourceName;
-
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType,
-          namespace,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-        }
-      )
-    );
-
-    if (decision.status !== 'unknown') return [];
-    return uniqLogins(decision.approvers || []);
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        err: e instanceof Error ? e.message : String(e),
-        issueNumber: issue.number,
-      },
-      'failed to resolve additional issue approvers from onApproval hook'
-    );
-
-    return [];
-  }
 }
 
 function buildApprovalDecisionJson(decision: ApprovalDecision): string {
@@ -5178,7 +5225,7 @@ async function finalizeApprovedRequest(
   template: TemplateLike,
   parsedFormData: FormData,
   options: {
-    approvalPrefix: string;
+    approvalPrefix?: string;
     approvalComment?: string;
     autoApproved?: boolean;
   }
@@ -5199,12 +5246,29 @@ async function finalizeApprovedRequest(
     return;
   }
 
+  const requestType = resolveEffectiveRequestType(template, parsedFormData);
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType
+  );
+
   const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
   if (existing.length) {
     await applyApprovedRequestState(context, params, eff);
+
     if (autoApproved) {
       await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, existing[0].number);
     }
+
+    await ensureAssigneesPresent(
+      context,
+      { owner: params.owner, repo: params.repo, issue_number: existing[0].number },
+      hookApprovers
+    );
 
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
@@ -5224,6 +5288,12 @@ async function finalizeApprovedRequest(
       await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, pr.number);
     }
 
+    await ensureAssigneesPresent(
+      context,
+      { owner: params.owner, repo: params.repo, issue_number: pr.number },
+      hookApprovers
+    );
+
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
 
@@ -5233,12 +5303,7 @@ async function finalizeApprovedRequest(
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
 
-    await postOnce(
-      context,
-      params,
-      /^Failed to create PR automatically:/i.test(msg) ? msg : `Failed to create PR automatically: ${msg}`,
-      { minimizeTag: 'nsreq:approval-info' }
-    );
+    await postOnce(context, params, `Failed to create Pull Request: ${msg}`, { minimizeTag: 'nsreq:approval-info' });
   }
 }
 
@@ -5771,9 +5836,19 @@ async function processIssueEvent(
 
   if (approvalOutcome !== 'continue') return;
 
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    result.template || template,
+    parsedFormData,
+    effectiveRequestType
+  );
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
+    extraApprovers: hookApprovers,
   });
 }
 
@@ -5979,9 +6054,19 @@ async function handleAuthorUpdateComment(
 
       if (approvalOutcome !== 'continue') return;
 
+      const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+        context,
+        params,
+        issue,
+        tpl,
+        parsedAfterUpdate,
+        effectiveRequestType
+      );
+
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
         requestType: effectiveRequestType,
+        extraApprovers: hookApprovers,
       });
       return;
     }
