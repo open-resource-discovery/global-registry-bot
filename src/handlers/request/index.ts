@@ -4,6 +4,8 @@ import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './te
 import {
   validateRequestIssue as validateRequestIssueRaw,
   runApprovalHook as runApprovalHookRaw,
+  runCustomValidateForRegistryCandidate as runCustomValidateForRegistryCandidateRaw,
+  resolvePrimaryIdFromCandidate as resolvePrimaryIdFromCandidateRaw,
 } from './validation/run.js';
 import {
   calcSnapshotHash as calcSnapshotHashRaw,
@@ -16,6 +18,11 @@ import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type Reg
 import { getDocLinksFromConfig } from './constants.js';
 import type { Context, Probot } from 'probot';
 import YAML from 'yaml';
+import Ajv2020Module from 'ajv/dist/2020.js';
+import addFormatsModule from 'ajv-formats';
+import ajvErrorsModule from 'ajv-errors';
+import type { ValidateFunction, ErrorObject } from 'ajv';
+import path from 'node:path';
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -219,6 +226,27 @@ type EffectiveConstants = {
   approverUsernames: string[];
   approverPoolUsernames: string[];
 };
+
+type DirectPrValidationIssue = {
+  filePath: string;
+  requestType: string;
+  schemaPath: string;
+  errors: string[];
+};
+
+type DirectPrValidationResult = {
+  ok: boolean;
+  issues: DirectPrValidationIssue[];
+  requestTypes: string[];
+};
+
+type AjvInstance = {
+  compile: (schema: unknown) => ValidateFunction<unknown>;
+};
+
+type AjvConstructor = new (opts?: { strict?: boolean; allErrors?: boolean }) => AjvInstance;
+
+type AjvPlugin = (ajv: unknown) => void;
 
 type MachineReadableIssue = Readonly<{
   field: string;
@@ -1507,6 +1535,32 @@ const extractHashFromPrBody = extractHashFromPRBodyRaw as unknown as ExtractHash
 const findOpenIssuePrs = findOpenIssuePRsRaw as unknown as FindOpenIssuePrsFn;
 const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
 const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
+
+const runCustomValidateForRegistryCandidate = runCustomValidateForRegistryCandidateRaw as unknown as (
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  args: {
+    requestType: string;
+    schema: unknown;
+    candidate: Record<string, unknown>;
+    resourceName?: string | null;
+    formData?: FormData | null;
+  }
+) => Promise<string[]>;
+
+const resolvePrimaryIdFromCandidate = resolvePrimaryIdFromCandidateRaw as unknown as (
+  candidate: Record<string, unknown>,
+  schemaObj: unknown
+) => string;
+
+const ajv2020Ctor: AjvConstructor =
+  (Ajv2020Module as unknown as { default?: AjvConstructor }).default ?? (Ajv2020Module as unknown as AjvConstructor);
+
+const addFormats: AjvPlugin =
+  (addFormatsModule as unknown as { default?: AjvPlugin }).default ?? (addFormatsModule as unknown as AjvPlugin);
+
+const ajvErrors: AjvPlugin =
+  (ajvErrorsModule as unknown as { default?: AjvPlugin }).default ?? (ajvErrorsModule as unknown as AjvPlugin);
 
 function readCheckRunFromPayload(payload: unknown): CheckRunLike | null {
   if (!isPlainObject(payload)) return null;
@@ -3893,6 +3947,343 @@ function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
   return out;
 }
 
+function buildDirectPrAjv(): AjvInstance {
+  const ajv = new ajv2020Ctor({ strict: false, allErrors: true });
+
+  try {
+    addFormats(ajv);
+  } catch {
+    /* empty */
+  }
+
+  try {
+    ajvErrors(ajv);
+  } catch {
+    /* empty */
+  }
+
+  return ajv;
+}
+
+function formatDirectPrAjvErrors(errors: ErrorObject[] | null | undefined): string[] {
+  return (errors ?? []).map((error) => {
+    const whereRaw = toStringTrim(error.instancePath);
+    const where = whereRaw && whereRaw !== '/' ? whereRaw : '';
+    const msg = toStringTrim(error.message);
+    return where ? `${where} ${msg}`.trim() : msg;
+  });
+}
+
+function getRequestConfigEntry(
+  context: BotContext<RequestEvents>,
+  requestType: string
+): Record<string, unknown> | null {
+  const reqs = isPlainObject(context.resourceBotConfig?.requests) ? context.resourceBotConfig.requests : {};
+  const direct = reqs[requestType];
+  if (isPlainObject(direct)) return direct;
+
+  const requestTypeKey = normalizeKey(requestType);
+  for (const [key, value] of Object.entries(reqs)) {
+    if (normalizeKey(key) !== requestTypeKey) continue;
+    if (isPlainObject(value)) return value;
+  }
+
+  return null;
+}
+
+function getSchemaPathForRequestType(context: BotContext<RequestEvents>, requestType: string): string {
+  const entry = getRequestConfigEntry(context, requestType);
+  return normalizeRepoPath(entry?.['schema']);
+}
+
+async function loadJsonFromRepo(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  repoPath: string
+): Promise<unknown | null> {
+  const raw = await readRepoFileText(context, repoInfo, repoPath);
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeDirectPrIdentifierToken(value: string): string {
+  return value
+    .replaceAll('\u00a0', ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[^a-z0-9._-]/g, '');
+}
+
+async function validateDirectPrParentChain(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  filePath: string,
+  requestType: string,
+  resourceName: string
+): Promise<string[]> {
+  const rt = normalizeTypeToken(requestType);
+  const namespaceLike =
+    rt.includes('namespace') ||
+    rt === 'system' ||
+    rt === 'systemnamespace' ||
+    rt === 'authority' ||
+    rt === 'subcontext';
+
+  if (!namespaceLike) return [];
+
+  const parts = toStringTrim(resourceName)
+    .split('.')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length < 3) return [];
+
+  const dir = path.dirname(normalizeRepoPath(filePath));
+  const errors: string[] = [];
+
+  for (let i = parts.length - 1; i >= 2; i -= 1) {
+    const parentName = parts.slice(0, i).join('.');
+    const parentYamlPath = normalizeRepoPath(path.join(dir, `${parentName}.yaml`));
+    const parentYmlPath = normalizeRepoPath(path.join(dir, `${parentName}.yml`));
+
+    const existsInPr =
+      Boolean(await readPullRequestHeadFileText(context, repoInfo, pr, parentYamlPath)) ||
+      Boolean(await readPullRequestHeadFileText(context, repoInfo, pr, parentYmlPath));
+
+    if (existsInPr) continue;
+
+    const existsInRepo =
+      Boolean(await readRepoFileText(context, repoInfo, parentYamlPath)) ||
+      Boolean(await readRepoFileText(context, repoInfo, parentYmlPath));
+
+    if (existsInRepo) continue;
+
+    errors.push(`Parent resource '${parentName}' is not present. Please register the parent first.`);
+  }
+
+  return errors;
+}
+
+async function validateChangedResourceForDirectPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  filePath: string
+): Promise<DirectPrValidationIssue | null> {
+  const doc = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+  if (!doc) {
+    return {
+      filePath,
+      requestType: '',
+      schemaPath: '',
+      errors: ['Unable to read registry document from the PR head.'],
+    };
+  }
+
+  const requestType = pickRequestTypeForChangedResource(context, filePath, doc);
+  if (!requestType) {
+    return {
+      filePath,
+      requestType: '',
+      schemaPath: '',
+      errors: ['Unable to determine request type for this changed registry file.'],
+    };
+  }
+
+  const schemaPath = getSchemaPathForRequestType(context, requestType);
+  if (!schemaPath) {
+    return {
+      filePath,
+      requestType,
+      schemaPath: '',
+      errors: [`No schema configured for request type '${requestType}'.`],
+    };
+  }
+
+  const schemaObj = await loadJsonFromRepo(context, repoInfo, schemaPath);
+  if (!schemaObj) {
+    return {
+      filePath,
+      requestType,
+      schemaPath,
+      errors: [`Unable to load schema '${schemaPath}'.`],
+    };
+  }
+
+  const ajv = buildDirectPrAjv();
+  const validate = ajv.compile(schemaObj);
+  const candidate = isPlainObject(doc) ? doc : {};
+  const valid = Boolean(validate(candidate));
+  const errors: string[] = [];
+
+  if (!valid) {
+    errors.push(...formatDirectPrAjvErrors(validate.errors));
+  }
+
+  const fileBase = path
+    .basename(filePath)
+    .replace(/\.ya?ml$/i, '')
+    .trim();
+  const resourceIdentifier = resolvePrimaryIdFromCandidate(candidate, schemaObj).replaceAll('\u00a0', ' ').trim();
+  const resourceName = resourceIdentifier || resolveRegistryDocResourceName(candidate);
+
+  if (resourceIdentifier) {
+    if (normalizeDirectPrIdentifierToken(resourceIdentifier) !== normalizeDirectPrIdentifierToken(fileBase)) {
+      errors.push(
+        `File name '${fileBase}' must match the resource identifier '${resourceIdentifier}'. Please rename the file or update the identifier field.`
+      );
+    }
+  }
+
+  if (resourceName) {
+    errors.push(...(await validateDirectPrParentChain(context, repoInfo, pr, filePath, requestType, resourceName)));
+  }
+
+  try {
+    const hookErrors = await runCustomValidateForRegistryCandidate(context, repoInfo, {
+      requestType,
+      schema: schemaObj,
+      candidate,
+      resourceName: resourceName || fileBase,
+      formData: buildFormDataFromRegistryDoc(candidate),
+    });
+
+    if (hookErrors.length) errors.push(...hookErrors);
+  } catch (error: unknown) {
+    errors.push(`Hook onValidate failed: ${getErrorMessage(error)}`);
+  }
+
+  if (!errors.length) return null;
+
+  return {
+    filePath,
+    requestType,
+    schemaPath,
+    errors: Array.from(new Set(errors.map((item) => toStringTrim(item)).filter(Boolean))),
+  };
+}
+
+async function validateDirectPrResources(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  options: DirectPrApprovalOptions = {}
+): Promise<DirectPrValidationResult> {
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
+
+  if (!changedFiles.length) {
+    return { ok: true, issues: [], requestTypes: [] };
+  }
+
+  const issues: DirectPrValidationIssue[] = [];
+  const requestTypes = new Set<string>();
+
+  for (const filePath of changedFiles) {
+    const issue = await validateChangedResourceForDirectPr(context, repoInfo, pr, filePath);
+    if (!issue) {
+      const doc = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+      if (doc) {
+        const requestType = pickRequestTypeForChangedResource(context, filePath, doc);
+        if (requestType) requestTypes.add(requestType);
+      }
+      continue;
+    }
+
+    if (issue.requestType) requestTypes.add(issue.requestType);
+    issues.push(issue);
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    requestTypes: Array.from(requestTypes),
+  };
+}
+
+function buildDirectPrValidationBody(result: DirectPrValidationResult): string {
+  const lines: string[] = ['## Detected issues', ''];
+
+  for (const issue of result.issues) {
+    lines.push(`### File: \`${issue.filePath}\``);
+
+    if (issue.requestType) lines.push(`- Request type: \`${issue.requestType}\``);
+    if (issue.schemaPath) lines.push(`- Schema: \`${issue.schemaPath}\``);
+
+    for (const error of issue.errors) {
+      lines.push(`- ${error}`);
+    }
+
+    lines.push('');
+  }
+
+  return lines.join('\n').trimEnd();
+}
+
+async function handoverDirectPrToReview(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  options: {
+    requestTypes: string[];
+    extraApprovers?: string[];
+    message?: string;
+  }
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+
+  const configuredApprovers = uniqLogins(
+    options.requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const assignees = uniqLogins([...(configuredApprovers || []), ...(options.extraApprovers || []).filter(Boolean)]);
+
+  await ensureAssigneesPresent(
+    context,
+    { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+    assignees
+  );
+
+  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
+  if (labelsToAdd.length) {
+    try {
+      await context.octokit.issues.addLabels({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        issue_number: pr.number,
+        labels: labelsToAdd,
+      });
+    } catch {
+      /* empty */
+    }
+  }
+
+  const lead = toStringTrim(options.message);
+  const body = `## Direct PR review required
+
+${lead ? `${lead}\n\n` : ''}This standalone registry PR passed validation but was not auto-approved.
+
+Please comment \`Approved\` on this PR to let the bot create the SHA-bound approval review and continue with the existing merge flow.`;
+
+  await postOnce(context, { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number }, body, {
+    minimizeTag: 'nsreq:direct-pr-review',
+  });
+}
+
+function isPullRequestIssuePayload(payload: unknown): boolean {
+  if (!isPlainObject(payload)) return false;
+  const issue = payload['issue'];
+  return isPlainObject(issue) && isPlainObject(issue['pull_request']);
+}
+
 function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: string): boolean {
   return matchRequestTypesForFile(context, filePath).length > 0;
 }
@@ -5130,6 +5521,7 @@ async function evaluateDirectPrOnApproval(
   let sawApproved = false;
   let sawUnknown = false;
   let approvedComment = '';
+  let firstUnknownDecision: ApprovalDecision | null = null;
 
   for (const filePath of changedFiles) {
     const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
@@ -5159,7 +5551,10 @@ async function evaluateDirectPrOnApproval(
       continue;
     }
 
-    sawUnknown = true;
+    if (decision.status === 'unknown') {
+      sawUnknown = true;
+      if (!firstUnknownDecision) firstUnknownDecision = decision;
+    }
   }
 
   if (sawApproved && !sawUnknown) {
@@ -5167,6 +5562,10 @@ async function evaluateDirectPrOnApproval(
       status: 'approved',
       ...(approvedComment ? { comment: approvedComment } : {}),
     };
+  }
+
+  if (firstUnknownDecision) {
+    return firstUnknownDecision;
   }
 
   return {};
@@ -5178,6 +5577,29 @@ async function maybeHandleStandaloneDirectPrApproval(
   pr: PullRequestLike,
   options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalHandlingResult> {
+  const validationResult = await validateDirectPrResources(context, repoInfo, pr, options);
+
+  if (!validationResult.ok) {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildDirectPrValidationBody(validationResult),
+      { minimizeTag: 'nsreq:direct-pr-validation' }
+    );
+
+    return 'continue';
+  }
+
+  await collapseBotCommentsByPrefix(
+    context,
+    { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+    {
+      tagPrefix: 'nsreq:direct-pr-validation',
+      collapseBody: 'Validation issues resolved.',
+      classifier: 'RESOLVED',
+    }
+  );
+
   const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
 
   if (decision.status === 'approved') {
@@ -5203,13 +5625,77 @@ async function maybeHandleStandaloneDirectPrApproval(
         state: 'closed',
       });
     } catch {
-      // ignore
+      /* empty */
     }
 
     return 'rejected';
   }
 
+  await handoverDirectPrToReview(context, repoInfo, pr, {
+    requestTypes: validationResult.requestTypes,
+    extraApprovers: decision.approvers || [],
+    message: toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason),
+  });
+
   return 'continue';
+}
+
+async function handleDirectPrApprovalComment(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  commenter: string
+): Promise<void> {
+  const validationResult = await validateDirectPrResources(context, repoInfo, pr, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  if (!validationResult.ok) {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildDirectPrValidationBody(validationResult),
+      { minimizeTag: 'nsreq:direct-pr-validation' }
+    );
+    return;
+  }
+
+  const eff = resolveEffectiveConstants(context);
+
+  const configuredApprovers = uniqLogins(
+    validationResult.requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  const allowedApprovers = uniqLogins([
+    ...(configuredApprovers || []),
+    ...(approvalDecision.approvers || []).filter(Boolean),
+  ]);
+
+  const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
+  if (!okApprover) {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+    return;
+  }
+
+  const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, {
+    status: 'approved',
+    comment: `Approved by @${commenter}`,
+  });
+
+  if (!approved) return;
+
+  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'direct-pr-manual-approval');
 }
 
 async function closeLinkedIssuePrs(
@@ -7354,6 +7840,16 @@ export default function requestHandler(app: Probot): void {
 
       const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
       if (!isRequestIssue(context, template, parsedFormData)) {
+        const stripped = stripQuoteAndCode(comment.body || '');
+        const isApproval = isApprovalComment(context, stripped);
+
+        if (isApproval && isPullRequestIssuePayload(context.payload as unknown)) {
+          const pr = await readFreshPullRequest(context, { owner, repo }, issue.number);
+          if (pr) {
+            await handleDirectPrApprovalComment(context, { owner, repo }, pr, commenter);
+          }
+        }
+
         if (DBG) {
           log(
             context,
