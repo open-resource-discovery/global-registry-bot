@@ -7,6 +7,29 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.1)] - 2026-04-21
+
+## Summary
+
+- improve auto-update and merge flow for approved registry PRs
+- keep approved PRs in sync with default branch
+- make CI-triggered auto-merge more reliable
+
+## Changes
+
+- auto-update approved PR branches when default branch changes
+- use mergeability state (`behind`) instead of requiring pre-update green checks
+- add delayed retry for branch updates after push events
+- improve merge flow with mergeability polling
+- trigger auto-merge on successful `check_suite` and `check_run` events
+- prevent duplicate approval handling and respect existing approvals
+
+## Result
+
+- approved PRs no longer get stuck outdated
+- smoother CI-driven merge behavior
+- more stable and predictable bot automation
+
 ## [[0.1.0](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v/0.1.0)] - 2026-04-14
 
 ## Added
