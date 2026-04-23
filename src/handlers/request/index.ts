@@ -2183,6 +2183,28 @@ async function hasApprovedReviewOnPr(
   }
 }
 
+async function hasApprovedLabelOnPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<boolean> {
+  const eff = resolveEffectiveConstants(context);
+  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  if (!approvedLabel) return false;
+
+  try {
+    const labels = await fetchIssueLabels(context, {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: prNumber,
+    });
+
+    return labelsMatching(labels, approvedLabel).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function isPullRequestApprovedForBranchMaintenance(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2201,6 +2223,10 @@ async function isPullRequestApprovedForBranchMaintenance(
   }
 
   if (await hasApprovedReviewOnPr(context, repoInfo, pr.number)) {
+    return true;
+  }
+
+  if (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) {
     return true;
   }
 
@@ -2435,6 +2461,7 @@ type SequentialRegistryPrCandidate = {
   freshPr: PullRequestLike;
   changedRegistryFiles: string[];
   mustUpdate: boolean;
+  approvedForUpdate: boolean;
 };
 
 type SequentialRegistryPrActive = {
@@ -2912,7 +2939,13 @@ async function runMergeApprovedPrOrUpdateBranch(
   }
 
   if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
-    await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-before-merge`);
+    await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+      context,
+      repoInfo,
+      currentPr,
+      baseBranch,
+      `${reason}:behind-before-merge`
+    );
     return;
   }
 
@@ -3037,7 +3070,13 @@ async function runMergeApprovedPrOrUpdateBranch(
       }
 
       if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
-        await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-after-merge-attempt`);
+        await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+          context,
+          repoInfo,
+          currentPr,
+          baseBranch,
+          `${reason}:behind-after-merge-attempt`
+        );
         return;
       }
 
@@ -3080,7 +3119,13 @@ async function runMergeApprovedPrOrUpdateBranch(
         const freshPr = (await readFreshPullRequest(context, repoInfo, currentPr.number)) || currentPr;
 
         if (await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch)) {
-          await requestPullRequestBranchUpdate(context, repoInfo, freshPr, `${reason}:merge-failed-outdated`);
+          await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+            context,
+            repoInfo,
+            freshPr,
+            baseBranch,
+            `${reason}:merge-failed-outdated`
+          );
         } else {
           log(
             context,
@@ -3190,6 +3235,14 @@ async function processPullRequestForAutoMerge(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<void> {
+  const prBaseBranch = toStringTrim(pr.base?.ref);
+
+  if (await isSequentialDirectRegistryPr(context, repoInfo, pr, prBaseBranch)) {
+    if (await shouldDeferSequentialDirectRegistryPrProcessing(context, repoInfo, pr)) {
+      return;
+    }
+  }
+
   const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
 
   if (issueNumber === null) {
@@ -3437,7 +3490,7 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
 
   const openPrs = await listOpenPullRequests(context, repoInfo);
 
-  for (const pr of openPrs.sort((a, b) => a.number - b.number)) {
+  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
     const headSha = toStringTrim(pr.head?.sha);
 
     if (!headSha) continue;
@@ -3449,6 +3502,19 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
 
       if (!changedRegistryFiles.length) {
         log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: no registry yaml files changed');
+        continue;
+      }
+
+      if (!isSnapshotManagedRequestPr(pr)) {
+        log(
+          context,
+          'info',
+          {
+            prNumber: pr.number,
+            reason,
+          },
+          'skip branch update: direct registry PR handled by sequential queue'
+        );
         continue;
       }
 
@@ -4344,6 +4410,104 @@ async function isSequentialRegistryPrActiveBlocking(
   return true;
 }
 
+async function isSequentialDirectRegistryPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch?: string
+): Promise<boolean> {
+  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+  if (!targetBaseBranch) return false;
+  if (isSnapshotManagedRequestPr(pr)) return false;
+  if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
+
+  const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
+  return changedRegistryFiles.length > 0;
+}
+
+async function shouldDeferSequentialDirectRegistryPrProcessing(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<boolean> {
+  const active = getSequentialRegistryPrActive(repoInfo);
+  if (!active || active.prNumber === pr.number) return false;
+
+  if (!(await isSequentialRegistryPrActiveBlocking(context, repoInfo))) {
+    return false;
+  }
+
+  const currentActive = getSequentialRegistryPrActive(repoInfo);
+  if (!currentActive || currentActive.prNumber === pr.number) {
+    return false;
+  }
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      activePrNumber: currentActive.prNumber,
+      activeHeadSha: currentActive.startedHeadSha,
+    },
+    'sequential-registry-pr:auto-merge-deferred'
+  );
+
+  return true;
+}
+
+async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string,
+  reason: string
+): Promise<boolean> {
+  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+
+  if (!(await isSequentialDirectRegistryPr(context, repoInfo, pr, targetBaseBranch))) {
+    return await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
+  }
+
+  const active = getSequentialRegistryPrActive(repoInfo);
+
+  if (active && active.prNumber === pr.number) {
+    const requested = await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
+
+    if (requested) {
+      markSequentialRegistryPrActive(context, repoInfo, pr, reason);
+    }
+
+    return requested;
+  }
+
+  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, targetBaseBranch, reason);
+  return result.updated;
+}
+
+async function advanceSequentialRegistryPrQueueAfterTerminalState(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<void> {
+  const active = getSequentialRegistryPrActive(repoInfo);
+  if (!active || active.prNumber !== pr.number) return;
+
+  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
+
+  if (freshPr && isPullRequestOpen(freshPr)) {
+    return;
+  }
+
+  clearSequentialRegistryPrActive(repoInfo);
+
+  const baseBranch = toStringTrim(freshPr?.base?.ref) || toStringTrim(pr.base?.ref);
+  if (!baseBranch) return;
+
+  await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
+}
+
 async function collectSequentialDirectRegistryPrCandidates(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -4353,7 +4517,7 @@ async function collectSequentialDirectRegistryPrCandidates(
   const openPrs = await listOpenPullRequests(context, repoInfo);
   const candidates: SequentialRegistryPrCandidate[] = [];
 
-  for (const pr of openPrs.sort((a, b) => a.number - b.number)) {
+  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
     const headSha = toStringTrim(pr.head?.sha);
     const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
     const snapshotManaged = isSnapshotManagedRequestPr(pr);
@@ -4443,6 +4607,9 @@ async function collectSequentialDirectRegistryPrCandidates(
     }
 
     const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
+    const approvedForUpdate = mustUpdate
+      ? await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr)
+      : false;
 
     log(
       context,
@@ -4454,6 +4621,7 @@ async function collectSequentialDirectRegistryPrCandidates(
         mergeable: freshPr.mergeable,
         mergeableState: readMergeableState(freshPr),
         mustUpdate,
+        approvedForUpdate,
       },
       'direct-pr-reeval:update-check'
     );
@@ -4463,6 +4631,7 @@ async function collectSequentialDirectRegistryPrCandidates(
       freshPr,
       changedRegistryFiles,
       mustUpdate,
+      approvedForUpdate,
     });
   }
 
@@ -4487,7 +4656,7 @@ async function runOneSequentialDirectRegistryPrMaintenance(
 
     const candidates = await collectSequentialDirectRegistryPrCandidates(context, repoInfo, baseBranch, reason);
 
-    for (const candidate of candidates.filter((item) => item.mustUpdate)) {
+    for (const candidate of candidates.filter((item) => item.mustUpdate && item.approvedForUpdate)) {
       const requested = await requestPullRequestBranchUpdate(
         context,
         repoInfo,
@@ -7022,6 +7191,12 @@ export default function requestHandler(app: Probot): void {
       try {
         await processPullRequestForAutoMerge(context, repoInfo, pr);
         await releaseSequentialRegistryPrIfNotApprovedAfterGreen(context, repoInfo, pr);
+        await advanceSequentialRegistryPrQueueAfterTerminalState(
+          context,
+          repoInfo,
+          pr,
+          'sequential-direct-pr:advance-after-terminal-state'
+        );
       } catch (e: unknown) {
         log(
           context,
@@ -7034,8 +7209,32 @@ export default function requestHandler(app: Probot): void {
         );
 
         const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+        const baseBranch = toStringTrim(freshPr.base?.ref) || toStringTrim(pr.base?.ref);
+        const isSequentialDirectRegistry = baseBranch
+          ? await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch)
+          : false;
+
+        if (!isSequentialDirectRegistry) {
+          continue;
+        }
+
+        const active = getSequentialRegistryPrActive(repoInfo);
+        const wasActiveSequentialPr = active?.prNumber === freshPr.number || active?.prNumber === pr.number;
+
         markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'auto-merge-candidate-processing-failed');
-        clearSequentialRegistryPrActive(repoInfo);
+
+        if (wasActiveSequentialPr) {
+          clearSequentialRegistryPrActive(repoInfo);
+
+          if (baseBranch) {
+            await runOneSequentialDirectRegistryPrMaintenance(
+              context,
+              repoInfo,
+              baseBranch,
+              'sequential-direct-pr:advance-after-processing-failure'
+            );
+          }
+        }
       }
     }
   };
