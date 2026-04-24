@@ -1948,14 +1948,14 @@ function normalizeApprovalDecision(decision: ApprovalDecision | boolean): Approv
   if (decision === false) return {};
   if (!decision) return {};
 
-  const rawApprovers = Array.isArray((decision as { approvers?: unknown }).approvers)
-    ? ((decision as { approvers?: unknown[] }).approvers ?? [])
-    : [];
-
-  const approvers = uniqLogins(rawApprovers.map((value) => normalizeLogin(value)).filter(Boolean));
+  const normalized = decision || {};
+  const approvers = uniqLogins(
+    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
+  );
+  const { approvers: _approvers, ...normalizedWithoutApprovers } = normalized;
 
   return {
-    ...decision,
+    ...normalizedWithoutApprovers,
     ...(approvers.length ? { approvers } : {}),
   };
 }
@@ -2107,8 +2107,6 @@ async function createAutomatedApprovalReview(
       },
       'automated PR approval review created'
     );
-
-    await delayMs(1000);
 
     return true;
   } catch (e: unknown) {
@@ -2347,39 +2345,6 @@ function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<
   return latestByReviewer;
 }
 
-async function hasBlockingChangesRequestedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    return latestStates.has('CHANGES_REQUESTED');
-  } catch {
-    return false;
-  }
-}
-
-async function hasApprovedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    if (latestStates.has('CHANGES_REQUESTED')) return false;
-
-    return latestStates.has('APPROVED');
-  } catch {
-    return false;
-  }
-}
-
 async function hasApprovedLabelOnPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2407,19 +2372,36 @@ async function isPullRequestApprovedForBranchMaintenance(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<boolean> {
-  if (await hasBlockingChangesRequestedReviewOnPr(context, repoInfo, pr.number)) {
+  let reviews: PullRequestReviewLike[];
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const latestStates = getLatestActionableReviewStates(reviews);
+  const latestStateValues = new Set(latestStates.values());
+
+  if (latestStateValues.has('CHANGES_REQUESTED')) {
     return false;
   }
 
   if (isSnapshotManagedRequestPr(pr)) return true;
 
   const headSha = toStringTrim(pr.head?.sha);
+  const marker = headSha ? buildAutoApprovalReviewMarker(headSha) : null;
 
-  if (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) {
+  if (
+    marker &&
+    reviews.some(
+      (review) =>
+        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
+    )
+  ) {
     return true;
   }
 
-  if (await hasApprovedReviewOnPr(context, repoInfo, pr.number)) {
+  if (latestStateValues.has('APPROVED')) {
     return true;
   }
 
@@ -2640,8 +2622,23 @@ function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
 }
 
+class CooldownUntilMap extends Map<string, number> {
+  public override get(key: string): number | undefined {
+    const until = super.get(key);
+    if (until !== undefined && until <= Date.now()) {
+      super.delete(key);
+      return undefined;
+    }
+    return until;
+  }
+
+  public override has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+}
+
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
-const UPDATE_BRANCH_COOLDOWN_UNTIL = new Map<string, number>();
+const UPDATE_BRANCH_COOLDOWN_UNTIL = new CooldownUntilMap();
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
@@ -2685,11 +2682,15 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
 }
 
 function isUpdateBranchCooldownActive(key: string): boolean {
-  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key) || 0;
+  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
+  // eslint-disable-next-line eqeqeq
+  if (until == null) return false;
+
   if (until <= Date.now()) {
     UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
     return false;
   }
+
   return true;
 }
 
@@ -4644,8 +4645,23 @@ async function isSequentialDirectRegistryPr(
   if (isSnapshotManagedRequestPr(pr)) return false;
   if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
 
-  const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
-  return changedRegistryFiles.length > 0;
+  try {
+    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
+    return changedRegistryFiles.length > 0;
+  } catch (error) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        baseBranch: targetBaseBranch,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'sequential-registry-pr:changed-files-lookup-failed'
+    );
+
+    return false;
+  }
 }
 
 async function shouldDeferSequentialDirectRegistryPrProcessing(
@@ -5414,10 +5430,19 @@ async function closeLinkedIssuePrs(
   repoInfo: RepoInfo,
   issueNumber: number
 ): Promise<number[]> {
-  const prs = (await listOpenPullRequests(context, repoInfo)).filter(
-    (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
-  );
+  let prs: PullRequestLike[] = [];
 
+  try {
+    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
+  } catch {
+    prs = [];
+  }
+
+  if (prs.length === 0) {
+    prs = (await listOpenPullRequests(context, repoInfo)).filter(
+      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
+    );
+  }
   const closed: number[] = [];
 
   for (const pr of prs) {
@@ -6171,18 +6196,22 @@ async function handleApprovalComment(
     return;
   }
 
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    requestType
-  );
+  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
+  let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
 
-  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
+  if (!okApprover) {
+    const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType
+    );
 
-  const okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+    allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
+    okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+  }
   if (!okApprover) {
     const hasConfiguredApprovers = allowedApprovers.length > 0;
     const reason = hasConfiguredApprovers
