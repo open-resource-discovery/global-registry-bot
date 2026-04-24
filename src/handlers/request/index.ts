@@ -1912,9 +1912,10 @@ function normalizeApprovalDecision(decision: ApprovalDecision | boolean): Approv
   const approvers = uniqLogins(
     Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
   );
+  const { approvers: _approvers, ...normalizedWithoutApprovers } = normalized;
 
   return {
-    ...normalized,
+    ...normalizedWithoutApprovers,
     ...(approvers.length ? { approvers } : {}),
   };
 }
