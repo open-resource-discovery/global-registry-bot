@@ -1911,8 +1911,6 @@ async function createAutomatedApprovalReview(
       'automated PR approval review created'
     );
 
-    await delayMs(1000);
-
     return true;
   } catch (e: unknown) {
     const errObj = isPlainObject(e) ? e : {};
