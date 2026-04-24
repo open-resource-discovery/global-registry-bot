@@ -6789,13 +6789,15 @@ async function postRoutingLockNoticeOnce(
     return;
   }
 
-  const p = (async (): Promise<void> => {
-    await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
-      minimizeTag: 'nsreq:routing-label-lock',
+  const p = Promise.resolve()
+    .then(async (): Promise<void> => {
+      await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
+        minimizeTag: 'nsreq:routing-label-lock',
+      });
+    })
+    .finally(() => {
+      ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
     });
-  })().finally(() => {
-    ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
-  });
 
   ROUTING_LOCK_NOTICE_INFLIGHT.set(key, p);
   await p;

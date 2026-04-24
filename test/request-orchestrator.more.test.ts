@@ -6270,3 +6270,860 @@ test('issue_comment: parent-owner approval posts validation fallback errors and 
   expect(postedBodies()).toContain('missing owner contact');
   expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
 });
+
+describe('request orchestrator edge coverage for defensive branches', () => {
+  const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
+
+  function productCfg(extraLabels: Record<string, any> = {}) {
+    return {
+      requests: { product: { folderName: 'resources' } },
+      workflow: {
+        labels: {
+          approvalRequested: ['Review Pending'],
+          approvalSuccessful: ['Approved'],
+          ...extraLabels,
+        },
+        approvers: ['approver'],
+      },
+    } as any;
+  }
+
+  test('check_suite.completed failure paginates registry annotations until a partial page', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'failure',
+      sha: 'sha-annotations-two-pages',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+    ctx.payload.check_suite.id = 9901;
+    ctx.payload.check_suite.pull_requests = [{ number: 901 }];
+
+    ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+      data: { check_runs: [{ id: 9902, html_url: 'https://example/check/9902' }] },
+    });
+    ctx.octokit.checks.listAnnotations
+      .mockResolvedValueOnce({
+        data: Array.from({ length: 100 }, () => ({
+          title: 'registry-validate product',
+          path: 'resources/product.yaml',
+          message: 'first page issue [file=resources/product.yaml requestType=product]',
+        })),
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            title: 'registry-validate product',
+            path: 'resources/product.yaml',
+            message: 'final page issue [file=resources/product.yaml requestType=product]',
+          },
+        ],
+      });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({ data: { html_url: 'https://example/pr/901' } });
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(ctx.octokit.checks.listAnnotations).toHaveBeenCalledTimes(2);
+    expect(ctx.octokit.checks.listAnnotations).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
+    expect(postedBodies()).toContain('final page issue');
+  });
+
+  test('issue_comment: direct PR rejected by onApproval posts rejection without approving or merging', async () => {
+    const previousJestWorkerId = process.env.JEST_WORKER_ID;
+    delete process.env.JEST_WORKER_ID;
+
+    try {
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue: {
+          number: 902,
+          title: 'Direct PR',
+          body: 'manual direct pr',
+          labels: [],
+          user: { login: 'requester' },
+          pull_request: {},
+        },
+        comment: { body: 'Approved', user: { login: 'reviewer1' } },
+        sender: { type: 'User', login: 'reviewer1' },
+        withCachedConfig: true,
+        config: {
+          requests: { product: { folderName: 'resources' } },
+          workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] },
+        },
+      });
+
+      ctx.octokit.pulls.get.mockResolvedValue({
+        data: {
+          number: 902,
+          body: 'manual direct pr',
+          title: 'Direct PR',
+          state: 'open',
+          draft: false,
+          user: { login: 'requester' },
+          base: { ref: 'main' },
+          head: { ref: 'feature/direct-pr-rejected-comment', sha: 'sha-direct-pr-rejected-comment' },
+        },
+      });
+      ctx.octokit.pulls.listFiles.mockResolvedValue({
+        data: [{ filename: 'resources/product-rejected-comment.yaml', status: 'modified' }],
+      });
+      ctx.octokit.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
+      ctx.octokit.repos.getContent.mockResolvedValue({
+        data: { content: b64('type: product\nname: product-rejected-comment\n'), encoding: 'base64' },
+      });
+      runApprovalHook.mockResolvedValue({ status: 'rejected', reason: 'policy denied' } as any);
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(postOnce).toHaveBeenCalledWith(
+        ctx,
+        expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 902 }),
+        expect.stringContaining('policy denied'),
+        expect.objectContaining({ minimizeTag: 'nsreq:on-approval:rejected' })
+      );
+      expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+      expect(tryMergeIfGreen).not.toHaveBeenCalled();
+    } finally {
+      if (previousJestWorkerId === undefined) delete process.env.JEST_WORKER_ID;
+      else process.env.JEST_WORKER_ID = previousJestWorkerId;
+    }
+  });
+
+  test('check_suite.success: linked direct PR with unknown onApproval posts PR feedback and does not merge', async () => {
+    const cfg = {
+      requests: { product: { folderName: 'resources' } },
+      workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] },
+    } as any;
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const pr = {
+      number: 903,
+      body: 'source: #31',
+      title: 'Linked direct PR',
+      state: 'open',
+      user: { login: 'requester' },
+      head: { ref: 'feature/linked-unknown', sha: 'sha-linked-unknown' },
+      base: { ref: 'main' },
+      mergeable: true,
+      mergeable_state: 'clean',
+    };
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-linked-unknown',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    extractHashFromPrBody.mockReturnValue('');
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        number: 31,
+        title: 'Request',
+        body: '### Product ID\nproduct-linked-unknown',
+        labels: [],
+        user: { login: 'author' },
+        state: 'open',
+      },
+    });
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-linked-unknown.yaml', status: 'modified' }],
+    });
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: { content: b64('type: product\nname: product-linked-unknown\n'), encoding: 'base64' },
+    });
+    runApprovalHook.mockResolvedValue({ status: 'unknown', reason: 'manual review required' } as any);
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(postOnce).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 903 }),
+      expect.stringContaining('manual review required'),
+      expect.objectContaining({ minimizeTag: 'nsreq:on-approval:unknown' })
+    );
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: rejected linked direct PR closes linked PRs and reports closed PR numbers', async () => {
+    const cfg = {
+      requests: { product: { folderName: 'resources' } },
+      workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] },
+    } as any;
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const pr = {
+      number: 904,
+      body: 'source: #32',
+      title: 'Linked direct PR',
+      state: 'open',
+      user: { login: 'requester' },
+      head: { ref: 'feature/linked-rejected', sha: 'sha-linked-rejected' },
+      base: { ref: 'main' },
+      mergeable: true,
+      mergeable_state: 'clean',
+    };
+    const siblingPr = {
+      ...pr,
+      number: 905,
+      head: { ref: 'feature/linked-rejected-sibling', sha: 'sha-linked-rejected-sibling' },
+    };
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-linked-rejected',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    extractHashFromPrBody.mockReturnValue('');
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({ data: [pr] })
+      .mockResolvedValueOnce({ data: [pr, siblingPr] })
+      .mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        number: 32,
+        title: 'Request',
+        body: '### Product ID\nproduct-linked-rejected',
+        labels: [],
+        user: { login: 'author' },
+        state: 'open',
+      },
+    });
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-linked-rejected.yaml', status: 'modified' }],
+    });
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: { content: b64('type: product\nname: product-linked-rejected\n'), encoding: 'base64' },
+    });
+    runApprovalHook.mockResolvedValue({ status: 'rejected', reason: 'policy denied' } as any);
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 904, state: 'closed' })
+    );
+    expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 905, state: 'closed' })
+    );
+    expect(postedBodies()).toContain('Closed linked PR(s): #904, #905.');
+  });
+
+  test('issue_comment: approval reports missing parent resource and resets request to author action', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const tpl = {
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+    };
+    const issue = {
+      number: 906,
+      title: 'Sub-Context Namespace',
+      body: '### Namespace\nsap.missing.child',
+      labels: [{ name: 'Review Pending' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ namespace: 'sap.missing.child' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.missing.child',
+      nsType: 'subContextNamespace',
+      template: tpl,
+    });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'approver' } },
+      sender: { type: 'User', login: 'approver' },
+      withCachedConfig: true,
+      config: productCfg(),
+    });
+    ctx.octokit.repos.getContent.mockRejectedValue(Object.assign(new Error('missing'), { status: 404 }));
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(postedBodies()).toContain("Parent resource 'sap.missing' is not present");
+    expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), issue, 'author');
+    expect(createRequestPr).not.toHaveBeenCalled();
+  });
+
+  test('issue_comment: approval tolerates approver hook failures and malformed stale parent marker', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 907,
+      title: 'Request',
+      body: '### Product ID\nABC\n\n<!-- nsreq:parent-approval = {not-json} -->',
+      labels: [{ name: 'Review Pending' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    runApprovalHook.mockRejectedValue(new Error('hook down'));
+    createRequestPr.mockResolvedValueOnce({ number: 77 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'approver' } },
+      sender: { type: 'User', login: 'approver' },
+      withCachedConfig: true,
+      config: productCfg(),
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(postedBodies()).toContain('Opened PR: #77');
+  });
+
+  test('issue_comment: stale branch cleanup ignores missing ref and reports non-json validation failure tail', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 908,
+      title: 'Request',
+      body: '### Product ID\nABC',
+      labels: [{ name: 'Review Pending' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    createRequestPr
+      .mockRejectedValueOnce(
+        new Error('Validation Failed: {"message":"No commits between main and refs/heads/feat/resource-abc-issue-908"}')
+      )
+      .mockRejectedValueOnce(new Error('Validation Failed: retry tail is not json - https://api.github.test/docs'));
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'approver' } },
+      sender: { type: 'User', login: 'approver' },
+      withCachedConfig: true,
+      config: productCfg(),
+    });
+    ctx.octokit.git.deleteRef.mockRejectedValueOnce(Object.assign(new Error('already gone'), { status: 404 }));
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o', repo: 'r', ref: 'heads/feat/resource-abc-issue-908' })
+    );
+    expect(postedBodies()).toContain('retry tail is not json');
+    expect(postedBodies()).not.toContain('https://api.github.test');
+  });
+
+  test('issue_comment: resource-exists recovery surfaces non-404 default-branch lookup errors', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const tpl = {
+      title: 'Request',
+      name: 'Request',
+      body: [],
+      labels: [],
+      _meta: { requestType: 'product', root: 'resources', schema: 'schema.json' },
+    };
+    const issue = {
+      number: 909,
+      title: 'Request',
+      body: '### Product ID\nABC',
+      labels: [{ name: 'Review Pending' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ 'product-id': 'ABC' });
+    createRequestPr.mockRejectedValueOnce(
+      new Error("Validation Failed: Resource 'ABC' already exists at resources/ABC.yaml")
+    );
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'approver' } },
+      sender: { type: 'User', login: 'approver' },
+      withCachedConfig: true,
+      config: productCfg(),
+    });
+    ctx.octokit.repos.getContent.mockRejectedValueOnce(Object.assign(new Error('server exploded'), { status: 500 }));
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o', repo: 'r', path: 'resources/ABC.yaml' })
+    );
+    expect(postedBodies()).toContain('server exploded');
+  });
+
+  test('issue_comment: author update validation issues default missing paths to details', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: ['fallback validation failed'],
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      validationIssues: [{ path: '', message: 'missing structured details' }],
+    } as any);
+
+    const issue = {
+      number: 910,
+      title: 'Request',
+      body: '### Product ID\nABC',
+      labels: [],
+      user: { login: 'author' },
+      state: 'open',
+    };
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'updated', user: { login: 'author' } },
+      sender: { type: 'User', login: 'author' },
+      withCachedConfig: true,
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(postedBodies()).toContain('fallback validation failed');
+    expect(postedBodies()).toContain('"field": "details"');
+    expect(postedBodies()).toContain('missing structured details');
+    expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), issue, 'author');
+  });
+
+  test('issues.labeled: invalid payload label is ignored before template loading', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = { number: 911, title: 'Request', body: '### Product ID\nABC', labels: [], user: { login: 'author' } };
+    const ctx = mkBaseContext({ issue, withCachedConfig: true, config: productCfg() });
+    ctx.name = 'issues.labeled';
+    ctx.payload = { action: 'labeled', issue, sender: { type: 'User', login: 'someone' }, label: 42 };
+
+    await handlers['issues.labeled'][0](ctx);
+
+    expect(loadTemplate).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('issues.opened: non-namespace request removes stale parent marker best effort when body update fails', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 912,
+      title: 'Request',
+      body: '### Product ID\nABC\n\n<!-- nsreq:parent-approval = {"v":1,"parent":"sap.css","target":"sap.css.foo","owners":["owner"]} -->',
+      labels: [],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+    const ctx = mkIssuesContext({ issue, action: 'opened', withCachedConfig: true, config: productCfg() });
+    ctx.octokit.issues.update.mockRejectedValueOnce(new Error('cannot update marker'));
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 912,
+        body: expect.not.stringContaining('parent-approval'),
+      })
+    );
+    expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), issue, 'review');
+  });
+
+  test('issues.opened: parent approval gate still notifies when marker write fails', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const tpl = {
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+    };
+    const issue = {
+      number: 913,
+      title: 'Sub-Context Namespace',
+      body: '### Namespace\nsap.css.bar.foo',
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ namespace: 'sap.css.bar.foo' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'sap.css.bar.foo',
+      nsType: 'subContextNamespace',
+      template: tpl,
+    });
+
+    const ctx = mkIssuesContext({ issue, action: 'opened', withCachedConfig: true, config: productCfg() });
+    ctx.octokit.issues.update.mockRejectedValueOnce(new Error('cannot add marker'));
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return { data: { content: b64('contacts:\n  - "@topOwner"\n'), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.bar.yaml') {
+        return { data: { content: b64('contacts:\n  - "@parentOwner"\n'), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('missing parent'), { status: 404 });
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(postedBodies()).toContain('Parent owner approval required');
+    expect(postedBodies()).toContain('@parentOwner');
+    expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), issue, 'author');
+  });
+
+  test('issues.labeled: routing lock treats template lookup failure for changed label as non-routing', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const cfg = { workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] }, requests: {} } as any;
+    const issue = {
+      number: 914,
+      title: 'Request',
+      body: '### Product ID\nABC\n\n<!-- nsreq:routing-lock = {"v":1,"expected":"route-1"} -->',
+      labels: [{ name: 'route-1' }, { name: 'route-2' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+    const ctx = mkBaseContext({ issue, withCachedConfig: true, config: cfg });
+    ctx.name = 'issues.labeled';
+    ctx.payload = {
+      action: 'labeled',
+      issue,
+      sender: { type: 'User', login: 'someone' },
+      label: { name: 'broken-route' },
+    };
+    ctx.octokit.issues.get.mockResolvedValue({ data: issue });
+    (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
+      const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
+
+      if (labels.length === 1 && (labels[0] === 'route-1' || labels[0] === 'route-2')) {
+        return { labels, body: [], title: 'Request' };
+      }
+
+      throw new Error('template lookup failed for changed label');
+    });
+
+    await handlers['issues.labeled'][0](ctx);
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 914, name: 'route-2' })
+    );
+    expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('issues.labeled: routing lock notice is deduplicated while an identical notice is in flight', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const cfg = { workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] }, requests: {} } as any;
+    const issue = {
+      number: 915,
+      title: 'Request',
+      body: '### Product ID\nABC\n\n<!-- nsreq:routing-lock = {"v":1,"expected":"route-1"} -->',
+      labels: [{ name: 'route-1' }, { name: 'route-2' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+    const makeCtx = () => {
+      const ctx = mkBaseContext({ issue: { ...issue, labels: issue.labels }, withCachedConfig: true, config: cfg });
+      ctx.name = 'issues.labeled';
+      ctx.payload = {
+        action: 'labeled',
+        issue: ctx.payload.issue ?? issue,
+        sender: { type: 'User', login: 'someone' },
+        label: { name: 'route-2' },
+      };
+      ctx.octokit.issues.get.mockResolvedValue({ data: issue });
+      return ctx;
+    };
+
+    (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
+      const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
+
+      if (labels.length === 1 && (labels[0] === 'route-1' || labels[0] === 'route-2')) {
+        return { labels, body: [], title: 'Request' };
+      }
+
+      if (labels.includes('route-1')) {
+        return { labels, body: [], title: 'Request' };
+      }
+
+      throw new Error('no routing label found');
+    });
+
+    let releasePost!: () => void;
+    postOnce.mockImplementationOnce(
+      async () =>
+        await new Promise<void>((resolve) => {
+          releasePost = resolve;
+        })
+    );
+
+    const ctx1 = makeCtx();
+    const first = handlers['issues.labeled'][0](ctx1);
+    for (let i = 0; i < 100 && postOnce.mock.calls.length === 0; i += 1) await Promise.resolve();
+    expect(postOnce).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+
+    const ctx2 = makeCtx();
+    const second = handlers['issues.labeled'][0](ctx2);
+    for (let i = 0; i < 50 && postOnce.mock.calls.length === 1; i += 1) await Promise.resolve();
+    expect(postOnce).toHaveBeenCalledTimes(1);
+
+    releasePost();
+    await Promise.all([first, second]);
+
+    expect(postOnce).toHaveBeenCalledTimes(1);
+    expect(String(postOnce.mock.calls[0]?.[2] ?? '')).toContain('Routing label is locked to "route-1"');
+  });
+
+  test('check_run.completed failure marks failed sequential registry heads and advances the queue', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const pr = {
+      number: 916,
+      body: 'manual direct pr',
+      title: 'Direct',
+      state: 'open',
+      head: { ref: 'feature/check-run-failure', sha: 'sha-check-run-failure' },
+      base: { ref: 'main' },
+    };
+    const ctx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'failure',
+      sha: 'sha-check-run-failure',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+    ctx.payload = {
+      action: 'completed',
+      repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'failure',
+        status: 'completed',
+        head_sha: 'sha-check-run-failure',
+        pull_requests: [{ number: 916 }],
+      },
+    };
+    extractHashFromPrBody.mockReturnValue('');
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-check-run-failure.yaml', status: 'modified' }],
+    });
+
+    await handlers['check_run.completed'][0](ctx);
+
+    expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.listFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 916 })
+    );
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_run.completed success releases active sequential PR when green head is not approved', async () => {
+    const cfg = {
+      requests: { product: { folderName: 'resources' } },
+      workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] },
+    } as any;
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const pr = {
+      number: 917,
+      body: 'manual direct pr',
+      title: 'Direct',
+      state: 'open',
+      user: { login: 'requester' },
+      head: { ref: 'feature/sequential-release', sha: 'sha-sequential-release' },
+      base: { ref: 'main' },
+      mergeable: true,
+      mergeable_state: 'behind',
+    };
+
+    const pushCtx = mkBaseContext({ owner: 'o1', repo: 'r-sequential-release', withCachedConfig: true, config: cfg });
+    pushCtx.name = 'push';
+    pushCtx.payload = {
+      ref: 'refs/heads/main',
+      repository: { name: 'r-sequential-release', owner: { login: 'o1' }, default_branch: 'main' },
+      commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
+    };
+    extractHashFromPrBody.mockReturnValue('');
+    pushCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] });
+    pushCtx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    pushCtx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-sequential-release.yaml', status: 'modified' }],
+    });
+    pushCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+    loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
+
+    await handlers['push'][0](pushCtx);
+    expect(pushCtx.octokit.pulls.updateBranch).toHaveBeenCalled();
+
+    const checkCtx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'success',
+      sha: 'sha-sequential-release',
+      ownerLogin: 'o1',
+      repoName: 'r-sequential-release',
+      withCachedConfig: true,
+      config: cfg,
+    });
+    checkCtx.payload = {
+      action: 'completed',
+      repository: { name: 'r-sequential-release', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'success',
+        status: 'completed',
+        head_sha: 'sha-sequential-release',
+        pull_requests: [{ number: 917 }],
+      },
+    };
+    extractHashFromPrBody.mockReturnValue('');
+    checkCtx.octokit.pulls.list
+      .mockResolvedValueOnce({ data: [{ ...pr, mergeable_state: 'clean' }] })
+      .mockResolvedValueOnce({ data: [] });
+    checkCtx.octokit.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
+    checkCtx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-sequential-release.yaml', status: 'modified' }],
+    });
+    checkCtx.octokit.repos.getContent.mockResolvedValue({
+      data: { content: b64('type: product\nname: product-sequential-release\n'), encoding: 'base64' },
+    });
+    checkCtx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
+    runApprovalHook.mockResolvedValue({ status: 'unknown', reason: 'manual review required' } as any);
+
+    await handlers['check_run.completed'][0](checkCtx);
+
+    expect(postOnce).toHaveBeenCalledWith(
+      checkCtx,
+      expect.objectContaining({ owner: 'o1', repo: 'r-sequential-release', issue_number: 917 }),
+      expect.stringContaining('manual review required'),
+      expect.objectContaining({ minimizeTag: 'nsreq:on-approval:unknown' })
+    );
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_run.completed success clears active sequential PR and advances after processing failure', async () => {
+    const cfg = {
+      requests: { product: { folderName: 'resources' } },
+      workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] },
+    } as any;
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const pr = {
+      number: 918,
+      body: 'manual direct pr',
+      title: 'Direct',
+      state: 'open',
+      user: { login: 'requester' },
+      head: { ref: 'feature/sequential-processing-failure', sha: 'sha-sequential-processing-failure' },
+      base: { ref: 'main' },
+      mergeable: true,
+      mergeable_state: 'behind',
+    };
+
+    const pushCtx = mkBaseContext({ owner: 'o1', repo: 'r-processing-failure', withCachedConfig: true, config: cfg });
+    pushCtx.name = 'push';
+    pushCtx.payload = {
+      ref: 'refs/heads/main',
+      repository: { name: 'r-processing-failure', owner: { login: 'o1' }, default_branch: 'main' },
+      commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
+    };
+    extractHashFromPrBody.mockReturnValue('');
+    pushCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] });
+    pushCtx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    pushCtx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-processing-failure.yaml', status: 'modified' }],
+    });
+    pushCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+    loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
+
+    await handlers['push'][0](pushCtx);
+    expect(pushCtx.octokit.pulls.updateBranch).toHaveBeenCalled();
+
+    const checkCtx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'success',
+      sha: 'sha-sequential-processing-failure',
+      ownerLogin: 'o1',
+      repoName: 'r-processing-failure',
+      withCachedConfig: true,
+      config: cfg,
+    });
+    checkCtx.payload = {
+      action: 'completed',
+      repository: { name: 'r-processing-failure', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'success',
+        status: 'completed',
+        head_sha: 'sha-sequential-processing-failure',
+        pull_requests: [{ number: 918 }],
+      },
+    };
+    extractHashFromPrBody.mockReturnValue('');
+    checkCtx.octokit.pulls.list
+      .mockResolvedValueOnce({ data: [{ ...pr, mergeable_state: 'clean' }] })
+      .mockResolvedValueOnce({ data: [] });
+    checkCtx.octokit.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
+    checkCtx.octokit.pulls.listFiles
+      .mockRejectedValueOnce(new Error('files failed before processing'))
+      .mockResolvedValueOnce({ data: [{ filename: 'resources/product-processing-failure.yaml', status: 'modified' }] });
+
+    await handlers['check_run.completed'][0](checkCtx);
+
+    const warnMessages = checkCtx.log.warn.mock.calls.map((call: any[]) => String(call[1] ?? call[0] ?? '')).join('\n');
+    expect(warnMessages).toContain('auto-merge candidate processing failed');
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+});
