@@ -5942,18 +5942,22 @@ async function handleApprovalComment(
     return;
   }
 
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    requestType
-  );
+  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
+  let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
 
-  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
+  if (!okApprover) {
+    const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType
+    );
 
-  const okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+    allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
+    okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+  }
   if (!okApprover) {
     const hasConfiguredApprovers = allowedApprovers.length > 0;
     const reason = hasConfiguredApprovers
