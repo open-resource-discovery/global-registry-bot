@@ -1443,6 +1443,7 @@ type ApprovalDecision = {
   reason?: string;
   comment?: string;
   message?: string;
+  approvers?: string[];
   errors?: {
     field?: string;
     message?: string;
@@ -1568,6 +1569,92 @@ async function fetchIssueLabels(
   return toLabelNames(issue.labels);
 }
 
+async function ensureAssigneesPresent(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  assignees: string[]
+): Promise<void> {
+  const targetAssignees = uniqLogins((assignees || []).map((x) => toStringTrim(x)).filter(Boolean));
+  if (!targetAssignees.length) return;
+
+  try {
+    const { data } = await context.octokit.issues.get(params);
+    const currentAssignees = uniqLogins(
+      (((data as Record<string, unknown>)['assignees'] as (Record<string, unknown> | null | undefined)[]) || [])
+        .map((item) => normalizeLogin(toStringTrim(item?.login)))
+        .filter(Boolean)
+    );
+
+    const missing = targetAssignees.filter(
+      (candidate) =>
+        !currentAssignees.some(
+          (existing) => normalizeLogin(existing).toLowerCase() === normalizeLogin(candidate).toLowerCase()
+        )
+    );
+
+    if (!missing.length) return;
+
+    await context.octokit.issues.addAssignees({
+      ...params,
+      assignees: missing,
+    });
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        err: e instanceof Error ? e.message : String(e),
+        issueNumber: params.issue_number,
+        assignees: targetAssignees,
+      },
+      'failed to ensure assignees'
+    );
+  }
+}
+
+async function resolveAdditionalIssueApproversFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType: string
+): Promise<string[]> {
+  try {
+    const resourceName = extractResourceNameFromForm(parsedFormData, template);
+    const namespace = toStringTrim((parsedFormData as Record<string, unknown>)['namespace']) || resourceName;
+
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType,
+          namespace,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+        }
+      )
+    );
+
+    if (decision.status !== 'unknown') return [];
+    return uniqLogins(decision.approvers || []);
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        err: e instanceof Error ? e.message : String(e),
+        issueNumber: issue.number,
+      },
+      'failed to resolve additional issue approvers from onApproval hook'
+    );
+
+    return [];
+  }
+}
+
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1575,7 +1662,7 @@ async function handoverToCpa(
   _nsType: string,
   _namespace: string,
   _links: string[] = [],
-  options: { snapshotHash?: string; requestType?: string } = {}
+  options: { snapshotHash?: string; requestType?: string; extraApprovers?: string[] } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
 
@@ -1592,7 +1679,10 @@ async function handoverToCpa(
     ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
     : approverRouting.approvalUsernames;
 
-  await ensureAssigneesOnce(context, params, issue, assigneesForType);
+  const mergedAssignees = uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
+
+  await ensureAssigneesOnce(context, params, issue, mergedAssignees);
+  await ensureAssigneesPresent(context, params, mergedAssignees);
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
@@ -1603,7 +1693,7 @@ async function handoverToCpa(
         labels: labelsToAdd,
       });
     } catch {
-      // ignore label add errors
+      /* empty */
     }
   }
 
@@ -1614,7 +1704,7 @@ async function handoverToCpa(
         name: eff.labelOnApproved,
       });
     } catch {
-      // ignore if not present
+      /* empty */
     }
   }
 
@@ -1623,6 +1713,7 @@ async function handoverToCpa(
   const snapshotMarker = options.snapshotHash ? `\n\n<!-- nsreq:snapshot:${options.snapshotHash} -->` : '';
 
   const handoverMsg = `### ✅ No issues detected
+
 ### ➡️ Routing to an approver for review
 
 ---
@@ -1808,6 +1899,7 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
   if (decision.reason) payload.reason = decision.reason;
   if (decision.comment) payload.comment = decision.comment;
   if (decision.message) payload.message = decision.message;
+  if (Array.isArray(decision.approvers) && decision.approvers.length) payload.approvers = decision.approvers;
   if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
   return JSON.stringify(payload, null, 2);
 }
@@ -1815,7 +1907,47 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
 function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
   if (decision === true) return { status: 'approved' };
   if (decision === false) return {};
-  return decision || {};
+
+  const normalized = decision || {};
+  const approvers = uniqLogins(
+    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
+  );
+  const { approvers: _approvers, ...normalizedWithoutApprovers } = normalized;
+
+  return {
+    ...normalizedWithoutApprovers,
+    ...(approvers.length ? { approvers } : {}),
+  };
+}
+
+function isApprovalDecisionAuthorizedByHookApprovers(
+  decision: ApprovalDecision,
+  requesterId: string | undefined | null
+): boolean {
+  const requester = normalizeLogin(requesterId).toLowerCase();
+  if (!requester) return false;
+
+  const approvers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
+  return approvers.some((approver) => normalizeLogin(approver).toLowerCase() === requester);
+}
+
+function promoteUnknownApprovalDecisionForDirectPrRequester(
+  decision: ApprovalDecision,
+  requesterId: string | undefined | null
+): ApprovalDecision {
+  const normalized = normalizeApprovalDecision(decision);
+
+  if (normalized.status !== 'unknown') return normalized;
+  if (!isApprovalDecisionAuthorizedByHookApprovers(normalized, requesterId)) return normalized;
+
+  return {
+    ...normalized,
+    status: 'approved',
+    comment:
+      toStringTrim(normalized.comment) ||
+      toStringTrim(normalized.message) ||
+      `Approved automatically because the PR requester is an allowed hook approver.`,
+  };
 }
 
 function buildApprovalUnknownBody(decision: ApprovalDecision): string {
@@ -2425,8 +2557,23 @@ function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
 }
 
+class CooldownUntilMap extends Map<string, number> {
+  public override get(key: string): number | undefined {
+    const until = super.get(key);
+    if (until !== undefined && until <= Date.now()) {
+      super.delete(key);
+      return undefined;
+    }
+    return until;
+  }
+
+  public override has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+}
+
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
-const UPDATE_BRANCH_COOLDOWN_UNTIL = new Map<string, number>();
+const UPDATE_BRANCH_COOLDOWN_UNTIL = new CooldownUntilMap();
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
@@ -2939,11 +3086,7 @@ async function runMergeApprovedPrOrUpdateBranch(
     return;
   }
 
-  const hasCurrentHeadAutoApproval = currentHeadSha
-    ? await hasAutoApprovalReviewForHead(context, repoInfo, currentPr.number, currentHeadSha)
-    : false;
-
-  const hasMergeApproval = isSnapshotManagedRequestPr(currentPr) || hasCurrentHeadAutoApproval;
+  const hasMergeApproval = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr);
 
   if (!hasMergeApproval) {
     log(
@@ -2954,7 +3097,7 @@ async function runMergeApprovedPrOrUpdateBranch(
         headSha: currentHeadSha,
         reason,
       },
-      'pull-request merge skipped: no current automation approval'
+      'pull-request merge skipped: no qualifying approval'
     );
 
     return;
@@ -3346,12 +3489,18 @@ async function processPullRequestForAutoMerge(
   }
 
   const body = toStringTrim(pr.body);
-  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
+  const currentHash =
+    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
   const prHash = extractHashFromPrBody(body);
 
   if (prHash) {
-    if (prHash !== currentHash) {
-      await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+    if (!snapshotHashes.includes(prHash)) {
+      await closeOutdatedRequestPrs(context, params, template, {
+        parsedFormData,
+        currentHash,
+        acceptedHashes: snapshotHashes,
+      });
       return;
     }
 
@@ -3552,7 +3701,6 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       const requested = await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
 
       if (requested) {
-        markSequentialRegistryPrActive(context, repoInfo, freshPr, reason);
         return true;
       }
 
@@ -4320,11 +4468,12 @@ function markSequentialRegistryPrActive(
   const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return;
 
+  const startedAt = Date.now();
   const active: SequentialRegistryPrActive = {
     prNumber: pr.number,
     startedHeadSha: headSha,
-    startedAt: Date.now(),
-    expiresAt: Date.now() + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
+    startedAt,
+    expiresAt: startedAt + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
     reason,
   };
 
@@ -4336,8 +4485,8 @@ function markSequentialRegistryPrActive(
     {
       prNumber: pr.number,
       headSha,
+      expiresAt: active.expiresAt,
       reason,
-      expiresAt: new Date(active.expiresAt).toISOString(),
     },
     'sequential-registry-pr:active-set'
   );
@@ -4379,6 +4528,26 @@ async function isSequentialRegistryPrActiveBlocking(
         reason: active.reason,
       },
       'sequential-registry-pr:active-cleared-closed'
+    );
+
+    clearSequentialRegistryPrActive(repoInfo);
+    return false;
+  }
+
+  const baseBranch = toStringTrim(freshPr.base?.ref);
+  const isDirectRegistryPr = await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch);
+
+  if (!isDirectRegistryPr) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: active.prNumber,
+        startedHeadSha: active.startedHeadSha,
+        currentHeadSha: toStringTrim(freshPr.head?.sha),
+        reason: active.reason,
+      },
+      'sequential-registry-pr:active-cleared-non-direct'
     );
 
     clearSequentialRegistryPrActive(repoInfo);
@@ -4661,12 +4830,14 @@ async function runOneSequentialDirectRegistryPrMaintenance(
 
     const candidates = await collectSequentialDirectRegistryPrCandidates(context, repoInfo, baseBranch, reason);
 
-    for (const candidate of candidates.filter((item) => item.mustUpdate && item.approvedForUpdate)) {
+    for (const candidate of candidates.filter((item) => item.mustUpdate)) {
       const requested = await requestPullRequestBranchUpdate(
         context,
         repoInfo,
         candidate.freshPr,
-        `${reason}:sequential-direct-pr-update-before-approval`
+        candidate.approvedForUpdate
+          ? `${reason}:sequential-direct-pr-update-approved`
+          : `${reason}:sequential-direct-pr-refresh-stale`
       );
 
       log(
@@ -4805,16 +4976,15 @@ async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
   const headSha = toStringTrim(freshPr.head?.sha);
   if (!headSha) return;
 
-  const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(context, repoInfo, freshPr.number, headSha);
-
-  if (hasCurrentHeadAutoApproval || isSnapshotManagedRequestPr(freshPr)) {
+  const approvedForMaintenance = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr);
+  if (approvedForMaintenance) {
     return;
   }
 
   const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
   if (!greenResult.green) return;
 
-  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-auto-approve');
+  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-qualify-for-approval');
   clearSequentialRegistryPrActive(repoInfo);
 
   await runOneSequentialDirectRegistryPrMaintenance(
@@ -4909,7 +5079,7 @@ async function evaluateChangedResourceApproval(
   const resourceName = resolveRegistryDocResourceName(parsed);
   if (!resourceName) return { status: 'unknown' };
 
-  return normalizeApprovalDecision(
+  const decision = normalizeApprovalDecision(
     await runApprovalHook(context, repoInfo, {
       requestType,
       namespace: resourceName,
@@ -4926,6 +5096,8 @@ async function evaluateChangedResourceApproval(
       },
     })
   );
+
+  return promoteUnknownApprovalDecisionForDirectPrRequester(decision, requestAuthorId);
 }
 
 async function evaluateDirectPrOnApproval(
@@ -5138,7 +5310,7 @@ async function finalizeApprovedRequest(
   template: TemplateLike,
   parsedFormData: FormData,
   options: {
-    approvalPrefix: string;
+    approvalPrefix?: string;
     approvalComment?: string;
     autoApproved?: boolean;
   }
@@ -5159,12 +5331,29 @@ async function finalizeApprovedRequest(
     return;
   }
 
+  const requestType = resolveEffectiveRequestType(template, parsedFormData);
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType
+  );
+
   const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
   if (existing.length) {
     await applyApprovedRequestState(context, params, eff);
+
     if (autoApproved) {
       await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, existing[0].number);
     }
+
+    await ensureAssigneesPresent(
+      context,
+      { owner: params.owner, repo: params.repo, issue_number: existing[0].number },
+      hookApprovers
+    );
 
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
@@ -5184,6 +5373,12 @@ async function finalizeApprovedRequest(
       await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, pr.number);
     }
 
+    await ensureAssigneesPresent(
+      context,
+      { owner: params.owner, repo: params.repo, issue_number: pr.number },
+      hookApprovers
+    );
+
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
 
@@ -5193,12 +5388,7 @@ async function finalizeApprovedRequest(
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
 
-    await postOnce(
-      context,
-      params,
-      /^Failed to create PR automatically:/i.test(msg) ? msg : `Failed to create PR automatically: ${msg}`,
-      { minimizeTag: 'nsreq:approval-info' }
-    );
+    await postOnce(context, params, `Failed to create Pull Request: ${msg}`, { minimizeTag: 'nsreq:approval-info' });
   }
 }
 
@@ -5638,12 +5828,18 @@ async function processIssueEvent(
   // If the issue was previously closed as rejected and later reopened, clear that terminal status.
   await removeRejectedStatusLabel(context, params, toLabelNames(issue.labels));
 
-  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
+  const currentHash =
+    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
 
   await normalizeIssueTitle(context, params, issue, template, parsedFormData);
 
   try {
-    await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+    await closeOutdatedRequestPrs(context, params, template, {
+      parsedFormData,
+      currentHash,
+      acceptedHashes: snapshotHashes,
+    });
   } catch (e: unknown) {
     (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'closeOutdatedRequestPRs skipped');
   }
@@ -5731,9 +5927,19 @@ async function processIssueEvent(
 
   if (approvalOutcome !== 'continue') return;
 
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    result.template || template,
+    parsedFormData,
+    effectiveRequestType
+  );
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
+    extraApprovers: hookApprovers,
   });
 }
 
@@ -5746,10 +5952,11 @@ async function handleApprovalComment(
   commenter: string
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
+  const requestType = resolveEffectiveRequestType(template, parsedFormData);
 
-  const allowedApprovers = resolveApproversForRequestType(
+  const configuredApprovers = resolveApproversForRequestType(
     context,
-    resolveEffectiveRequestType(template, parsedFormData),
+    requestType,
     eff.approverUsernames,
     eff.approverPoolUsernames
   );
@@ -5765,7 +5972,22 @@ async function handleApprovalComment(
     return;
   }
 
-  const okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
+  let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+
+  if (!okApprover) {
+    const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType
+    );
+
+    allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
+    okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+  }
   if (!okApprover) {
     const hasConfiguredApprovers = allowedApprovers.length > 0;
     const reason = hasConfiguredApprovers
@@ -5927,9 +6149,19 @@ async function handleAuthorUpdateComment(
 
       if (approvalOutcome !== 'continue') return;
 
+      const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+        context,
+        params,
+        issue,
+        tpl,
+        parsedAfterUpdate,
+        effectiveRequestType
+      );
+
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
         requestType: effectiveRequestType,
+        extraApprovers: hookApprovers,
       });
       return;
     }
@@ -6329,9 +6561,19 @@ ${mentions}`,
     minimizeTag: `${tagBase}:approved`,
   });
 
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt
+  );
+
   await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
     snapshotHash,
     requestType: effRt,
+    extraApprovers: hookApprovers,
   });
 
   return true;
@@ -6403,6 +6645,23 @@ function stripRoutingLockFromBody(issueBody: unknown): string {
 
 function readIssueBodyForProcessing(issueBody: unknown): string {
   return toStringTrim(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody)));
+}
+
+function buildCompatibleRequestSnapshotHashes(
+  issueBody: unknown,
+  parsedFormData: FormData,
+  template: TemplateLike
+): string[] {
+  const processedBody = readIssueBodyForProcessing(issueBody);
+  const rawBody = String(issueBody || '');
+
+  return Array.from(
+    new Set(
+      [calcSnapshotHash(parsedFormData, template, processedBody), calcSnapshotHash(parsedFormData, template, rawBody)]
+        .map((value) => toStringTrim(value))
+        .filter(Boolean)
+    )
+  );
 }
 
 async function detectRoutingLabels(
@@ -6554,37 +6813,59 @@ async function closeOutdatedRequestPrs(
   context: BotContext<RequestEvents>,
   { owner, repo, issue_number }: IssueParams,
   template: TemplateLike,
-  options: { parsedFormData?: FormData; currentHash?: string } = {}
+  options: { parsedFormData?: FormData; currentHash?: string; acceptedHashes?: string[] } = {}
 ): Promise<void> {
   const ensureFormAndHash = async (): Promise<{
     parsedFormData: FormData;
     currentHash: string;
+    acceptedHashes: string[];
   }> => {
-    const { parsedFormData: givenForm, currentHash: givenHash } = options;
-    if (givenForm && givenHash) return { parsedFormData: givenForm, currentHash: givenHash };
+    const { parsedFormData: givenForm, currentHash: givenHash, acceptedHashes: givenAcceptedHashes } = options;
+
+    if (givenForm && givenHash) {
+      const acceptedHashes = Array.from(
+        new Set((givenAcceptedHashes || [givenHash]).map((value) => toStringTrim(value)).filter(Boolean))
+      );
+
+      return {
+        parsedFormData: givenForm,
+        currentHash: givenHash,
+        acceptedHashes: acceptedHashes.length ? acceptedHashes : [givenHash],
+      };
+    }
 
     const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
     const issue = data as unknown as IssueLike;
     const bodyStr = readIssueBodyForProcessing(issue.body);
     const form = parseForm(bodyStr, template);
-    const hash = calcSnapshotHash(form, template, readIssueBodyForProcessing(issue.body));
-    return { parsedFormData: form, currentHash: hash };
+    const acceptedHashes = buildCompatibleRequestSnapshotHashes(issue.body, form, template);
+    const currentHash = acceptedHashes[0] || calcSnapshotHash(form, template, bodyStr);
+
+    return {
+      parsedFormData: form,
+      currentHash,
+      acceptedHashes,
+    };
   };
 
   const closePr = async (prNum: number, ref: string): Promise<void> => {
     try {
       await context.octokit.pulls.update({ owner, repo, pull_number: prNum, state: 'closed' });
     } catch {
-      // ignore
+      /* empty */
     }
     try {
       await context.octokit.git.deleteRef({ owner, repo, ref: `heads/${ref}` });
     } catch {
-      // ignore
+      /* empty */
     }
   };
 
-  const { currentHash } = await ensureFormAndHash();
+  const { currentHash, acceptedHashes } = await ensureFormAndHash();
+  const acceptedHashSet = new Set((acceptedHashes || []).map((value) => toStringTrim(value)).filter(Boolean));
+
+  if (currentHash) acceptedHashSet.add(currentHash);
+
   const prs = await findOpenIssuePrs(context, { owner, repo }, issue_number);
   if (!prs.length) return;
 
@@ -6595,9 +6876,8 @@ async function closeOutdatedRequestPrs(
   for (const pr of prs) {
     const prHash = extractHashFromPrBody(toStringTrim(pr.body));
 
-    // Direct/manual PRs without request snapshot hash must not be treated as outdated
     if (!prHash) continue;
-    if (prHash === currentHash) continue;
+    if (acceptedHashSet.has(prHash)) continue;
 
     await closePr(pr.number, pr.head.ref);
     closed.push(pr.number);
@@ -6617,7 +6897,7 @@ async function closeOutdatedRequestPrs(
   try {
     await context.octokit.issues.removeLabel({ owner, repo, issue_number, name: onApproved });
   } catch {
-    // ignore
+    /* empty */
   }
 }
 

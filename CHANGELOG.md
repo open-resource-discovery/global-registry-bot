@@ -7,6 +7,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+### Added
+
+- Support for extra manual approvers returned by onApproval.
+- Hook-provided approvers are preserved in approval decisions.
+- Extra manual approvers are merged with configured approvers and approver pools.
+
+### Changed
+
+- Manual approval checks now include hook-provided approvers.
+- Matched requests can be approved by additional approvers from onApproval.
+- Existing auto-approval and normal review flow remain unchanged.
+
+### Fixed
+
+- Prevented hook approvers from being dropped during approval normalization.
+
 ## [[0.1.3](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.3)] - 2026-04-24
 
 ### Changed

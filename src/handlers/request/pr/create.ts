@@ -218,6 +218,16 @@ function isRepoContentFile(data: unknown): data is RepoContentFile {
   return isPlainObject(data) && typeof data.content === 'string';
 }
 
+const ROUTING_LOCK_STRIP_RE = /<!--\s*nsreq:routing-lock\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
+const PARENT_APPROVAL_STRIP_RE = /<!--\s*nsreq:parent-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
+
+function readIssueBodyForSnapshot(issueBody: unknown): string {
+  return String(issueBody || '')
+    .replace(PARENT_APPROVAL_STRIP_RE, '')
+    .replace(ROUTING_LOCK_STRIP_RE, '')
+    .trimEnd();
+}
+
 type JsYamlApi = {
   dump: (obj: unknown, opts?: Record<string, unknown>) => string;
   load: (src: string, opts?: Record<string, unknown>) => unknown;
@@ -882,7 +892,7 @@ export async function createRequestPr(
     }
 
     if (!pr) {
-      const hash = calcSnapshotHash(formData, template, String(issue.body || ''));
+      const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
       const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
       const issueMarker = `<!-- nsreq:issue:${issue.number} -->`;
 
@@ -1083,7 +1093,7 @@ export async function createRequestPr(
   }
 
   if (!pr) {
-    const hash = calcSnapshotHash(formData, template, String(issue.body || ''));
+    const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
     const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
 
     const prTitle = buildPrTitle(prOpts.prTitleTemplate, String(candidate.type || type), resourceName, STRUCT_ROOT);
