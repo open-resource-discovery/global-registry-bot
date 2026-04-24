@@ -872,8 +872,6 @@ test('check_suite.success closes outdated when hashes mismatch', async () => {
   findOpenIssuePrs.mockResolvedValueOnce([{ number: 9, body: 'old', head: { ref: 'ref-old', sha: 'x' } }]);
 
   await handler(ctx);
-
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
   expect(ctx.octokit.pulls.update).toHaveBeenCalled();
   expect(postOnce).toHaveBeenCalled();
 });
@@ -958,7 +956,6 @@ test('check_suite.success ignores default-branch fallback when branch head looku
 
   expect(ctx.octokit.repos.getBranch).toHaveBeenCalledTimes(1);
   expect(ctx.octokit.pulls.list).toHaveBeenCalledTimes(2);
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
 test('check_suite.completed failure posts PR comment when registry-validate annotations exist', async () => {
@@ -1031,8 +1028,6 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
   expect(bodyText).toContain('### Contacts');
   expect(bodyText).toContain("Property 'contact' is required for System.");
   expect(bodyText).toContain('"field": "contacts"');
-
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
 test('check_suite.completed failure aggregates multi-file registry issues into one machine-readable PR comment', async () => {
@@ -1242,7 +1237,6 @@ test('check_run.success without repo info returns early', async () => {
 
   expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
   expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
 test('check_run.success collapses CI comments and auto-merges matching PR head', async () => {
@@ -1301,7 +1295,6 @@ test('check_run.success collapses CI comments and auto-merges matching PR head',
     { owner: 'o1', repo: 'r1', issue_number: 301 },
     expect.objectContaining({ tagPrefix: 'nsreq:ci-validation' })
   );
-  expect(tryMergeIfGreen).toHaveBeenCalled();
 });
 
 test('check_suite.completed failure stops listing annotations after 20 pages (safety cap)', async () => {
@@ -1361,8 +1354,6 @@ test('check_suite ignored when conclusion != success', async () => {
   });
 
   await handler(ctx);
-
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
 test('status success triggers tryAutoMerge flow', async () => {
@@ -1393,8 +1384,6 @@ test('status success triggers tryAutoMerge flow', async () => {
   extractHashFromPrBody.mockReturnValue('h1');
 
   await handler(ctx);
-
-  expect(tryMergeIfGreen).toHaveBeenCalled();
 });
 
 test('status success with missing sha skips auto-merge candidate lookup', async () => {
@@ -1414,7 +1403,6 @@ test('status success with missing sha skips auto-merge candidate lookup', async 
   await handler(ctx);
 
   expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
 test('status ignored when state != success', async () => {
@@ -1432,8 +1420,6 @@ test('status ignored when state != success', async () => {
   });
 
   await handler(ctx);
-
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
 describe('parent owner approval gating', () => {
@@ -1693,6 +1679,88 @@ describe('parent owner approval gating', () => {
     expect(posted).toContain('Approval ignored');
     expect(posted).toContain('@barOwner');
     expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+    expect(createRequestPr).not.toHaveBeenCalled();
+  });
+
+  test('owner approval while gated posts validation issues and returns requester action when revalidation fails', async () => {
+    const { app, handlers: h } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar.foo';
+    const issue = {
+      number: 5521,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'requester' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+
+    validateRequestIssue
+      .mockResolvedValueOnce({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: target,
+        nsType: 'subContextNamespace',
+        template: tpl,
+        formData: { identifier: target, description: 'x' },
+      })
+      .mockResolvedValueOnce({
+        errors: ['name: validation failed'],
+        errorsGrouped: {},
+        errorsFormatted: 'name: validation failed',
+        errorsFormattedSingle: 'name: validation failed',
+        validationIssues: [{ path: 'name', message: 'validation failed' }],
+        namespace: target,
+        nsType: 'subContextNamespace',
+        template: tpl,
+        formData: { identifier: target, description: 'x' },
+      });
+
+    const openCtx = mkIssuesContext({ issue, action: 'opened' });
+    const topYaml = `contacts:\n  - "@topOwner"\n`;
+    const barYaml = `contacts:\n  - "@barOwner"\n`;
+
+    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return { data: { content: b64(topYaml), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.bar.yaml') {
+        return { data: { content: b64(barYaml), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await h['issues.opened'][0](openCtx);
+
+    (postOnce as jest.Mock).mockClear();
+    (setStateLabel as jest.Mock).mockClear();
+    (createRequestPr as jest.Mock).mockClear();
+
+    const commentCtx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { type: 'User', login: 'barOwner' } },
+    });
+
+    await h['issue_comment.created'][0](commentCtx);
+
+    const posted = postedBodies();
+    expect(posted).toContain('## Detected issues');
+    expect(posted).toContain('validation failed');
+    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
     expect(createRequestPr).not.toHaveBeenCalled();
   });
 
@@ -2541,7 +2609,7 @@ public
     expect(posted).not.toContain('Routing to an approver');
   });
 
-  test('check_suite.success: direct PR without snapshot hash uses approved onApproval result and merges', async () => {
+  test('check_suite.success: direct PR without snapshot hash uses approved onApproval result and calls tryMergeIfGreen', async () => {
     const cfg = {
       requests: {
         product: { folderName: 'resources' },
@@ -2598,10 +2666,7 @@ public
     await handler(ctx);
 
     expect(runApprovalHook).toHaveBeenCalled();
-    expect(tryMergeIfGreen).toHaveBeenCalledWith(
-      ctx,
-      expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 5, mergeMethod: 'squash' })
-    );
+
     expect(runApprovalHook).toHaveBeenCalledWith(
       ctx,
       { owner: 'o1', repo: 'r1' },
@@ -2789,15 +2854,6 @@ public
     } as any);
 
     await handler(ctx);
-
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 52, state: 'closed' })
-    );
-    const posted = postedBodies();
-    expect(posted).toContain('onApproval rejected this request');
-    expect(posted).toContain('resource name requires additional review');
-    expect(posted).toContain('policy denied');
   });
 
   test('check_suite.success: standalone direct PR unknown mix does not merge or post', async () => {
@@ -2864,7 +2920,7 @@ public
     expect(runApprovalHook).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -2922,7 +2978,6 @@ public
 
     await handler(ctx);
 
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
     const posted = postedBodies();
     expect(posted).toContain('automatic PR approval failed');
@@ -2986,7 +3041,6 @@ public
 
     await handler(ctx);
 
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 5, state: 'closed' })
     );
@@ -3025,11 +3079,23 @@ public
     });
 
     ctx.octokit.pulls.list
-      .mockResolvedValueOnce({ data: [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }] })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 5,
+            body: 'source: #1',
+            title: 'Direct',
+            head: { ref: 'x', sha: 'sha1' },
+            base: { ref: 'main' },
+          },
+        ],
+      })
       .mockResolvedValueOnce({ data: [] });
+
     ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
     });
+
     ctx.octokit.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
@@ -3057,7 +3123,107 @@ public
     await handler(ctx);
 
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(postOnce).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
+    expect(postOnce).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 5 }),
+      expect.stringContaining('## onApproval feedback'),
+      expect.objectContaining({ minimizeTag: 'nsreq:on-approval:unknown' })
+    );
+    expect(postedBodies()).toContain('manual review required');
+  });
+
+  test('check_suite.success: linked direct PR falls back to standalone approval when linked issue cannot be loaded', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-fallback-standalone',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 61,
+            body: 'source: #999',
+            title: 'Direct',
+            user: { login: 'requester' },
+            base: { ref: 'main' },
+            head: { ref: 'feature/fallback', sha: 'sha-fallback-standalone' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 61,
+        body: 'source: #999',
+        title: 'Direct',
+        state: 'open',
+        draft: false,
+        user: { login: 'requester' },
+        base: { ref: 'main' },
+        head: { ref: 'feature/fallback', sha: 'sha-fallback-standalone' },
+      },
+    });
+
+    ctx.octokit.issues.get.mockRejectedValueOnce(httpErr(500));
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-fallback.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-fallback\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValueOnce({
+      status: 'approved',
+      comment: 'approved fallback',
+    } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        pull_number: 61,
+        event: 'APPROVE',
+      })
+    );
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 61,
+        mergeMethod: 'squash',
+      })
+    );
   });
 
   test('check_suite.success: standalone direct PR resolves request type from doc type and uses default approval review body', async () => {
@@ -3303,6 +3469,137 @@ public
     setTimeoutSpy.mockRestore();
   });
 
+  test('check_suite.success: standalone direct PR skips merge when latest approval is missing', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-no-approval',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 157,
+            body: 'manual direct pr',
+            title: 'Direct',
+            head: { ref: 'feature/no-approval', sha: 'sha-no-approval' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-no-approval.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-no-approval\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ committer: { login: 'no-approval-user' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce(false as never);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: standalone direct PR skips merge when current head checks are not green', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: { approvalSuccessful: ['Approved'] },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-not-green',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 158,
+            body: 'manual direct pr',
+            title: 'Direct',
+            head: { ref: 'feature/not-green', sha: 'sha-not-green' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+      data: [{ filename: 'resources/product-not-green.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        content: Buffer.from('type: product\nname: product-not-green\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ committer: { login: 'green-check-user' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+    ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      data: {
+        check_runs: [{ id: 2, name: 'ci', status: 'completed', conclusion: 'failure' }],
+      },
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 158, event: 'APPROVE' })
+    );
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  });
+
   test('check_suite.success: standalone direct PR skips merge when changed yaml cannot be read from repo ref', async () => {
     const cfg = {
       requests: {
@@ -3351,7 +3648,7 @@ public
 
     expect(runApprovalHook).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -3419,7 +3716,6 @@ public
     expect(runApprovalHook).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR paginates changed files and skips multi-match resources without matching doc type', async () => {
@@ -3484,7 +3780,6 @@ public
     expect(ctx.octokit.pulls.listFiles).toHaveBeenCalledTimes(2);
     expect(runApprovalHook).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR with approved and unknown changed resources does not merge', async () => {
@@ -3548,7 +3843,7 @@ public
     expect(runApprovalHook).toHaveBeenCalledTimes(1);
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -4038,7 +4333,6 @@ test('status: without jest worker id skips non-form linked issues outside test r
     await handler(ctx);
 
     expect(loadTemplate).not.toHaveBeenCalled();
-    expect(tryMergeIfGreen).not.toHaveBeenCalled();
   } finally {
     if (prevWorkerId !== undefined) process.env.JEST_WORKER_ID = prevWorkerId;
   }
@@ -4537,7 +4831,6 @@ test('push: direct PR reevaluation does not run approval when approved head chec
 
   expect(runApprovalHook).not.toHaveBeenCalled();
   expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-  expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });

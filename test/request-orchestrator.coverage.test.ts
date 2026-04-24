@@ -1118,6 +1118,46 @@ describe('request-orchestrator additional coverage', () => {
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
+  test('status: ignores non-success state before auto-merge evaluation', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const octokit = mkOctokit();
+    const repository: Repository = { name: 'r', owner: { login: 'o' } };
+
+    const ctx = mkCtx({
+      name: 'status',
+      config: DEFAULT_CONFIG_MOCK,
+      octokit,
+      payload: { state: 'failure', repository, sha: 'head-sha' },
+    });
+
+    await expect(handlers['status']?.(ctx)).resolves.toBeUndefined();
+
+    expect(octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('status: ignores success payload without sha', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const octokit = mkOctokit();
+    const repository: Repository = { name: 'r', owner: { login: 'o' } };
+
+    const ctx = mkCtx({
+      name: 'status',
+      config: DEFAULT_CONFIG_MOCK,
+      octokit,
+      payload: { state: 'success', repository },
+    });
+
+    await expect(handlers['status']?.(ctx)).resolves.toBeUndefined();
+
+    expect(octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
   test('issues.opened: routing error is silently ignored for non-form issues', async () => {
     const { app, handlers } = mkApp();
     requestHandler(app as unknown as Probot);
@@ -1305,5 +1345,122 @@ describe('request-orchestrator additional coverage', () => {
 
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
     expect(bodies).toContain('PR already open: #88');
+  });
+
+  test('issues.opened: product request keeps stale parent marker but continues normal review flow', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const productTemplate: Template = {
+      title: 'Product',
+      _meta: {
+        requestType: 'product',
+        root: 'resources',
+        schema: 'x',
+      },
+    };
+
+    loadTemplate.mockResolvedValueOnce(productTemplate);
+    parseForm.mockReturnValueOnce({ identifier: 'product-five', title: 'Product Five' });
+
+    validateRequestIssue.mockResolvedValueOnce({
+      errors: [],
+      errorsFormattedSingle: '',
+      errorsFormatted: '',
+      validationIssues: [],
+      namespace: 'product-five',
+      nsType: 'product',
+      template: productTemplate,
+    });
+
+    const issue: Issue = {
+      number: 24,
+      title: 'Product: product-five',
+      body: '### Product ID\n\nproduct-five\n\n<!-- nsreq:parent-approval = {"v":1,"state":"pending","parent":"sap.css","owners":["barOwner"],"target":"sap.css.foo"} -->',
+      state: 'open',
+      labels: [{ name: 'Product' }],
+      user: { login: 'requester' },
+    };
+
+    const octokit = mkOctokit();
+    octokit.issues.get.mockResolvedValue({ data: issue });
+
+    const ctx = mkCtx({
+      name: 'issues.opened',
+      config: DEFAULT_CONFIG_MOCK,
+      octokit,
+      payload: { action: 'opened', issue },
+      issueNumber: 24,
+    });
+
+    await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
+
+    const bodyUpdateArgs = octokit.issues.update.mock.calls
+      .map(([args]) => args as { body?: string })
+      .find((args) => typeof args.body === 'string');
+
+    const updatedBody = String(bodyUpdateArgs?.body ?? '');
+
+    expect(updatedBody).toContain('nsreq:parent-approval');
+    expect(updatedBody).toContain('nsreq:routing-lock');
+    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+  });
+
+  test('issues.opened: outdated snapshot cleanup tolerates deleteRef and approved-label removal failures', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const config: StaticConfig = {
+      requests: {},
+      workflow: {
+        labels: {
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: [],
+      },
+    };
+
+    const issue: Issue = {
+      number: 25,
+      title: 'Request',
+      body: '### Namespace\n\nsap.test\n',
+      state: 'open',
+      labels: ['Approved'],
+      user: { login: 'author' },
+    };
+
+    const octokit = mkOctokit();
+    octokit.issues.get.mockResolvedValue({ data: issue });
+    octokit.pulls.update.mockResolvedValueOnce();
+    octokit.git.deleteRef.mockRejectedValueOnce(httpError(500, 'delete failed'));
+    octokit.issues.removeLabel.mockRejectedValueOnce(httpError(500, 'remove approved failed'));
+
+    findOpenIssuePrs.mockResolvedValueOnce([
+      {
+        number: 89,
+        body: '<!-- nsreq:snapshot:old-hash -->',
+        head: { sha: 'sha-old', ref: 'old-ref' },
+      },
+    ]);
+
+    extractHashFromPrBody.mockReturnValueOnce('old-hash');
+    calcSnapshotHash.mockReturnValueOnce('new-hash');
+
+    const ctx = mkCtx({
+      name: 'issues.opened',
+      config,
+      octokit,
+      payload: { action: 'opened', issue },
+      issueNumber: 25,
+    });
+
+    await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
+
+    const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
+
+    expect(octokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o', repo: 'r', pull_number: 89, state: 'closed' })
+    );
+    expect(bodies).toContain('Form updated → closing outdated PR(s): #89');
   });
 });
