@@ -1569,6 +1569,97 @@ async function fetchIssueLabels(
   return toLabelNames(issue.labels);
 }
 
+const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
+const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
+
+function issueScopedKey(params: IssueParams, suffix: string): string {
+  return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
+}
+
+async function ensureLabelsPresentOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  labels: string[]
+): Promise<void> {
+  const targetLabels = Array.from(new Set((labels || []).map(toStringTrim).filter(Boolean)));
+  if (!targetLabels.length) return;
+
+  const key = issueScopedKey(params, `labels:${targetLabels.map(normalizeKey).sort().join('|')}`);
+  const existing = ENSURE_LABELS_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = (async (): Promise<void> => {
+    let currentLabels: string[] = [];
+
+    try {
+      currentLabels = await fetchIssueLabels(context, params);
+    } catch {
+      currentLabels = [];
+    }
+
+    const currentKeys = new Set(currentLabels.map(normalizeKey).filter(Boolean));
+    const missing = targetLabels.filter((label) => {
+      const key = normalizeKey(label);
+      return key && !currentKeys.has(key);
+    });
+
+    if (!missing.length) return;
+
+    try {
+      await context.octokit.issues.addLabels({
+        ...params,
+        labels: missing,
+      });
+    } catch (error: unknown) {
+      const status = getHttpStatus(error);
+      if (status !== 404) {
+        log(
+          context,
+          'warn',
+          {
+            err: getErrorMessage(error),
+            labels: missing,
+            issueNumber: params.issue_number,
+          },
+          'failed to ensure labels'
+        );
+      }
+    }
+  })().finally(() => {
+    ENSURE_LABELS_INFLIGHT.delete(key);
+  });
+
+  ENSURE_LABELS_INFLIGHT.set(key, pending);
+  await pending;
+}
+
+async function postApprovalUnknownOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  decision: ApprovalDecision
+): Promise<void> {
+  const key = issueScopedKey(params, 'on-approval-unknown');
+  const existing = ON_APPROVAL_UNKNOWN_POST_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = (async (): Promise<void> => {
+    await postOnce(context, params, buildApprovalUnknownBody(decision), {
+      minimizeTag: 'nsreq:on-approval:unknown',
+    });
+  })().finally(() => {
+    ON_APPROVAL_UNKNOWN_POST_INFLIGHT.delete(key);
+  });
+
+  ON_APPROVAL_UNKNOWN_POST_INFLIGHT.set(key, pending);
+  await pending;
+}
+
 async function ensureAssigneesPresent(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1643,16 +1734,7 @@ async function handoverToCpa(
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
-  if (labelsToAdd.length) {
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: labelsToAdd,
-      });
-    } catch {
-      /* empty */
-    }
-  }
+  await ensureLabelsPresentOnce(context, params, labelsToAdd);
 
   if (eff.labelOnApproved) {
     try {
@@ -5221,20 +5303,8 @@ async function handoverStandaloneDirectPrToReview(
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
-  if (labelsToAdd.length) {
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: labelsToAdd,
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  await postOnce(context, params, buildApprovalUnknownBody(decision), {
-    minimizeTag: 'nsreq:on-approval:unknown',
-  });
+  await ensureLabelsPresentOnce(context, params, labelsToAdd);
+  await postApprovalUnknownOnce(context, params, decision);
 }
 
 async function handleDirectPrApprovalComment(
@@ -5526,9 +5596,7 @@ async function maybeHandleApprovalDecision(
   }
 
   if (decision.status === 'unknown') {
-    await postOnce(context, params, buildApprovalUnknownBody(decision), {
-      minimizeTag: 'nsreq:on-approval:unknown',
-    });
+    await postApprovalUnknownOnce(context, params, decision);
   }
 
   return 'continue';
@@ -5600,11 +5668,10 @@ async function maybeHandleDirectPrApprovalForMerge(
   }
 
   if (decision.status === 'unknown') {
-    await postOnce(
+    await postApprovalUnknownOnce(
       context,
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalUnknownBody(decision),
-      { minimizeTag: 'nsreq:on-approval:unknown' }
+      decision
     );
   }
 
