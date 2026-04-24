@@ -4892,10 +4892,19 @@ async function closeLinkedIssuePrs(
   repoInfo: RepoInfo,
   issueNumber: number
 ): Promise<number[]> {
-  const prs = (await listOpenPullRequests(context, repoInfo)).filter(
-    (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
-  );
+  let prs: PullRequestLike[] = [];
 
+  try {
+    prs = await findOpenIssuePRsRaw(context, repoInfo, issueNumber);
+  } catch {
+    prs = [];
+  }
+
+  if (prs.length === 0) {
+    prs = (await listOpenPullRequests(context, repoInfo)).filter(
+      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
+    );
+  }
   const closed: number[] = [];
 
   for (const pr of prs) {
