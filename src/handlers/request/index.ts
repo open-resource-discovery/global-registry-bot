@@ -2459,8 +2459,15 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
 }
 
 function isUpdateBranchCooldownActive(key: string): boolean {
-  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key) || 0;
-  return until > Date.now();
+  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
+  if (until == null) return false;
+
+  if (until <= Date.now()) {
+    UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
+    return false;
+  }
+
+  return true;
 }
 
 function markUpdateBranchCooldown(key: string): void {
