@@ -7,6 +7,26 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+### Changed
+
+- Approved registry PR branch updates now run sequentially.
+- Only approved registry PRs are considered for branch updates.
+- Registry PRs are processed from newest to oldest.
+- The bot now prevents multiple registry PR update pipelines from running at once.
+
+### Added
+
+- Approval detection from auto-approval reviews.
+- Approval detection from manual PR reviews.
+- Approval detection from the approved label.
+- Queue continuation after the current PR finishes.
+
+### Fixed
+
+- Prevented parallel CI runs caused by multiple registry PR branch updates.
+- Reduced unnecessary updateBranch calls.
+- Improved controlled processing of registry PR maintenance.
+
 ## [[0.1.2](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.2)] - 2026-04-24
 
 ### Changed

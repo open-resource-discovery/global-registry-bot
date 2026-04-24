@@ -2148,39 +2148,6 @@ function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<
   return latestByReviewer;
 }
 
-async function hasBlockingChangesRequestedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    return latestStates.has('CHANGES_REQUESTED');
-  } catch {
-    return false;
-  }
-}
-
-async function hasApprovedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    if (latestStates.has('CHANGES_REQUESTED')) return false;
-
-    return latestStates.has('APPROVED');
-  } catch {
-    return false;
-  }
-}
-
 async function hasApprovedLabelOnPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
