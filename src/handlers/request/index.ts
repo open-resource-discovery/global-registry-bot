@@ -2460,6 +2460,7 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
 
 function isUpdateBranchCooldownActive(key: string): boolean {
   const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
+  // eslint-disable-next-line eqeqeq
   if (until == null) return false;
 
   if (until <= Date.now()) {
@@ -4900,7 +4901,7 @@ async function closeLinkedIssuePrs(
   let prs: PullRequestLike[] = [];
 
   try {
-    prs = await findOpenIssuePRsRaw(context, repoInfo, issueNumber);
+    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
   } catch {
     prs = [];
   }
