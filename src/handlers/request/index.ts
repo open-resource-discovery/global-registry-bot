@@ -5297,7 +5297,6 @@ async function handoverStandaloneDirectPrToReview(
   const assignees = uniqLogins([...hookApprovers, ...configuredApprovers]);
 
   if (assignees.length) {
-    await ensureAssigneesOnce(context, params, pr as unknown as IssueLike, assignees);
     await ensureAssigneesPresent(context, params, assignees);
   }
 
