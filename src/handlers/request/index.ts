@@ -2208,19 +2208,36 @@ async function isPullRequestApprovedForBranchMaintenance(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<boolean> {
-  if (await hasBlockingChangesRequestedReviewOnPr(context, repoInfo, pr.number)) {
+  let reviews: PullRequestReviewLike[];
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const latestStates = getLatestActionableReviewStates(reviews);
+  const latestStateValues = new Set(latestStates.values());
+
+  if (latestStateValues.has('CHANGES_REQUESTED')) {
     return false;
   }
 
   if (isSnapshotManagedRequestPr(pr)) return true;
 
   const headSha = toStringTrim(pr.head?.sha);
+  const marker = headSha ? buildAutoApprovalReviewMarker(headSha) : null;
 
-  if (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) {
+  if (
+    marker &&
+    reviews.some(
+      (review) =>
+        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
+    )
+  ) {
     return true;
   }
 
-  if (await hasApprovedReviewOnPr(context, repoInfo, pr.number)) {
+  if (latestStateValues.has('APPROVED')) {
     return true;
   }
 
