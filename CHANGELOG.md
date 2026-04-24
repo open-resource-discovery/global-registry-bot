@@ -7,31 +7,36 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.2](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.2)] - 2026-04-24
+
 ### Changed
 
-- Direct PR flow: update stale branches **before** approval re-evaluation
-- Approval now runs only on the **latest PR head (fresh CI state)**
-- Merge gating tightened: requires valid approval + green checks on current head
-- Cross-repo PR handling: approval + evaluation now use the **actual PR head repo/branch**
-- Registry PR maintenance is now **sequential (one-by-one)** to avoid GHES overload
-- Only PRs with **registry YAML changes** are considered for branch updates
+- Direct PRs are re-evaluated on every default branch update.
+- Old open direct PRs now use the latest default branch config.
+- Stale direct PR branches are updated before approval re-evaluation.
+- Approval is only evaluated on the latest PR head with fresh CI state.
+- Merge gating now requires valid approval and green checks on the current head.
+- Linked issue detection now checks PR body, title, and branch name.
+- Requester resolution avoids using bot users for linked direct PRs.
+- Registry PR maintenance now runs sequentially to avoid GHES overload.
+- Only PRs with registry YAML changes are considered for branch updates.
 
 ### Added
 
-- Automatic re-evaluation of open direct PRs on default-branch updates
-- Fallback detection for changed registry files (tree diff)
-- Robust auto-approval tied to specific commit SHA
-- Full **onApproval support for cross-repo / fork PRs**
-- Sequential PR processing with **active PR tracking and skip logic**
+- Automatic re-evaluation of open direct PRs on default branch updates.
+- Tree-diff fallback for detecting changed registry files.
+- SHA-specific auto-approval checks.
+- onApproval support for cross-repo and fork PRs.
+- Sequential PR processing with active PR tracking and skip logic.
 
 ### Fixed
 
-- Removed stale-head approvals causing blocked merges
-- Prevented merge/update loops (branch protection vs outdated handling)
-- Improved updateBranch retry handling
-- Fixed cross-repo PRs being skipped due to missing head access / wrong resolution
-- Prevented GHES overload by avoiding parallel rebases of multiple PRs
-- Fixed pipeline blocking: failed PRs are now **skipped instead of stopping the flow**
+- Removed stale-head approvals causing blocked merges.
+- Prevented merge/update loops.
+- Improved updateBranch retry handling.
+- Fixed cross-repo PRs being skipped due to wrong head resolution.
+- Prevented parallel registry PR rebases from overloading GHES.
+- Failed PRs are now skipped instead of blocking the queue.
 
 ## [[0.1.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.1)] - 2026-04-21
 

@@ -1911,8 +1911,6 @@ async function createAutomatedApprovalReview(
       'automated PR approval review created'
     );
 
-    await delayMs(1000);
-
     return true;
   } catch (e: unknown) {
     const errObj = isPlainObject(e) ? e : {};
@@ -2488,8 +2486,16 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
 }
 
 function isUpdateBranchCooldownActive(key: string): boolean {
-  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key) || 0;
-  return until > Date.now();
+  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
+  // eslint-disable-next-line eqeqeq
+  if (until == null) return false;
+
+  if (until <= Date.now()) {
+    UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
+    return false;
+  }
+
+  return true;
 }
 
 function markUpdateBranchCooldown(key: string): void {
@@ -5061,10 +5067,19 @@ async function closeLinkedIssuePrs(
   repoInfo: RepoInfo,
   issueNumber: number
 ): Promise<number[]> {
-  const prs = (await listOpenPullRequests(context, repoInfo)).filter(
-    (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
-  );
+  let prs: PullRequestLike[] = [];
 
+  try {
+    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
+  } catch {
+    prs = [];
+  }
+
+  if (prs.length === 0) {
+    prs = (await listOpenPullRequests(context, repoInfo)).filter(
+      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
+    );
+  }
   const closed: number[] = [];
 
   for (const pr of prs) {
