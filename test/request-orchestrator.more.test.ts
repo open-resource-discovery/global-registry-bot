@@ -4211,7 +4211,7 @@ public
     );
   });
 
-  test('check_suite.success: neutral standalone direct PR assigns hook approvers and review labels', async () => {
+  test('check_suite.success: neutral standalone direct PR assigns hook approvers via GitHub assignees and review labels', async () => {
     const cfg = {
       requests: {
         product: { folderName: 'resources' },
@@ -4276,18 +4276,34 @@ public
       approvers: ['reviewer1'],
     } as any);
 
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+
+    Object.assign(ctx.octokit.issues, {
+      addAssignees,
+    });
+
     await handler(ctx);
 
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect(ensureAssigneesOnce).toHaveBeenCalled();
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
-      ctx,
-      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 161 }),
-      expect.anything(),
-      ['reviewer1'],
-    ]);
+    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 161,
+        assignees: ['reviewer1'],
+      })
+    );
 
     expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -7053,7 +7069,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
-  test('check_run.completed success clears active sequential PR and advances after processing failure', async () => {
+  test('check_run.completed success handles sequential changed-file lookup failure defensively without merge', async () => {
     const cfg = {
       requests: { product: { folderName: 'resources' } },
       workflow: { labels: { approvalSuccessful: ['Approved'] }, approvers: [] },
@@ -7123,7 +7139,417 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     await handlers['check_run.completed'][0](checkCtx);
 
     const warnMessages = checkCtx.log.warn.mock.calls.map((call: any[]) => String(call[1] ?? call[0] ?? '')).join('\n');
-    expect(warnMessages).toContain('auto-merge candidate processing failed');
+
+    expect(warnMessages).toContain('sequential-registry-pr:changed-files-lookup-failed');
+    expect(warnMessages).toContain('direct-pr:on-approval:registry-doc-read-failed');
+    expect(warnMessages).not.toContain('auto-merge candidate processing failed');
+
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: missing head sha collapses PR validation comments but skips auto-merge', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: '',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload.check_suite.status = 'completed';
+    ctx.payload.check_suite.head_sha = '';
+    ctx.payload.check_suite.pull_requests = [{ number: 919 }];
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(collapseBotCommentsByPrefix).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1', issue_number: 919 },
+      expect.objectContaining({
+        tagPrefix: 'nsreq:ci-validation',
+        classifier: 'RESOLVED',
+      })
+    );
+    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.failure: missing suite id returns before listing suite check runs', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'failure',
+      sha: 'sha-missing-suite-id',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    delete ctx.payload.check_suite.id;
+    ctx.payload.check_suite.pull_requests = [{ number: 920 }];
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(ctx.octokit.checks.listForSuite).not.toHaveBeenCalled();
+    expect(ctx.octokit.checks.listAnnotations).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.failure: missing PR numbers returns before listing suite check runs', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'failure',
+      sha: '',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload.check_suite.id = 9201;
+    ctx.payload.check_suite.head_sha = '';
+    ctx.payload.check_suite.pull_requests = [];
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(ctx.octokit.checks.listForSuite).not.toHaveBeenCalled();
+    expect(ctx.octokit.checks.listAnnotations).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: resolves PR numbers from associated commit and ignores closed duplicates', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-associated-commit-pr',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload.check_suite.status = 'completed';
+    ctx.payload.check_suite.pull_requests = [];
+
+    const listPullRequestsAssociatedWithCommit = jest.fn(
+      async (_params: any): Promise<{ data: { number: number; state: string }[] }> => ({
+        data: [
+          { number: 921, state: 'closed' },
+          { number: 922, state: 'open' },
+          { number: 922, state: 'open' },
+        ],
+      })
+    );
+
+    ctx.octokit.repos.listPullRequestsAssociatedWithCommit = listPullRequestsAssociatedWithCommit;
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(listPullRequestsAssociatedWithCommit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        commit_sha: 'sha-associated-commit-pr',
+        per_page: 100,
+      })
+    );
+    expect(collapseBotCommentsByPrefix).toHaveBeenCalledTimes(1);
+    expect(collapseBotCommentsByPrefix).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1', issue_number: 922 },
+      expect.objectContaining({ tagPrefix: 'nsreq:ci-validation' })
+    );
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_suite.success: falls back to open PR scan when associated commit lookup fails', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-fallback-pr-scan',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload.check_suite.status = 'completed';
+    ctx.payload.check_suite.pull_requests = [];
+
+    const listPullRequestsAssociatedWithCommit = jest.fn(async (_params: any): Promise<never> => {
+      throw new Error('commit association lookup failed');
+    });
+
+    ctx.octokit.repos.listPullRequestsAssociatedWithCommit = listPullRequestsAssociatedWithCommit;
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          ...Array.from({ length: 99 }, (_, index) => ({
+            number: 930 + index,
+            head: { sha: `other-sha-${index}` },
+          })),
+          {
+            number: 1029,
+            head: { sha: 'sha-fallback-pr-scan' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 1030,
+            head: { sha: 'sha-fallback-pr-scan' },
+          },
+        ],
+      });
+
+    await handlers['check_suite.completed'][0](ctx);
+
+    expect(listPullRequestsAssociatedWithCommit).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.pulls.list).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        state: 'open',
+        per_page: 100,
+        page: 1,
+      })
+    );
+    expect(ctx.octokit.pulls.list).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        state: 'open',
+        per_page: 100,
+        page: 2,
+      })
+    );
+
+    expect(collapseBotCommentsByPrefix).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1', issue_number: 1029 },
+      expect.objectContaining({ tagPrefix: 'nsreq:ci-validation' })
+    );
+    expect(collapseBotCommentsByPrefix).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1', issue_number: 1030 },
+      expect.objectContaining({ tagPrefix: 'nsreq:ci-validation' })
+    );
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_run.completed: non-completed status is ignored before collapse or merge', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'success',
+      sha: 'sha-check-run-in-progress',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload = {
+      action: 'completed',
+      repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'success',
+        status: 'in_progress',
+        head_sha: 'sha-check-run-in-progress',
+        pull_requests: [{ number: 1040 }],
+      },
+    };
+
+    await handlers['check_run.completed'][0](ctx);
+
+    expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_run.completed: non-blocking neutral conclusion is ignored without marking sequential failures', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'neutral',
+      sha: 'sha-check-run-neutral',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload = {
+      action: 'completed',
+      repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'neutral',
+        status: 'completed',
+        head_sha: 'sha-check-run-neutral',
+        pull_requests: [{ number: 1041 }],
+      },
+    };
+
+    await handlers['check_run.completed'][0](ctx);
+
+    expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.listFiles).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('check_run.completed: success without head sha is ignored before collapsing PR comments', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'success',
+      sha: '',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    ctx.payload = {
+      action: 'completed',
+      repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'success',
+        status: 'completed',
+        head_sha: '',
+        pull_requests: [{ number: 1042 }],
+      },
+    };
+
+    await handlers['check_run.completed'][0](ctx);
+
+    expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('status: non-success and incomplete payloads do not trigger auto-merge lookup', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const failureCtx = mkStatusContext({
+      state: 'failure',
+      sha: 'sha-status-failure',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    await handlers['status'][0](failureCtx);
+
+    expect(failureCtx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    const missingShaCtx = mkStatusContext({
+      state: 'success',
+      sha: '',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+    });
+
+    await handlers['status'][0](missingShaCtx);
+
+    expect(missingShaCtx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    const missingRepoCtx = mkBaseContext({ withCachedConfig: true });
+    missingRepoCtx.name = 'status';
+    missingRepoCtx.payload = {
+      state: 'success',
+      sha: 'sha-status-missing-repo',
+      repository: { owner: { login: 'o1' } },
+    };
+
+    await handlers['status'][0](missingRepoCtx);
+
+    expect(missingRepoCtx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('issue_comment: non-approval comment from non-author is ignored after request recognition', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 1050,
+      title: 'Request',
+      body: '### Product ID\nABC',
+      labels: [{ name: 'Review Pending' }],
+      user: { login: 'author' },
+      state: 'open',
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'LGTM, but not an approval command', user: { login: 'reviewer' } },
+      sender: { type: 'User', login: 'reviewer' },
+      withCachedConfig: true,
+      config: productCfg(),
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(loadTemplate).toHaveBeenCalled();
+    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('issue_comment: author comment without update keyword does not revalidate or change state', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 1051,
+      title: 'Request',
+      body: '### Product ID\nABC',
+      labels: [{ name: 'Review Pending' }],
+      user: { login: 'author' },
+      state: 'open',
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'I will look into this later', user: { login: 'author' } },
+      sender: { type: 'User', login: 'author' },
+      withCachedConfig: true,
+      config: productCfg(),
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(loadTemplate).toHaveBeenCalled();
+    expect(validateRequestIssue).not.toHaveBeenCalled();
+    expect(setStateLabel).not.toHaveBeenCalled();
+    expect(createRequestPr).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
   });
 });

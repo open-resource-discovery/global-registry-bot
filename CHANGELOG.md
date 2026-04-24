@@ -7,6 +7,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+### Added
+
+- Approval comments are now supported directly on standalone direct PRs.
+- Standalone PR approval checks now include hook-provided approvers.
+- Request issue approval checks also include hook-provided approvers.
+
+### Changed
+
+- onApproval approvers are preserved and reused in PR and issue approval flows.
+- Standalone PRs with manual hook approvers can now be approved properly.
+- Existing auto-approval logic remains unchanged.
+
+### Fixed
+
+- Fixed standalone PRs getting stuck when onApproval returned manual approvers.
+- Fixed issue approval comments ignoring hook-provided approvers.
+- Fixed missing manual approval path for standalone direct PRs.
+
 ## [[0.1.4](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.4)] - 2026-04-24
 
 ### Added
