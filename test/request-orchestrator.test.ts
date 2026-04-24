@@ -690,7 +690,9 @@ test('issues.opened: onApproval unknown posts feedback and keeps normal review h
   expect(ensureAssigneesOnce).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), ['cpa-user']);
 
   const bodies = postOnce.mock.calls.map((c: any[]) => String(c[2] ?? ''));
-  expect(bodies.some((b) => b.includes('## onApproval feedback'))).toBe(true);
+  expect(bodies.some((b) => b.includes('## onApproval feedback'))).toBe(false);
   expect(bodies.some((b) => b.includes('manual review required'))).toBe(true);
+  expect(bodies.some((b) => b.includes('<summary>Decision details</summary>'))).toBe(true);
+  expect(bodies.some((b) => b.includes('Continuing with the standard review flow.'))).toBe(true);
   expect(bodies.some((b) => b.includes('Routing to an approver for review'))).toBe(true);
 });

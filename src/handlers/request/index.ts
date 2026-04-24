@@ -1569,6 +1569,97 @@ async function fetchIssueLabels(
   return toLabelNames(issue.labels);
 }
 
+const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
+const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
+
+function issueScopedKey(params: IssueParams, suffix: string): string {
+  return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
+}
+
+async function ensureLabelsPresentOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  labels: string[]
+): Promise<void> {
+  const targetLabels = Array.from(new Set((labels || []).map(toStringTrim).filter(Boolean)));
+  if (!targetLabels.length) return;
+
+  const key = issueScopedKey(params, `labels:${targetLabels.map(normalizeKey).sort().join('|')}`);
+  const existing = ENSURE_LABELS_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = (async (): Promise<void> => {
+    let currentLabels: string[] = [];
+
+    try {
+      currentLabels = await fetchIssueLabels(context, params);
+    } catch {
+      currentLabels = [];
+    }
+
+    const currentKeys = new Set(currentLabels.map(normalizeKey).filter(Boolean));
+    const missing = targetLabels.filter((label) => {
+      const key = normalizeKey(label);
+      return key && !currentKeys.has(key);
+    });
+
+    if (!missing.length) return;
+
+    try {
+      await context.octokit.issues.addLabels({
+        ...params,
+        labels: missing,
+      });
+    } catch (error: unknown) {
+      const status = getHttpStatus(error);
+      if (status !== 404) {
+        log(
+          context,
+          'warn',
+          {
+            err: getErrorMessage(error),
+            labels: missing,
+            issueNumber: params.issue_number,
+          },
+          'failed to ensure labels'
+        );
+      }
+    }
+  })().finally(() => {
+    ENSURE_LABELS_INFLIGHT.delete(key);
+  });
+
+  ENSURE_LABELS_INFLIGHT.set(key, pending);
+  await pending;
+}
+
+async function postApprovalUnknownOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  decision: ApprovalDecision
+): Promise<void> {
+  const key = issueScopedKey(params, 'on-approval-unknown');
+  const existing = ON_APPROVAL_UNKNOWN_POST_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = (async (): Promise<void> => {
+    await postOnce(context, params, buildApprovalUnknownBody(decision), {
+      minimizeTag: 'nsreq:on-approval:unknown',
+    });
+  })().finally(() => {
+    ON_APPROVAL_UNKNOWN_POST_INFLIGHT.delete(key);
+  });
+
+  ON_APPROVAL_UNKNOWN_POST_INFLIGHT.set(key, pending);
+  await pending;
+}
+
 async function ensureAssigneesPresent(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1612,49 +1703,6 @@ async function ensureAssigneesPresent(
   }
 }
 
-async function resolveAdditionalIssueApproversFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType: string
-): Promise<string[]> {
-  try {
-    const resourceName = extractResourceNameFromForm(parsedFormData, template);
-    const namespace = toStringTrim((parsedFormData as Record<string, unknown>)['namespace']) || resourceName;
-
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType,
-          namespace,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-        }
-      )
-    );
-
-    if (decision.status !== 'unknown') return [];
-    return uniqLogins(decision.approvers || []);
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        err: e instanceof Error ? e.message : String(e),
-        issueNumber: issue.number,
-      },
-      'failed to resolve additional issue approvers from onApproval hook'
-    );
-
-    return [];
-  }
-}
-
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1686,16 +1734,7 @@ async function handoverToCpa(
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
-  if (labelsToAdd.length) {
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: labelsToAdd,
-      });
-    } catch {
-      /* empty */
-    }
-  }
+  await ensureLabelsPresentOnce(context, params, labelsToAdd);
 
   if (eff.labelOnApproved) {
     try {
@@ -1907,6 +1946,7 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
 function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
   if (decision === true) return { status: 'approved' };
   if (decision === false) return {};
+  if (!decision) return {};
 
   const normalized = decision || {};
   const approvers = uniqLogins(
@@ -1918,6 +1958,30 @@ function normalizeApprovalDecision(decision: ApprovalDecision | boolean): Approv
     ...normalizedWithoutApprovers,
     ...(approvers.length ? { approvers } : {}),
   };
+}
+
+function isManualApprovalRequiredText(value: unknown): boolean {
+  return /\bmanual approval required\b/i.test(toStringTrim(value));
+}
+
+function getVisibleApprovalText(decision: ApprovalDecision): string {
+  const comment = toStringTrim(decision.comment);
+  if (comment && !isManualApprovalRequiredText(comment)) return comment;
+
+  const message = toStringTrim(decision.message);
+  if (message && !isManualApprovalRequiredText(message)) return message;
+
+  const reason = toStringTrim(decision.reason);
+  if (reason && !isManualApprovalRequiredText(reason)) return reason;
+
+  return '';
+}
+
+function buildAutoApprovalReviewBody(decision: ApprovalDecision, headSha: string): string {
+  const visible = getVisibleApprovalText(decision);
+  const marker = buildAutoApprovalReviewMarker(headSha);
+
+  return visible ? `${visible}\n\n${marker}` : marker;
 }
 
 function isApprovalDecisionAuthorizedByHookApprovers(
@@ -1943,10 +2007,9 @@ function promoteUnknownApprovalDecisionForDirectPrRequester(
   return {
     ...normalized,
     status: 'approved',
-    comment:
-      toStringTrim(normalized.comment) ||
-      toStringTrim(normalized.message) ||
-      `Approved automatically because the PR requester is an allowed hook approver.`,
+    comment: getVisibleApprovalText(normalized),
+    message: '',
+    reason: '',
   };
 }
 
@@ -1954,11 +2017,13 @@ function buildApprovalUnknownBody(decision: ApprovalDecision): string {
   const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
   const leadBlock = lead ? `${lead}\n\n` : '';
 
-  return `## onApproval feedback
+  return `${leadBlock}<details>
+<summary>Decision details</summary>
 
-${leadBlock}\`\`\`json
+\`\`\`json
 ${buildApprovalDecisionJson({ status: 'unknown', ...decision })}
 \`\`\`
+</details>
 
 Continuing with the standard review flow.`;
 }
@@ -2010,9 +2075,9 @@ async function createAutomatedApprovalReview(
   pr: PullRequestLike,
   decision: ApprovalDecision
 ): Promise<boolean> {
-  const body =
-    toStringTrim(decision.comment) || toStringTrim(decision.message) || 'Approved automatically by onApproval hook.';
-  const reviewBody = `${body}\n\n${buildAutoApprovalReviewMarker(pr.head?.sha || '')}`;
+  const headSha = toStringTrim(pr.head?.sha);
+  const reviewBody = buildAutoApprovalReviewBody(decision, headSha);
+  const failureText = getVisibleApprovalText(decision) || 'The onApproval hook matched this PR.';
 
   try {
     await (
@@ -2038,7 +2103,7 @@ async function createAutomatedApprovalReview(
       'info',
       {
         prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
+        headSha,
       },
       'automated PR approval review created'
     );
@@ -2070,11 +2135,11 @@ async function createAutomatedApprovalReview(
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
       `## onApproval matched, but automatic PR approval failed
 
-  ${body}
+${failureText}
 
-  Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
+Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
 
-  The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
+The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
       { minimizeTag: 'nsreq:on-approval:approve-failed' }
     );
 
@@ -5149,8 +5214,9 @@ async function evaluateDirectPrOnApproval(
   }
 
   let sawApproved = false;
-  let sawUnknown = false;
+  let sawNonApproved = false;
   let approvedComment = '';
+  let firstUnknownDecision: ApprovalDecision | null = null;
 
   for (const filePath of changedFiles) {
     const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
@@ -5180,17 +5246,138 @@ async function evaluateDirectPrOnApproval(
       continue;
     }
 
-    sawUnknown = true;
+    sawNonApproved = true;
+    if (decision.status === 'unknown' && !firstUnknownDecision) {
+      firstUnknownDecision = decision;
+    }
   }
 
-  if (sawApproved && !sawUnknown) {
+  if (sawApproved && !sawNonApproved) {
     return {
       status: 'approved',
       ...(approvedComment ? { comment: approvedComment } : {}),
     };
   }
 
+  if (firstUnknownDecision) {
+    return firstUnknownDecision;
+  }
+
+  if (sawNonApproved) {
+    return {
+      status: 'unknown',
+      reason: 'Manual review required because onApproval did not approve all changed registry files.',
+    };
+  }
+
   return {};
+}
+
+async function resolveDirectPrRequestTypes(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  options: DirectPrApprovalOptions = {}
+): Promise<string[]> {
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
+  const requestTypes: string[] = [];
+
+  for (const filePath of changedFiles) {
+    const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+    if (!parsed) continue;
+
+    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
+    if (!requestType) continue;
+
+    requestTypes.push(requestType);
+  }
+
+  return Array.from(new Set(requestTypes));
+}
+
+async function handoverStandaloneDirectPrToReview(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: DirectPrApprovalOptions = {}
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+
+  const configuredApprovers = uniqLogins(
+    requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const hookApprovers = uniqLogins(decision.approvers || []);
+  const assignees = uniqLogins([...hookApprovers, ...configuredApprovers]);
+
+  if (assignees.length) {
+    await ensureAssigneesPresent(context, params, assignees);
+  }
+
+  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
+
+  await ensureLabelsPresentOnce(context, params, labelsToAdd);
+  await postApprovalUnknownOnce(context, params, decision);
+}
+
+async function handleDirectPrApprovalComment(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  commenter: string
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  const configuredApprovers = uniqLogins(
+    requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  if (approvalDecision.status === 'rejected') {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildApprovalRejectedBody(approvalDecision),
+      { minimizeTag: 'nsreq:on-approval:rejected' }
+    );
+    return;
+  }
+
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+  const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
+  if (!okApprover) {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+    return;
+  }
+
+  const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, {
+    status: 'approved',
+    comment: `Approved by @${commenter}`,
+  });
+
+  if (!approved) return;
+
+  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'direct-pr-manual-approval');
 }
 
 async function maybeHandleStandaloneDirectPrApproval(
@@ -5228,6 +5415,11 @@ async function maybeHandleStandaloneDirectPrApproval(
     }
 
     return 'rejected';
+  }
+
+  if (decision.status === 'unknown') {
+    await handoverStandaloneDirectPrToReview(context, repoInfo, pr, decision, options);
+    return 'continue';
   }
 
   return 'continue';
@@ -5432,9 +5624,7 @@ async function maybeHandleApprovalDecision(
   }
 
   if (decision.status === 'unknown') {
-    await postOnce(context, params, buildApprovalUnknownBody(decision), {
-      minimizeTag: 'nsreq:on-approval:unknown',
-    });
+    await postApprovalUnknownOnce(context, params, decision);
   }
 
   return 'continue';
@@ -5506,11 +5696,10 @@ async function maybeHandleDirectPrApprovalForMerge(
   }
 
   if (decision.status === 'unknown') {
-    await postOnce(
+    await postApprovalUnknownOnce(
       context,
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalUnknownBody(decision),
-      { minimizeTag: 'nsreq:on-approval:unknown' }
+      decision
     );
   }
 
@@ -5941,6 +6130,41 @@ async function processIssueEvent(
     requestType: effectiveRequestType,
     extraApprovers: hookApprovers,
   });
+}
+
+async function resolveAdditionalIssueApproversFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType?: string
+): Promise<string[]> {
+  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
+  const resourceName = extractResourceNameFromForm(parsedFormData, template);
+
+  if (!effectiveRequestType) return [];
+
+  try {
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType: effectiveRequestType,
+          namespace: resourceName,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+          requestAuthorId: normalizeLogin(issue.user?.login),
+        }
+      )
+    );
+
+    return uniqLogins((decision.approvers || []).filter(Boolean));
+  } catch {
+    return [];
+  }
 }
 
 async function handleApprovalComment(
@@ -6597,13 +6821,15 @@ async function postRoutingLockNoticeOnce(
     return;
   }
 
-  const p = (async (): Promise<void> => {
-    await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
-      minimizeTag: 'nsreq:routing-label-lock',
+  const p = Promise.resolve()
+    .then(async (): Promise<void> => {
+      await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
+        minimizeTag: 'nsreq:routing-label-lock',
+      });
+    })
+    .finally(() => {
+      ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
     });
-  })().finally(() => {
-    ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
-  });
 
   ROUTING_LOCK_NOTICE_INFLIGHT.set(key, p);
   await p;
@@ -7346,9 +7572,6 @@ export default function requestHandler(app: Probot): void {
       await getStaticConfig(context);
 
       const issue = context.payload.issue as unknown as IssueLike;
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) return;
-      }
       const comment = context.payload.comment as unknown as CommentLike;
       const sender = context.payload.sender as unknown as SenderLike;
 
@@ -7372,6 +7595,23 @@ export default function requestHandler(app: Probot): void {
 
       const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
       const params: IssueParams = { owner, repo, issue_number: issueNumber };
+      const repoInfo: RepoInfo = { owner, repo };
+
+      const stripped = stripQuoteAndCode(comment.body || '');
+      const isApproval = isApprovalComment(context, stripped);
+
+      if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
+        const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
+
+        if (isPullRequestConversation && isApproval) {
+          const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
+          if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
+            await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
+          }
+        }
+
+        return;
+      }
 
       let template: TemplateLike;
       try {
@@ -7399,8 +7639,6 @@ export default function requestHandler(app: Probot): void {
         return;
       }
 
-      const stripped = stripQuoteAndCode(comment.body || '');
-      const isApproval = isApprovalComment(context, stripped);
       if (isApproval) {
         const handled = await handleParentOwnerApprovalIfNeeded(
           context,

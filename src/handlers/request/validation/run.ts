@@ -474,6 +474,8 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
 
   if (!isPlainObject(value)) return {};
 
+  const approvers = toLoginArray(value['approvers']);
+
   if (value['approved'] === true) {
     const comment = toStringSafe(value['comment']);
     const message = toStringSafe(value['message']);
@@ -482,6 +484,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
       status: 'approved',
       ...(comment ? { comment } : {}),
       ...(message ? { message } : {}),
+      ...(approvers.length ? { approvers } : {}),
     };
   }
 
@@ -490,7 +493,6 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
   const reason = toStringSafe(value['reason']);
   const comment = toStringSafe(value['comment']);
   const message = toStringSafe(value['message']);
-  const approvers = toLoginArray(value['approvers']);
   const errors = normalizeApprovalHookErrors(value['errors'] ?? value['error']);
 
   if (status === 'approved' || status === 'rejected' || status === 'unknown') {
