@@ -2558,7 +2558,7 @@ function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
 }
 
 class CooldownUntilMap extends Map<string, number> {
-  override get(key: string): number | undefined {
+  public override get(key: string): number | undefined {
     const until = super.get(key);
     if (until !== undefined && until <= Date.now()) {
       super.delete(key);
@@ -2567,7 +2567,7 @@ class CooldownUntilMap extends Map<string, number> {
     return until;
   }
 
-  override has(key: string): boolean {
+  public override has(key: string): boolean {
     return this.get(key) !== undefined;
   }
 }
