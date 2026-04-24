@@ -7,6 +7,35 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+### Changed
+
+- Direct PRs are re-evaluated on every default branch update.
+- Old open direct PRs now use the latest default branch config.
+- Stale direct PR branches are updated before approval re-evaluation.
+- Approval is only evaluated on the latest PR head with fresh CI state.
+- Merge gating now requires valid approval and green checks on the current head.
+- Linked issue detection now checks PR body, title, and branch name.
+- Requester resolution avoids using bot users for linked direct PRs.
+- Registry PR maintenance now runs sequentially to avoid GHES overload.
+- Only PRs with registry YAML changes are considered for branch updates.
+
+### Added
+
+- Automatic re-evaluation of open direct PRs on default branch updates.
+- Tree-diff fallback for detecting changed registry files.
+- SHA-specific auto-approval checks.
+- onApproval support for cross-repo and fork PRs.
+- Sequential PR processing with active PR tracking and skip logic.
+
+### Fixed
+
+- Removed stale-head approvals causing blocked merges.
+- Prevented merge/update loops.
+- Improved updateBranch retry handling.
+- Fixed cross-repo PRs being skipped due to wrong head resolution.
+- Prevented parallel registry PR rebases from overloading GHES.
+- Failed PRs are now skipped instead of blocking the queue.
+
 ## [[0.1.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.1)] - 2026-04-21
 
 ## Summary
