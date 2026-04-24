@@ -2043,8 +2043,6 @@ async function createAutomatedApprovalReview(
       'automated PR approval review created'
     );
 
-    await delayMs(1000);
-
     return true;
   } catch (e: unknown) {
     const errObj = isPlainObject(e) ? e : {};
@@ -2282,39 +2280,6 @@ function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<
   return latestByReviewer;
 }
 
-async function hasBlockingChangesRequestedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    return latestStates.has('CHANGES_REQUESTED');
-  } catch {
-    return false;
-  }
-}
-
-async function hasApprovedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    if (latestStates.has('CHANGES_REQUESTED')) return false;
-
-    return latestStates.has('APPROVED');
-  } catch {
-    return false;
-  }
-}
-
 async function hasApprovedLabelOnPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2342,19 +2307,36 @@ async function isPullRequestApprovedForBranchMaintenance(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<boolean> {
-  if (await hasBlockingChangesRequestedReviewOnPr(context, repoInfo, pr.number)) {
+  let reviews: PullRequestReviewLike[];
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const latestStates = getLatestActionableReviewStates(reviews);
+  const latestStateValues = new Set(latestStates.values());
+
+  if (latestStateValues.has('CHANGES_REQUESTED')) {
     return false;
   }
 
   if (isSnapshotManagedRequestPr(pr)) return true;
 
   const headSha = toStringTrim(pr.head?.sha);
+  const marker = headSha ? buildAutoApprovalReviewMarker(headSha) : null;
 
-  if (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) {
+  if (
+    marker &&
+    reviews.some(
+      (review) =>
+        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
+    )
+  ) {
     return true;
   }
 
-  if (await hasApprovedReviewOnPr(context, repoInfo, pr.number)) {
+  if (latestStateValues.has('APPROVED')) {
     return true;
   }
 
@@ -2620,8 +2602,16 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
 }
 
 function isUpdateBranchCooldownActive(key: string): boolean {
-  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key) || 0;
-  return until > Date.now();
+  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
+  // eslint-disable-next-line eqeqeq
+  if (until == null) return false;
+
+  if (until <= Date.now()) {
+    UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
+    return false;
+  }
+
+  return true;
 }
 
 function markUpdateBranchCooldown(key: string): void {
@@ -4575,8 +4565,23 @@ async function isSequentialDirectRegistryPr(
   if (isSnapshotManagedRequestPr(pr)) return false;
   if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
 
-  const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
-  return changedRegistryFiles.length > 0;
+  try {
+    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
+    return changedRegistryFiles.length > 0;
+  } catch (error) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        baseBranch: targetBaseBranch,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'sequential-registry-pr:changed-files-lookup-failed'
+    );
+
+    return false;
+  }
 }
 
 async function shouldDeferSequentialDirectRegistryPrProcessing(
@@ -5218,10 +5223,19 @@ async function closeLinkedIssuePrs(
   repoInfo: RepoInfo,
   issueNumber: number
 ): Promise<number[]> {
-  const prs = (await listOpenPullRequests(context, repoInfo)).filter(
-    (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
-  );
+  let prs: PullRequestLike[] = [];
 
+  try {
+    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
+  } catch {
+    prs = [];
+  }
+
+  if (prs.length === 0) {
+    prs = (await listOpenPullRequests(context, repoInfo)).filter(
+      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
+    );
+  }
   const closed: number[] = [];
 
   for (const pr of prs) {
