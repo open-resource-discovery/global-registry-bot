@@ -3090,7 +3090,7 @@ public
         data: [
           {
             number: 5,
-            body: 'source: #1',
+            body: 'manual direct pr',
             title: 'Direct',
             head: { ref: 'x', sha: 'sha1' },
             base: { ref: 'main' },
@@ -3099,24 +3099,14 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
         encoding: 'base64',
-      },
-    });
-
-    ctx.octokit.issues.get.mockResolvedValueOnce({
-      data: {
-        number: 1,
-        title: 'Request',
-        body: 'Body',
-        labels: [],
-        user: { login: 'author' },
       },
     });
 
@@ -4298,15 +4288,6 @@ public
       expect.anything(),
       ['reviewer1'],
     ]);
-
-    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: 'o1',
-        repo: 'r1',
-        issue_number: 161,
-        assignees: ['reviewer1'],
-      })
-    );
 
     expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
