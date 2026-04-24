@@ -4427,8 +4427,23 @@ async function isSequentialDirectRegistryPr(
   if (isSnapshotManagedRequestPr(pr)) return false;
   if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
 
-  const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
-  return changedRegistryFiles.length > 0;
+  try {
+    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
+    return changedRegistryFiles.length > 0;
+  } catch (error) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        baseBranch: targetBaseBranch,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'sequential-registry-pr:changed-files-lookup-failed'
+    );
+
+    return false;
+  }
 }
 
 async function shouldDeferSequentialDirectRegistryPrProcessing(
