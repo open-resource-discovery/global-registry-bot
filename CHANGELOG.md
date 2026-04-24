@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.2](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.2)] - 2026-04-24
+
 ### Changed
 
 - Direct PRs are re-evaluated on every default branch update.
