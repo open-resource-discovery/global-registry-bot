@@ -2557,8 +2557,23 @@ function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
 }
 
+class CooldownUntilMap extends Map<string, number> {
+  override get(key: string): number | undefined {
+    const until = super.get(key);
+    if (until !== undefined && until <= Date.now()) {
+      super.delete(key);
+      return undefined;
+    }
+    return until;
+  }
+
+  override has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+}
+
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
-const UPDATE_BRANCH_COOLDOWN_UNTIL = new Map<string, number>();
+const UPDATE_BRANCH_COOLDOWN_UNTIL = new CooldownUntilMap();
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
