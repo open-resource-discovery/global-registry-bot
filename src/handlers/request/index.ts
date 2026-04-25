@@ -5060,10 +5060,40 @@ async function handleBlockingRegistryHeadConclusion(
   if (!sha) return false;
 
   const marked = await markFailedRegistryPrHeadsForSha(context, repoInfo, sha, baseBranch, reason);
-  if (!marked) return false;
+  if (!marked) {
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: sha,
+        baseBranch: toStringTrim(baseBranch),
+        reason,
+      },
+      'sequential-registry-pr:blocking-head-not-marked'
+    );
+
+    return false;
+  }
 
   const advanceBaseBranch = await resolveSequentialRegistryQueueBaseBranchForHead(context, repoInfo, sha, baseBranch);
-  if (!advanceBaseBranch) return true;
+
+  if (!advanceBaseBranch) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: sha,
+        reason,
+      },
+      'sequential-registry-pr:advance-skipped-missing-base-branch'
+    );
+
+    return true;
+  }
 
   await runOneSequentialDirectRegistryPrMaintenance(
     context,
@@ -8031,6 +8061,8 @@ export default function requestHandler(app: Probot): void {
         if (status !== 'completed') return;
         if (conclusion && conclusion !== 'success') {
           if (isBlockingCheckConclusion(conclusion)) {
+            await getStaticConfig(context);
+
             await handleBlockingRegistryHeadConclusion(
               context,
               repoInfo,
@@ -8111,6 +8143,8 @@ export default function requestHandler(app: Probot): void {
       }
 
       if (isBlockingCheckConclusion(conclusion)) {
+        await getStaticConfig(context);
+
         await handleBlockingRegistryHeadConclusion(
           context,
           { owner: ownerLogin, repo: repoName },
