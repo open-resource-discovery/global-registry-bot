@@ -5024,6 +5024,87 @@ async function markFailedRegistryPrHeadsForSha(
   return marked;
 }
 
+async function resolveSequentialRegistryQueueBaseBranchForHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  headSha: string,
+  fallbackBaseBranch: string
+): Promise<string> {
+  const fallback = toStringTrim(fallbackBaseBranch);
+  if (fallback) return fallback;
+
+  const sha = toStringTrim(headSha);
+  if (!sha) return '';
+
+  try {
+    const openPrs = await listOpenPullRequests(context, repoInfo);
+    const matchingPr = openPrs.find((pr) => toStringTrim(pr.head?.sha) === sha);
+    const baseBranch = toStringTrim(matchingPr?.base?.ref);
+
+    if (baseBranch) return baseBranch;
+  } catch {
+    return '';
+  }
+
+  return '';
+}
+
+async function handleBlockingRegistryHeadConclusion(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  headSha: string,
+  baseBranch: string,
+  reason: string
+): Promise<boolean> {
+  const sha = toStringTrim(headSha);
+  if (!sha) return false;
+
+  const marked = await markFailedRegistryPrHeadsForSha(context, repoInfo, sha, baseBranch, reason);
+  if (!marked) {
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: sha,
+        baseBranch: toStringTrim(baseBranch),
+        reason,
+      },
+      'sequential-registry-pr:blocking-head-not-marked'
+    );
+
+    return false;
+  }
+
+  const advanceBaseBranch = await resolveSequentialRegistryQueueBaseBranchForHead(context, repoInfo, sha, baseBranch);
+
+  if (!advanceBaseBranch) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: sha,
+        reason,
+      },
+      'sequential-registry-pr:advance-skipped-missing-base-branch'
+    );
+
+    return true;
+  }
+
+  await runOneSequentialDirectRegistryPrMaintenance(
+    context,
+    repoInfo,
+    advanceBaseBranch,
+    `${reason}:advance-next-registry-pr`
+  );
+
+  return true;
+}
+
 async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -8385,23 +8466,15 @@ export default function requestHandler(app: Probot): void {
         if (status !== 'completed') return;
         if (conclusion && conclusion !== 'success') {
           if (isBlockingCheckConclusion(conclusion)) {
-            const baseBranch = readDefaultBranchFromPayload(payload);
-            const marked = await markFailedRegistryPrHeadsForSha(
+            await getStaticConfig(context);
+
+            await handleBlockingRegistryHeadConclusion(
               context,
               repoInfo,
               headShaStr,
-              baseBranch,
+              readDefaultBranchFromPayload(payload),
               `check-run:${conclusion}`
             );
-
-            if (marked) {
-              await runOneSequentialDirectRegistryPrMaintenance(
-                context,
-                repoInfo,
-                baseBranch,
-                `check-run:${conclusion}:advance-next-registry-pr`
-              );
-            }
           }
 
           return;
@@ -8472,6 +8545,18 @@ export default function requestHandler(app: Probot): void {
         if (!headShaStr) return;
         await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, headShaStr);
         return;
+      }
+
+      if (isBlockingCheckConclusion(conclusion)) {
+        await getStaticConfig(context);
+
+        await handleBlockingRegistryHeadConclusion(
+          context,
+          { owner: ownerLogin, repo: repoName },
+          headShaStr,
+          readDefaultBranchFromPayload(payload),
+          `check-suite:${conclusion}`
+        );
       }
 
       // failure -> comment on PR if registry-validate annotations exist
