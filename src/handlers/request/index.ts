@@ -39,6 +39,10 @@ type ResourceBotContextExt = {
   resourceBotHooksSource?: string | null;
 };
 
+type StaticConfigLoadOptions = {
+  forceReload?: boolean;
+};
+
 type BotContext<E extends RequestEvents> = Context<E> & ResourceBotContextExt;
 
 type RepoInfo = { owner: string; repo: string };
@@ -93,14 +97,26 @@ type CollapseBotCommentsByPrefixOptions = {
   classifier?: 'OUTDATED' | 'RESOLVED' | 'DUPLICATE' | 'OFF_TOPIC' | 'SPAM' | 'ABUSE';
 };
 
+type PullRequestRepoLike = {
+  name?: string | null;
+  full_name?: string | null;
+  owner?: UserLike | null;
+};
+
+type PullRequestBranchLike = {
+  ref: string;
+  sha: string;
+  repo?: PullRequestRepoLike | null;
+};
+
 type PullRequestLike = {
   number: number;
   title?: string | null;
   body?: string | null;
   state?: string | null;
   user?: UserLike | null;
-  head: { ref: string; sha: string };
-  base?: { ref?: string | null; sha?: string | null };
+  head: PullRequestBranchLike;
+  base?: PullRequestBranchLike;
 
   mergeable?: boolean | null;
   mergeable_state?: string | null;
@@ -150,6 +166,35 @@ type CheckRunAnnotationLike = {
   title?: string | null;
   annotation_level?: string | null;
   raw_details?: string | null;
+};
+
+type GitTreeEntryLike = {
+  path?: string | null;
+  type?: string | null;
+  sha?: string | null;
+};
+
+type GitTreeLike = {
+  tree?: GitTreeEntryLike[];
+};
+
+type DirectPrApprovalOptions = {
+  baseBranch?: string;
+};
+
+type HeadGreenRunSummary = {
+  id?: number;
+  name: string;
+  status: string;
+  conclusion: string;
+};
+
+type HeadGreenEvaluation = {
+  green: boolean;
+  reason: string;
+  latestRuns: HeadGreenRunSummary[];
+  blockingRuns: HeadGreenRunSummary[];
+  statusState?: string;
 };
 
 type ValidateRequestIssueResult = {
@@ -726,8 +771,10 @@ type CheckSuitePullRequestRef = { number?: number | null };
 
 type CheckSuiteLike = {
   id?: number | null;
+  status?: string | null;
   conclusion?: string | null;
   head_sha?: string | null;
+  head_branch?: string | null;
   pull_requests?: CheckSuitePullRequestRef[] | null;
 };
 
@@ -1396,6 +1443,7 @@ type ApprovalDecision = {
   reason?: string;
   comment?: string;
   message?: string;
+  approvers?: string[];
   errors?: {
     field?: string;
     message?: string;
@@ -1521,6 +1569,140 @@ async function fetchIssueLabels(
   return toLabelNames(issue.labels);
 }
 
+const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
+const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
+
+function issueScopedKey(params: IssueParams, suffix: string): string {
+  return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
+}
+
+async function ensureLabelsPresentOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  labels: string[]
+): Promise<void> {
+  const targetLabels = Array.from(new Set((labels || []).map(toStringTrim).filter(Boolean)));
+  if (!targetLabels.length) return;
+
+  const key = issueScopedKey(params, `labels:${targetLabels.map(normalizeKey).sort().join('|')}`);
+  const existing = ENSURE_LABELS_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = (async (): Promise<void> => {
+    let currentLabels: string[] = [];
+
+    try {
+      currentLabels = await fetchIssueLabels(context, params);
+    } catch {
+      currentLabels = [];
+    }
+
+    const currentKeys = new Set(currentLabels.map(normalizeKey).filter(Boolean));
+    const missing = targetLabels.filter((label) => {
+      const key = normalizeKey(label);
+      return key && !currentKeys.has(key);
+    });
+
+    if (!missing.length) return;
+
+    try {
+      await context.octokit.issues.addLabels({
+        ...params,
+        labels: missing,
+      });
+    } catch (error: unknown) {
+      const status = getHttpStatus(error);
+      if (status !== 404) {
+        log(
+          context,
+          'warn',
+          {
+            err: getErrorMessage(error),
+            labels: missing,
+            issueNumber: params.issue_number,
+          },
+          'failed to ensure labels'
+        );
+      }
+    }
+  })().finally(() => {
+    ENSURE_LABELS_INFLIGHT.delete(key);
+  });
+
+  ENSURE_LABELS_INFLIGHT.set(key, pending);
+  await pending;
+}
+
+async function postApprovalUnknownOnce(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  decision: ApprovalDecision
+): Promise<void> {
+  const key = issueScopedKey(params, 'on-approval-unknown');
+  const existing = ON_APPROVAL_UNKNOWN_POST_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = (async (): Promise<void> => {
+    await postOnce(context, params, buildApprovalUnknownBody(decision), {
+      minimizeTag: 'nsreq:on-approval:unknown',
+    });
+  })().finally(() => {
+    ON_APPROVAL_UNKNOWN_POST_INFLIGHT.delete(key);
+  });
+
+  ON_APPROVAL_UNKNOWN_POST_INFLIGHT.set(key, pending);
+  await pending;
+}
+
+async function ensureAssigneesPresent(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  assignees: string[]
+): Promise<void> {
+  const targetAssignees = uniqLogins((assignees || []).map((x) => toStringTrim(x)).filter(Boolean));
+  if (!targetAssignees.length) return;
+
+  try {
+    const { data } = await context.octokit.issues.get(params);
+    const currentAssignees = uniqLogins(
+      (((data as Record<string, unknown>)['assignees'] as (Record<string, unknown> | null | undefined)[]) || [])
+        .map((item) => normalizeLogin(toStringTrim(item?.login)))
+        .filter(Boolean)
+    );
+
+    const missing = targetAssignees.filter(
+      (candidate) =>
+        !currentAssignees.some(
+          (existing) => normalizeLogin(existing).toLowerCase() === normalizeLogin(candidate).toLowerCase()
+        )
+    );
+
+    if (!missing.length) return;
+
+    await context.octokit.issues.addAssignees({
+      ...params,
+      assignees: missing,
+    });
+  } catch (e: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        err: e instanceof Error ? e.message : String(e),
+        issueNumber: params.issue_number,
+        assignees: targetAssignees,
+      },
+      'failed to ensure assignees'
+    );
+  }
+}
+
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1528,7 +1710,7 @@ async function handoverToCpa(
   _nsType: string,
   _namespace: string,
   _links: string[] = [],
-  options: { snapshotHash?: string; requestType?: string } = {}
+  options: { snapshotHash?: string; requestType?: string; extraApprovers?: string[] } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
 
@@ -1545,20 +1727,14 @@ async function handoverToCpa(
     ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
     : approverRouting.approvalUsernames;
 
-  await ensureAssigneesOnce(context, params, issue, assigneesForType);
+  const mergedAssignees = uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
+
+  await ensureAssigneesOnce(context, params, issue, mergedAssignees);
+  await ensureAssigneesPresent(context, params, mergedAssignees);
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
-  if (labelsToAdd.length) {
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: labelsToAdd,
-      });
-    } catch {
-      // ignore label add errors
-    }
-  }
+  await ensureLabelsPresentOnce(context, params, labelsToAdd);
 
   if (eff.labelOnApproved) {
     try {
@@ -1567,7 +1743,7 @@ async function handoverToCpa(
         name: eff.labelOnApproved,
       });
     } catch {
-      // ignore if not present
+      /* empty */
     }
   }
 
@@ -1576,6 +1752,7 @@ async function handoverToCpa(
   const snapshotMarker = options.snapshotHash ? `\n\n<!-- nsreq:snapshot:${options.snapshotHash} -->` : '';
 
   const handoverMsg = `### ✅ No issues detected
+
 ### ➡️ Routing to an approver for review
 
 ---
@@ -1761,6 +1938,7 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
   if (decision.reason) payload.reason = decision.reason;
   if (decision.comment) payload.comment = decision.comment;
   if (decision.message) payload.message = decision.message;
+  if (Array.isArray(decision.approvers) && decision.approvers.length) payload.approvers = decision.approvers;
   if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
   return JSON.stringify(payload, null, 2);
 }
@@ -1768,18 +1946,84 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
 function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
   if (decision === true) return { status: 'approved' };
   if (decision === false) return {};
-  return decision || {};
+  if (!decision) return {};
+
+  const normalized = decision || {};
+  const approvers = uniqLogins(
+    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
+  );
+  const { approvers: _approvers, ...normalizedWithoutApprovers } = normalized;
+
+  return {
+    ...normalizedWithoutApprovers,
+    ...(approvers.length ? { approvers } : {}),
+  };
+}
+
+function isManualApprovalRequiredText(value: unknown): boolean {
+  return /\bmanual approval required\b/i.test(toStringTrim(value));
+}
+
+function getVisibleApprovalText(decision: ApprovalDecision): string {
+  const comment = toStringTrim(decision.comment);
+  if (comment && !isManualApprovalRequiredText(comment)) return comment;
+
+  const message = toStringTrim(decision.message);
+  if (message && !isManualApprovalRequiredText(message)) return message;
+
+  const reason = toStringTrim(decision.reason);
+  if (reason && !isManualApprovalRequiredText(reason)) return reason;
+
+  return '';
+}
+
+function buildAutoApprovalReviewBody(decision: ApprovalDecision, headSha: string): string {
+  const visible = getVisibleApprovalText(decision);
+  const marker = buildAutoApprovalReviewMarker(headSha);
+
+  return visible ? `${visible}\n\n${marker}` : marker;
+}
+
+function isApprovalDecisionAuthorizedByHookApprovers(
+  decision: ApprovalDecision,
+  requesterId: string | undefined | null
+): boolean {
+  const requester = normalizeLogin(requesterId).toLowerCase();
+  if (!requester) return false;
+
+  const approvers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
+  return approvers.some((approver) => normalizeLogin(approver).toLowerCase() === requester);
+}
+
+function promoteUnknownApprovalDecisionForDirectPrRequester(
+  decision: ApprovalDecision,
+  requesterId: string | undefined | null
+): ApprovalDecision {
+  const normalized = normalizeApprovalDecision(decision);
+
+  if (normalized.status !== 'unknown') return normalized;
+  if (!isApprovalDecisionAuthorizedByHookApprovers(normalized, requesterId)) return normalized;
+
+  return {
+    ...normalized,
+    status: 'approved',
+    comment: getVisibleApprovalText(normalized),
+    message: '',
+    reason: '',
+  };
 }
 
 function buildApprovalUnknownBody(decision: ApprovalDecision): string {
   const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
   const leadBlock = lead ? `${lead}\n\n` : '';
 
-  return `## onApproval feedback
+  return `${leadBlock}<details>
+<summary>Decision details</summary>
 
-${leadBlock}\`\`\`json
+\`\`\`json
 ${buildApprovalDecisionJson({ status: 'unknown', ...decision })}
 \`\`\`
+</details>
 
 Continuing with the standard review flow.`;
 }
@@ -1831,9 +2075,9 @@ async function createAutomatedApprovalReview(
   pr: PullRequestLike,
   decision: ApprovalDecision
 ): Promise<boolean> {
-  const body =
-    toStringTrim(decision.comment) || toStringTrim(decision.message) || 'Approved automatically by onApproval hook.';
-  const reviewBody = `${body}\n\n${buildAutoApprovalReviewMarker(pr.head?.sha || '')}`;
+  const headSha = toStringTrim(pr.head?.sha);
+  const reviewBody = buildAutoApprovalReviewBody(decision, headSha);
+  const failureText = getVisibleApprovalText(decision) || 'The onApproval hook matched this PR.';
 
   try {
     await (
@@ -1853,6 +2097,16 @@ async function createAutomatedApprovalReview(
       event: 'APPROVE',
       body: reviewBody,
     });
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+      },
+      'automated PR approval review created'
+    );
 
     return true;
   } catch (e: unknown) {
@@ -1881,11 +2135,11 @@ async function createAutomatedApprovalReview(
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
       `## onApproval matched, but automatic PR approval failed
 
-  ${body}
+${failureText}
 
-  Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
+Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
 
-  The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
+The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
       { minimizeTag: 'nsreq:on-approval:approve-failed' }
     );
 
@@ -1995,6 +2249,26 @@ async function addApprovedLabelToPr(
   }
 }
 
+async function ensureAutomatedApprovalReviewForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
+    return true;
+  }
+
+  const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+  if (!approved) return false;
+
+  await addApprovedLabelToPr(context, repoInfo, pr.number);
+  return true;
+}
+
 const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
 
 function buildAutoApprovalReviewMarker(headSha: string): string {
@@ -2071,39 +2345,6 @@ function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<
   return latestByReviewer;
 }
 
-async function hasBlockingChangesRequestedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    return latestStates.has('CHANGES_REQUESTED');
-  } catch {
-    return false;
-  }
-}
-
-async function hasApprovedReviewOnPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<boolean> {
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-
-    const latestStates = new Set(getLatestActionableReviewStates(reviews).values());
-
-    if (latestStates.has('CHANGES_REQUESTED')) return false;
-
-    return latestStates.has('APPROVED');
-  } catch {
-    return false;
-  }
-}
-
 async function hasApprovedLabelOnPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2111,6 +2352,7 @@ async function hasApprovedLabelOnPr(
 ): Promise<boolean> {
   const eff = resolveEffectiveConstants(context);
   const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  if (!approvedLabel) return false;
 
   try {
     const labels = await fetchIssueLabels(context, {
@@ -2130,24 +2372,40 @@ async function isPullRequestApprovedForBranchMaintenance(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<boolean> {
-  if (await hasBlockingChangesRequestedReviewOnPr(context, repoInfo, pr.number)) {
+  let reviews: PullRequestReviewLike[];
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const latestStates = getLatestActionableReviewStates(reviews);
+  const latestStateValues = new Set(latestStates.values());
+
+  if (latestStateValues.has('CHANGES_REQUESTED')) {
     return false;
   }
 
-  // Bot-created request PRs are only created after issue approval.
   if (isSnapshotManagedRequestPr(pr)) return true;
 
   const headSha = toStringTrim(pr.head?.sha);
+  const marker = headSha ? buildAutoApprovalReviewMarker(headSha) : null;
 
-  if (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) {
+  if (
+    marker &&
+    reviews.some(
+      (review) =>
+        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
+    )
+  ) {
+    return true;
+  }
+
+  if (latestStateValues.has('APPROVED')) {
     return true;
   }
 
   if (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) {
-    return true;
-  }
-
-  if (await hasApprovedReviewOnPr(context, repoInfo, pr.number)) {
     return true;
   }
 
@@ -2191,13 +2449,31 @@ function isBlockingCheckConclusion(conclusion: string): boolean {
   );
 }
 
-async function isHeadGreenForApprovalReevaluation(
+function summarizeHeadGreenRun(run: RefCheckRunLike): HeadGreenRunSummary {
+  const id = typeof run?.id === 'number' && Number.isFinite(run.id) ? run.id : undefined;
+
+  return {
+    ...(id !== undefined ? { id } : {}),
+    name: toStringTrim(run?.name) || '__unnamed__',
+    status: toStringTrim(run?.status).toLowerCase(),
+    conclusion: toStringTrim(run?.conclusion).toLowerCase(),
+  };
+}
+
+async function evaluateHeadGreenForApprovalReevaluation(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   headSha: string
-): Promise<boolean> {
+): Promise<HeadGreenEvaluation> {
   const ref = toStringTrim(headSha);
-  if (!ref) return false;
+  if (!ref) {
+    return {
+      green: false,
+      reason: 'missing-head-sha',
+      latestRuns: [],
+      blockingRuns: [],
+    };
+  }
 
   try {
     const all: RefCheckRunLike[] = [];
@@ -2249,22 +2525,61 @@ async function isHeadGreenForApprovalReevaluation(
     }
 
     if (latestByName.size > 0) {
-      let sawSuccess = false;
+      const latestRuns = Array.from(latestByName.values()).map(summarizeHeadGreenRun);
 
-      for (const run of latestByName.values()) {
-        const status = toStringTrim(run?.status).toLowerCase();
-        const conclusion = toStringTrim(run?.conclusion).toLowerCase();
-
-        if (status !== 'completed') return false;
-        if (isBlockingCheckConclusion(conclusion)) return false;
-        if (!isGreenCheckConclusion(conclusion)) return false;
-        if (conclusion === 'success') sawSuccess = true;
+      const incompleteRuns = latestRuns.filter((run) => run.status !== 'completed');
+      if (incompleteRuns.length) {
+        return {
+          green: false,
+          reason: 'check-runs-not-completed',
+          latestRuns,
+          blockingRuns: incompleteRuns,
+        };
       }
 
-      return sawSuccess;
+      const blockingRuns = latestRuns.filter(
+        (run) => isBlockingCheckConclusion(run.conclusion) || !isGreenCheckConclusion(run.conclusion)
+      );
+
+      if (blockingRuns.length) {
+        return {
+          green: false,
+          reason: 'check-runs-blocking-or-not-green',
+          latestRuns,
+          blockingRuns,
+        };
+      }
+
+      const sawSuccess = latestRuns.some((run) => run.conclusion === 'success');
+      if (!sawSuccess) {
+        return {
+          green: false,
+          reason: 'no-success-check-run',
+          latestRuns,
+          blockingRuns: [],
+        };
+      }
+
+      return {
+        green: true,
+        reason: 'check-runs-green',
+        latestRuns,
+        blockingRuns: [],
+      };
     }
-  } catch {
-    // fallback below
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: ref,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'head-green:check-runs-fetch-failed'
+    );
   }
 
   try {
@@ -2282,22 +2597,105 @@ async function isHeadGreenForApprovalReevaluation(
       ref,
     });
 
-    return toStringTrim(res?.data?.state).toLowerCase() === 'success';
-  } catch {
-    return false;
+    const statusState = toStringTrim(res?.data?.state).toLowerCase();
+
+    return {
+      green: statusState === 'success',
+      reason: statusState === 'success' ? 'combined-status-success' : 'combined-status-not-success',
+      latestRuns: [],
+      blockingRuns: [],
+      statusState,
+    };
+  } catch (_error: unknown) {
+    return {
+      green: false,
+      reason: 'combined-status-fetch-failed',
+      latestRuns: [],
+      blockingRuns: [],
+    };
+  }
+}
+
+const MERGE_INFLIGHT = new Map<string, Promise<void>>();
+
+function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
+}
+
+class CooldownUntilMap extends Map<string, number> {
+  public override get(key: string): number | undefined {
+    const until = super.get(key);
+    if (until !== undefined && until <= Date.now()) {
+      super.delete(key);
+      return undefined;
+    }
+    return until;
+  }
+
+  public override has(key: string): boolean {
+    return this.get(key) !== undefined;
   }
 }
 
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
+const UPDATE_BRANCH_COOLDOWN_UNTIL = new CooldownUntilMap();
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
+const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
+const UPDATE_BRANCH_COOLDOWN_MS = 15000;
+
+type SequentialRegistryPrResult = {
+  updated: boolean;
+  processed: boolean;
+  blockedByActive: boolean;
+};
+
+type SequentialRegistryPrCandidate = {
+  pr: PullRequestLike;
+  freshPr: PullRequestLike;
+  changedRegistryFiles: string[];
+  mustUpdate: boolean;
+  approvedForUpdate: boolean;
+};
+
+type SequentialRegistryPrActive = {
+  prNumber: number;
+  startedHeadSha: string;
+  startedAt: number;
+  expiresAt: number;
+  reason: string;
+};
+
+const SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT = new Map<string, Promise<SequentialRegistryPrResult>>();
+const SEQUENTIAL_REGISTRY_PR_ACTIVE = new Map<string, SequentialRegistryPrActive>();
+const SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS = new Map<string, number>();
+
+const SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS = 30 * 60 * 1000;
+const SEQUENTIAL_REGISTRY_PR_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
+  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}`;
+}
+
+function isUpdateBranchCooldownActive(key: string): boolean {
+  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
+  // eslint-disable-next-line eqeqeq
+  if (until == null) return false;
+
+  if (until <= Date.now()) {
+    UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
+    return false;
+  }
+
+  return true;
+}
+
+function markUpdateBranchCooldown(key: string): void {
+  UPDATE_BRANCH_COOLDOWN_UNTIL.set(key, Date.now() + UPDATE_BRANCH_COOLDOWN_MS);
 }
 
 function isBenignUpdateBranchFailure(error: unknown): boolean {
@@ -2334,6 +2732,40 @@ function isManualUpdateBranchFailure(error: unknown): boolean {
   );
 }
 
+async function callPullRequestBranchUpdate(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number,
+  expectedHeadSha?: string
+): Promise<void> {
+  const args: {
+    owner: string;
+    repo: string;
+    pull_number: number;
+    expected_head_sha?: string;
+  } = {
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    pull_number: prNumber,
+  };
+
+  const normalizedExpectedHeadSha = toStringTrim(expectedHeadSha);
+  if (normalizedExpectedHeadSha) {
+    args.expected_head_sha = normalizedExpectedHeadSha;
+  }
+
+  await (
+    context.octokit.pulls as unknown as {
+      updateBranch: (args: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        expected_head_sha?: string;
+      }) => Promise<unknown>;
+    }
+  ).updateBranch(args);
+}
+
 async function requestPullRequestBranchUpdate(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2344,26 +2776,30 @@ async function requestPullRequestBranchUpdate(
   if (!headSha) return false;
 
   const key = updateBranchInflightKey(repoInfo, pr);
+
+  if (isUpdateBranchCooldownActive(key)) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        reason,
+      },
+      'pull-request branch update skipped: cooldown active'
+    );
+
+    return false;
+  }
+
   const existing = UPDATE_BRANCH_INFLIGHT.get(key);
   if (existing) return await existing;
 
   const pending = (async (): Promise<boolean> => {
     try {
-      await (
-        context.octokit.pulls as unknown as {
-          updateBranch: (args: {
-            owner: string;
-            repo: string;
-            pull_number: number;
-            expected_head_sha?: string;
-          }) => Promise<unknown>;
-        }
-      ).updateBranch({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        expected_head_sha: headSha,
-      });
+      await callPullRequestBranchUpdate(context, repoInfo, pr.number, headSha);
+
+      markUpdateBranchCooldown(key);
 
       log(
         context,
@@ -2383,20 +2819,87 @@ async function requestPullRequestBranchUpdate(
 
       if (isBenignUpdateBranchFailure(error)) {
         const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
+        const freshHeadSha = toStringTrim(fresh?.head?.sha);
+        const freshMergeableState = readMergeableState(fresh);
+        const stillBehind = Boolean(fresh && isPullRequestBehindBase(fresh));
+
+        if (freshHeadSha && freshHeadSha !== headSha) {
+          log(
+            context,
+            'info',
+            {
+              prNumber: pr.number,
+              oldHeadSha: headSha,
+              freshHeadSha,
+              status,
+              err: msg,
+              reason,
+              freshMergeableState,
+            },
+            'pull-request branch update skipped: head already changed'
+          );
+
+          return false;
+        }
+
+        if (stillBehind) {
+          await delayMs(UPDATE_BRANCH_RETRY_DELAY_MS);
+
+          try {
+            await callPullRequestBranchUpdate(context, repoInfo, pr.number);
+
+            markUpdateBranchCooldown(key);
+
+            log(
+              context,
+              'info',
+              {
+                prNumber: pr.number,
+                headSha,
+                freshHeadSha,
+                reason,
+              },
+              'pull-request branch update requested after expected-head retry'
+            );
+
+            return true;
+          } catch (retryError: unknown) {
+            markUpdateBranchCooldown(key);
+
+            log(
+              context,
+              'warn',
+              {
+                prNumber: pr.number,
+                headSha,
+                freshHeadSha,
+                status: getHttpStatus(retryError),
+                err: getErrorMessage(retryError),
+                originalStatus: status,
+                originalErr: msg,
+                reason,
+                freshMergeableState,
+              },
+              'pull-request branch update retry failed'
+            );
+
+            return false;
+          }
+        }
 
         log(
           context,
-          'debug',
+          'info',
           {
             prNumber: pr.number,
             oldHeadSha: headSha,
-            freshHeadSha: toStringTrim(fresh?.head?.sha),
+            freshHeadSha,
             status,
             err: msg,
             reason,
-            freshMergeableState: readMergeableState(fresh),
+            freshMergeableState,
           },
-          'pull-request branch update skipped after head race'
+          'pull-request branch update skipped after benign failure'
         );
 
         return false;
@@ -2450,8 +2953,20 @@ function shouldTryBranchUpdateAfterMergeFailure(error: unknown): boolean {
     msg.includes('update branch') ||
     msg.includes('must be up to date') ||
     msg.includes('must be up-to-date') ||
-    msg.includes('behind the base branch') ||
-    msg.includes('not mergeable')
+    msg.includes('behind the base branch')
+  );
+}
+
+function isMergeBlockedByBranchProtection(error: unknown): boolean {
+  const msg = getErrorMessage(error).toLowerCase();
+
+  return (
+    msg.includes('at least 1 approving review is required') ||
+    msg.includes('approving review is required') ||
+    msg.includes('required status check') ||
+    msg.includes('is expected') ||
+    msg.includes('protected branch') ||
+    msg.includes('pull request is not mergeable')
   );
 }
 
@@ -2563,9 +3078,52 @@ async function tryMergeApprovedPrOrUpdateBranch(
   pr: PullRequestLike,
   reason: string
 ): Promise<void> {
+  const key = mergeInflightKey(repoInfo, pr);
+  const existing = MERGE_INFLIGHT.get(key);
+
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const pending = runMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason).finally(() => {
+    MERGE_INFLIGHT.delete(key);
+  });
+
+  MERGE_INFLIGHT.set(key, pending);
+  await pending;
+}
+
+async function runMergeApprovedPrOrUpdateBranch(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<void> {
+  const originalHeadSha = toStringTrim(pr.head?.sha);
+  const baseBranch = toStringTrim(pr.base?.ref);
+
   let currentPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-merge`);
 
   if (!isPullRequestOpen(currentPr)) return;
+
+  const currentHeadSha = toStringTrim(currentPr.head?.sha);
+
+  if (originalHeadSha && currentHeadSha && originalHeadSha !== currentHeadSha) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: currentPr.number,
+        originalHeadSha,
+        currentHeadSha,
+        reason,
+      },
+      'pull-request head changed before merge, waiting for new CI'
+    );
+
+    return;
+  }
 
   if (isPullRequestDirty(currentPr)) {
     log(
@@ -2574,15 +3132,61 @@ async function tryMergeApprovedPrOrUpdateBranch(
       {
         prNumber: currentPr.number,
         mergeableState: readMergeableState(currentPr),
+        reason,
       },
       'pull-request has merge conflicts, auto-merge skipped'
+    );
+
+    return;
+  }
+
+  if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
+    await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+      context,
+      repoInfo,
+      currentPr,
+      baseBranch,
+      `${reason}:behind-before-merge`
     );
     return;
   }
 
-  if (isPullRequestBehindBase(currentPr)) {
-    await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-before-merge`);
+  const hasMergeApproval = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr);
+
+  if (!hasMergeApproval) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: currentPr.number,
+        headSha: currentHeadSha,
+        reason,
+      },
+      'pull-request merge skipped: no qualifying approval'
+    );
+
     return;
+  }
+
+  if (currentHeadSha) {
+    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, currentHeadSha);
+
+    if (!greenResult.green) {
+      log(
+        context,
+        'info',
+        {
+          prNumber: currentPr.number,
+          headSha: currentHeadSha,
+          greenReason: greenResult.reason,
+          blockingRuns: greenResult.blockingRuns,
+          reason,
+        },
+        'pull-request merge skipped: current head checks are not green'
+      );
+
+      return;
+    }
   }
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -2600,14 +3204,10 @@ async function tryMergeApprovedPrOrUpdateBranch(
       const afterMergeAttempt = await readFreshPullRequest(context, repoInfo, currentPr.number);
       if (!afterMergeAttempt) return;
 
-      if (!isPullRequestOpen(afterMergeAttempt)) {
-        return;
-      }
+      if (!isPullRequestOpen(afterMergeAttempt)) return;
 
       const afterHeadSha = toStringTrim(afterMergeAttempt.head?.sha);
 
-      // updateBranch or another actor changed the PR head.
-      // Do not immediately merge; wait for new CI.
       if (beforeHeadSha && afterHeadSha && beforeHeadSha !== afterHeadSha) {
         log(
           context,
@@ -2620,15 +3220,26 @@ async function tryMergeApprovedPrOrUpdateBranch(
           },
           'pull-request head changed after merge attempt'
         );
+
         return;
       }
 
-      if (merged === true) {
-        return;
-      }
+      if (merged === true) return;
 
       if (merged === false) {
-        await requestPullRequestBranchUpdate(context, repoInfo, afterMergeAttempt, `${reason}:merge-returned-false`);
+        log(
+          context,
+          'info',
+          {
+            prNumber: afterMergeAttempt.number,
+            headSha: toStringTrim(afterMergeAttempt.head?.sha),
+            mergeable: afterMergeAttempt.mergeable,
+            mergeableState: readMergeableState(afterMergeAttempt),
+            reason,
+          },
+          'pull-request merge returned false, branch update not requested'
+        );
+
         return;
       }
 
@@ -2648,18 +3259,25 @@ async function tryMergeApprovedPrOrUpdateBranch(
           {
             prNumber: currentPr.number,
             mergeableState: readMergeableState(currentPr),
+            reason,
           },
           'pull-request has merge conflicts after mergeability refresh'
+        );
+
+        return;
+      }
+
+      if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
+        await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+          context,
+          repoInfo,
+          currentPr,
+          baseBranch,
+          `${reason}:behind-after-merge-attempt`
         );
         return;
       }
 
-      if (isPullRequestBehindBase(currentPr)) {
-        await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:behind-after-merge-attempt`);
-        return;
-      }
-
-      // GitHub was still calculating mergeability. Retry once.
       if (attempt < 2 && isMergeabilityPending(currentPr)) {
         continue;
       }
@@ -2678,8 +3296,51 @@ async function tryMergeApprovedPrOrUpdateBranch(
 
       return;
     } catch (error: unknown) {
+      if (isMergeBlockedByBranchProtection(error)) {
+        log(
+          context,
+          'info',
+          {
+            prNumber: currentPr.number,
+            headSha: toStringTrim(currentPr.head?.sha),
+            err: getErrorMessage(error),
+            status: getHttpStatus(error),
+            reason,
+          },
+          'pull-request merge blocked by branch protection'
+        );
+
+        return;
+      }
+
       if (shouldTryBranchUpdateAfterMergeFailure(error)) {
-        await requestPullRequestBranchUpdate(context, repoInfo, currentPr, `${reason}:merge-failed-outdated`);
+        const freshPr = (await readFreshPullRequest(context, repoInfo, currentPr.number)) || currentPr;
+
+        if (await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch)) {
+          await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+            context,
+            repoInfo,
+            freshPr,
+            baseBranch,
+            `${reason}:merge-failed-outdated`
+          );
+        } else {
+          log(
+            context,
+            'info',
+            {
+              prNumber: freshPr.number,
+              headSha: toStringTrim(freshPr.head?.sha),
+              mergeable: freshPr.mergeable,
+              mergeableState: readMergeableState(freshPr),
+              err: getErrorMessage(error),
+              status: getHttpStatus(error),
+              reason,
+            },
+            'pull-request merge failed, branch update not requested'
+          );
+        }
+
         return;
       }
 
@@ -2688,13 +3349,50 @@ async function tryMergeApprovedPrOrUpdateBranch(
   }
 }
 
-function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
-  const raw = toStringTrim(body);
-  const match = /source:\s*#(\d+)/i.exec(raw) ?? /issue\s*#(\d+)/i.exec(raw);
-  if (!match?.[1]) return null;
+function parsePositiveIssueNumber(value: string | undefined): number | null {
+  if (!value) return null;
 
-  const value = Number.parseInt(match[1], 10);
-  return Number.isFinite(value) ? value : null;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseIssueNumberFromText(value: unknown, patterns: RegExp[]): number | null {
+  const raw = toStringTrim(value);
+  if (!raw) return null;
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(raw);
+    const parsed = parsePositiveIssueNumber(match?.[1]);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
+
+function parseLinkedIssueNumberFromPrBody(body: unknown): number | null {
+  return parseIssueNumberFromText(body, [
+    /<!--\s*nsreq:issue:(\d+)\s*-->/i,
+    /\bsource\s*:\s*#(\d+)\b/i,
+    /\bissue\s*#\s*(\d+)\b/i,
+    /\bissue\s+(\d+)\b/i,
+    /\b(?:fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s*:?\s*#(\d+)\b/i,
+  ]);
+}
+
+function parseLinkedIssueNumberFromPr(pr: PullRequestLike, repoInfo?: RepoInfo): number | null {
+  const fromBody = parseLinkedIssueNumberFromPrBody(pr.body);
+  if (fromBody !== null) return fromBody;
+
+  const fromTitle = parseIssueNumberFromText(pr.title, [
+    /\bissue\s*#?\s*(\d+)\b/i,
+    /\b(?:fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s*:?\s*#(\d+)\b/i,
+  ]);
+
+  if (fromTitle !== null) return fromTitle;
+
+  if (repoInfo && isCrossRepositoryPullRequest(pr, repoInfo)) return null;
+
+  return parseIssueNumberFromText(pr.head?.ref, [/(?:^|[-_/])issue[-_/]?(\d+)(?:$|[-_/])/i]);
 }
 
 function isSnapshotManagedRequestPr(pr: PullRequestLike): boolean {
@@ -2735,13 +3433,26 @@ async function processPullRequestForAutoMerge(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<void> {
-  const issueNumber = parseLinkedIssueNumberFromPrBody(pr.body);
+  const prBaseBranch = toStringTrim(pr.base?.ref);
+
+  if (await isSequentialDirectRegistryPr(context, repoInfo, pr, prBaseBranch)) {
+    if (await shouldDeferSequentialDirectRegistryPrProcessing(context, repoInfo, pr)) {
+      return;
+    }
+  }
+
+  const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
 
   if (issueNumber === null) {
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
+      baseBranch: toStringTrim(freshPr.base?.ref),
+    });
+
     if (standaloneOutcome !== 'approved') return;
 
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
+    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
     return;
   }
 
@@ -2755,29 +3466,106 @@ async function processPullRequestForAutoMerge(
   try {
     const res = await context.octokit.issues.get(params);
     issue = res.data as unknown as IssueLike;
-  } catch {
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        issueNumber,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      },
+      'direct-pr:linked-issue-read-failed-fallback-standalone'
+    );
+
+    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
+      baseBranch: toStringTrim(freshPr.base?.ref),
+    });
+
+    if (standaloneOutcome !== 'approved') return;
+
+    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
     return;
   }
 
-  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) return;
+  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        issueNumber,
+      },
+      'direct-pr:linked-issue-not-request-form-fallback-standalone'
+    );
+
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
+    return;
+  }
 
   let template: TemplateLike;
   try {
     template = await loadTemplateWithLabelRefresh(context, params, issue);
-  } catch {
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        issueNumber,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'direct-pr:linked-issue-template-load-failed-fallback-standalone'
+    );
+
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
     return;
   }
 
   const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-  if (!isRequestIssue(context, template, parsedFormData)) return;
+  if (!isRequestIssue(context, template, parsedFormData)) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        issueNumber,
+        parsedKeys: Object.keys(parsedFormData || {}),
+      },
+      'direct-pr:linked-issue-not-request-issue-fallback-standalone'
+    );
+
+    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
+    if (standaloneOutcome !== 'approved') return;
+
+    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
+    return;
+  }
 
   const body = toStringTrim(pr.body);
-  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
+  const currentHash =
+    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
   const prHash = extractHashFromPrBody(body);
 
   if (prHash) {
-    if (prHash !== currentHash) {
-      await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+    if (!snapshotHashes.includes(prHash)) {
+      await closeOutdatedRequestPrs(context, params, template, {
+        parsedFormData,
+        currentHash,
+        acceptedHashes: snapshotHashes,
+      });
       return;
     }
 
@@ -2828,55 +3616,41 @@ function readPushChangedFiles(payload: unknown): string[] {
   return out;
 }
 
-function isRelevantDefaultBranchPushForApprovalReevaluation(payload: unknown): boolean {
-  if (!isPlainObject(payload)) return false;
-
-  const ref = toStringTrim(payload['ref']);
-  const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
-  const defaultBranch = repoObj ? toStringTrim(repoObj['default_branch']) : '';
-
-  if (!ref || !defaultBranch || ref !== `refs/heads/${defaultBranch}`) return false;
-
-  return readPushChangedFiles(payload).some(isApprovalConfigChangePath);
-}
-
-async function reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(
+async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
   context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo
-): Promise<void> {
-  const openPrs = await listOpenPullRequests(context, repoInfo);
+  repoInfo: RepoInfo,
+  baseBranch: string,
+  reason = 'default-branch-push:direct-pr-reevaluation'
+): Promise<SequentialRegistryPrResult> {
+  log(
+    context,
+    'info',
+    {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      baseBranch,
+      reason,
+      hooksSource: context.resourceBotHooksSource,
+    },
+    'direct-pr-reeval:start'
+  );
 
-  for (const pr of openPrs) {
-    if (isSnapshotManagedRequestPr(pr)) continue;
-    if (parseLinkedIssueNumberFromPrBody(pr.body) !== null) continue;
+  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
 
-    const headSha = toStringTrim(pr.head?.sha);
-    if (!headSha) continue;
+  log(
+    context,
+    'info',
+    {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      baseBranch,
+      reason,
+      ...result,
+    },
+    'direct-pr-reeval:done'
+  );
 
-    const isGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-    if (!isGreen) continue;
-
-    try {
-      const hasCurrentHeadAutoApproval = await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha);
-
-      if (hasCurrentHeadAutoApproval) {
-        await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-        continue;
-      }
-
-      await processPullRequestForAutoMerge(context, repoInfo, pr);
-    } catch (e: unknown) {
-      log(
-        context,
-        'warn',
-        {
-          err: e instanceof Error ? e.message : String(e),
-          prNumber: pr.number,
-        },
-        'failed to re-evaluate direct pull request after approval config change'
-      );
-    }
-  }
+  return result;
 }
 
 function isDefaultBranchPush(payload: unknown): boolean {
@@ -2889,11 +3663,15 @@ function isDefaultBranchPush(payload: unknown): boolean {
   return Boolean(ref && defaultBranch && ref === `refs/heads/${defaultBranch}`);
 }
 
-function readDefaultBranchFromPush(payload: unknown): string {
+function readDefaultBranchFromPayload(payload: unknown): string {
   if (!isPlainObject(payload)) return '';
 
   const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
   return repoObj ? toStringTrim(repoObj['default_branch']) : '';
+}
+
+function readDefaultBranchFromPush(payload: unknown): string {
+  return readDefaultBranchFromPayload(payload);
 }
 
 function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): boolean {
@@ -2909,62 +3687,50 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
   repoInfo: RepoInfo,
   baseBranch: string,
   reason = 'default-branch-push'
-): Promise<void> {
+): Promise<boolean> {
+  if (await isSequentialRegistryPrActiveBlocking(context, repoInfo)) {
+    return false;
+  }
+
   const openPrs = await listOpenPullRequests(context, repoInfo);
 
-  for (const pr of openPrs) {
+  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
     const headSha = toStringTrim(pr.head?.sha);
 
-    if (!headSha) {
-      if (DBG) {
-        log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: missing head sha');
-      }
-      continue;
-    }
-
-    if (!pullRequestTargetsBranch(pr, baseBranch)) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          {
-            prNumber: pr.number,
-            prBase: toStringTrim(pr.base?.ref),
-            baseBranch,
-            reason,
-          },
-          'skip branch update: different base branch'
-        );
-      }
-      continue;
-    }
+    if (!headSha) continue;
+    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
+    if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) continue;
 
     try {
-      const changedRegistryFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+      const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
 
       if (!changedRegistryFiles.length) {
-        if (DBG) {
-          log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: no registry yaml files changed');
-        }
+        log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: no registry yaml files changed');
+        continue;
+      }
+
+      if (!isSnapshotManagedRequestPr(pr)) {
+        log(
+          context,
+          'info',
+          {
+            prNumber: pr.number,
+            reason,
+          },
+          'skip branch update: direct registry PR handled by sequential queue'
+        );
         continue;
       }
 
       const approved = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, pr);
       if (!approved) {
-        if (DBG) {
-          log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: PR is not approved');
-        }
+        log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: PR is not approved');
         continue;
       }
 
       const freshPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-update-branch`);
 
-      if (!isPullRequestOpen(freshPr)) {
-        if (DBG) {
-          log(context, 'debug', { prNumber: pr.number, reason }, 'skip branch update: PR is not open');
-        }
-        continue;
-      }
+      if (!isPullRequestOpen(freshPr)) continue;
 
       if (isPullRequestDirty(freshPr)) {
         log(
@@ -2980,24 +3746,30 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
         continue;
       }
 
-      if (!isPullRequestBehindBase(freshPr)) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            {
-              prNumber: freshPr.number,
-              mergeable: freshPr.mergeable,
-              mergeableState: readMergeableState(freshPr),
-              reason,
-            },
-            'skip branch update: PR is not behind base'
-          );
-        }
+      const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
+
+      if (!mustUpdate) {
+        log(
+          context,
+          'info',
+          {
+            prNumber: freshPr.number,
+            mergeable: freshPr.mergeable,
+            mergeableState: readMergeableState(freshPr),
+            reason,
+          },
+          'skip branch update: PR is not behind current base'
+        );
         continue;
       }
 
-      await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
+      const requested = await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
+
+      if (requested) {
+        return true;
+      }
+
+      markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'approved-branch-update-request-failed');
     } catch (error: unknown) {
       log(
         context,
@@ -3009,21 +3781,27 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
         },
         'failed to update approved pull request branch after default branch push'
       );
+
+      markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, 'approved-branch-update-exception');
     }
   }
+
+  return false;
 }
 
 async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   baseBranch: string
-): Promise<void> {
-  await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
+): Promise<boolean> {
+  const requested = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
     context,
     repoInfo,
     baseBranch,
     'default-branch-push'
   );
+
+  if (requested) return true;
 
   const retryTimer = setTimeout(() => {
     void updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
@@ -3046,7 +3824,11 @@ async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRe
     });
   }, DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
 
-  retryTimer.unref?.();
+  if (retryTimer && typeof (retryTimer as { unref?: () => void }).unref === 'function') {
+    retryTimer.unref();
+  }
+
+  return false;
 }
 
 function normalizeRepoPath(path: unknown): string {
@@ -3245,6 +4027,1039 @@ async function listChangedYamlFilesForPr(
   return Array.from(new Set(out));
 }
 
+async function readBranchHeadSha(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  branchName: string
+): Promise<string> {
+  const branch = toStringTrim(branchName);
+  if (!branch) return '';
+
+  try {
+    const res = await context.octokit.repos.getBranch({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      branch,
+    });
+
+    return toStringTrim((res as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha);
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        branch,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'branch-head-sha:read-failed'
+    );
+
+    return '';
+  }
+}
+
+async function readRecursiveGitTreeEntries(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  ref: string
+): Promise<GitTreeEntryLike[]> {
+  const treeSha = toStringTrim(ref);
+  if (!treeSha) return [];
+
+  try {
+    const res = await (
+      context.octokit.git as unknown as {
+        getTree: (args: {
+          owner: string;
+          repo: string;
+          tree_sha: string;
+          recursive?: 'true';
+        }) => Promise<{ data?: GitTreeLike }>;
+      }
+    ).getTree({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      tree_sha: treeSha,
+      recursive: 'true',
+    });
+
+    return Array.isArray(res?.data?.tree) ? res.data.tree : [];
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        ref: treeSha,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'git-tree:read-failed'
+    );
+
+    return [];
+  }
+}
+
+function registryYamlTreeEntryPath(context: BotContext<RequestEvents>, entry: GitTreeEntryLike): string {
+  const path = normalizeRepoPath(entry?.path);
+  const type = toStringTrim(entry?.type).toLowerCase();
+
+  if (type !== 'blob') return '';
+  if (!path || !isYamlPath(path)) return '';
+  if (!isRegistryEntryPath(context, path)) return '';
+
+  return path;
+}
+
+type PullRequestHeadReadCandidate = {
+  repoInfo: RepoInfo;
+  ref: string;
+  source: string;
+};
+
+function sameRepoInfo(a: RepoInfo, b: RepoInfo): boolean {
+  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase();
+}
+
+function resolveRepoInfoFromRepoLike(repoLike: PullRequestRepoLike | null | undefined): RepoInfo | null {
+  const fullName = toStringTrim(repoLike?.full_name);
+  if (fullName) {
+    const parts = fullName
+      .split('/')
+      .map((part) => toStringTrim(part))
+      .filter(Boolean);
+
+    if (parts.length === 2) {
+      return { owner: parts[0], repo: parts[1] };
+    }
+  }
+
+  const owner = normalizeLogin(repoLike?.owner?.login);
+  const repo = toStringTrim(repoLike?.name);
+
+  return owner && repo ? { owner, repo } : null;
+}
+
+function resolvePullRequestHeadRepoInfo(pr: PullRequestLike, fallbackRepoInfo: RepoInfo): RepoInfo {
+  return resolveRepoInfoFromRepoLike(pr.head?.repo) || fallbackRepoInfo;
+}
+
+function isCrossRepositoryPullRequest(pr: PullRequestLike, baseRepoInfo: RepoInfo): boolean {
+  return !sameRepoInfo(resolvePullRequestHeadRepoInfo(pr, baseRepoInfo), baseRepoInfo);
+}
+
+function buildPullRequestHeadReadCandidates(repoInfo: RepoInfo, pr: PullRequestLike): PullRequestHeadReadCandidate[] {
+  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
+  const headSha = toStringTrim(pr.head?.sha);
+  const headRef = toStringTrim(pr.head?.ref);
+  const isCrossRepo = !sameRepoInfo(headRepoInfo, repoInfo);
+
+  const out: PullRequestHeadReadCandidate[] = [];
+  const seen = new Set<string>();
+
+  const add = (candidateRepoInfo: RepoInfo, ref: string, source: string): void => {
+    const normalizedRef = toStringTrim(ref);
+    if (!normalizedRef) return;
+
+    const key = `${candidateRepoInfo.owner}/${candidateRepoInfo.repo}:${normalizedRef}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    out.push({
+      repoInfo: candidateRepoInfo,
+      ref: normalizedRef,
+      source,
+    });
+  };
+
+  add(repoInfo, headSha, 'base-repo:head-sha');
+  add(repoInfo, `refs/pull/${pr.number}/head`, 'base-repo:pull-ref-full');
+  add(repoInfo, `pull/${pr.number}/head`, 'base-repo:pull-ref-short');
+
+  if (!isCrossRepo) {
+    add(repoInfo, headRef, 'base-repo:head-ref');
+  }
+
+  add(headRepoInfo, headSha, 'head-repo:head-sha');
+  add(headRepoInfo, headRef, 'head-repo:head-ref');
+
+  return out;
+}
+
+async function readPullRequestHeadFileText(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  path: string
+): Promise<string | null> {
+  const candidates = buildPullRequestHeadReadCandidates(repoInfo, pr);
+  const normalizedPath = normalizeRepoPath(path);
+
+  for (const candidate of candidates) {
+    const raw = await readRepoFileTextAtRef(context, candidate.repoInfo, normalizedPath, candidate.ref);
+    if (raw === null) continue;
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        path: normalizedPath,
+        source: candidate.source,
+        owner: candidate.repoInfo.owner,
+        repo: candidate.repoInfo.repo,
+        ref: candidate.ref,
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      },
+      'pull-request head file resolved'
+    );
+
+    return raw;
+  }
+
+  log(
+    context,
+    'warn',
+    {
+      prNumber: pr.number,
+      path: normalizedPath,
+      baseOwner: repoInfo.owner,
+      baseRepo: repoInfo.repo,
+      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
+      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
+      headRef: toStringTrim(pr.head?.ref),
+      headSha: toStringTrim(pr.head?.sha),
+      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      candidates: candidates.map((candidate) => ({
+        source: candidate.source,
+        owner: candidate.repoInfo.owner,
+        repo: candidate.repoInfo.repo,
+        ref: candidate.ref,
+      })),
+    },
+    'pull-request head file read failed'
+  );
+
+  return null;
+}
+
+async function readPullRequestHeadTreeEntries(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<GitTreeEntryLike[]> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return [];
+
+  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
+  const candidates: PullRequestHeadReadCandidate[] = [
+    {
+      repoInfo,
+      ref: headSha,
+      source: 'base-repo:head-sha',
+    },
+  ];
+
+  if (!sameRepoInfo(headRepoInfo, repoInfo)) {
+    candidates.push({
+      repoInfo: headRepoInfo,
+      ref: headSha,
+      source: 'head-repo:head-sha',
+    });
+  }
+
+  for (const candidate of candidates) {
+    const entries = await readRecursiveGitTreeEntries(context, candidate.repoInfo, candidate.ref);
+    if (!entries.length) continue;
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        source: candidate.source,
+        owner: candidate.repoInfo.owner,
+        repo: candidate.repoInfo.repo,
+        ref: candidate.ref,
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+        entries: entries.length,
+      },
+      'pull-request head tree resolved'
+    );
+
+    return entries;
+  }
+
+  return [];
+}
+
+async function listChangedYamlFilesForPrAgainstCurrentBase(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string
+): Promise<string[]> {
+  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+  if (!baseRef) return [];
+
+  const baseSha = await readBranchHeadSha(context, repoInfo, baseRef);
+  if (!baseSha) return [];
+
+  const [baseEntries, headEntries] = await Promise.all([
+    readRecursiveGitTreeEntries(context, repoInfo, baseSha),
+    readPullRequestHeadTreeEntries(context, repoInfo, pr),
+  ]);
+
+  const baseByPath = new Map<string, string>();
+
+  for (const entry of baseEntries) {
+    const path = registryYamlTreeEntryPath(context, entry);
+    if (!path) continue;
+
+    const sha = toStringTrim(entry.sha);
+    if (sha) baseByPath.set(path, sha);
+  }
+
+  const changed: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of headEntries) {
+    const path = registryYamlTreeEntryPath(context, entry);
+    if (!path || seen.has(path)) continue;
+
+    const headEntrySha = toStringTrim(entry.sha);
+    const baseEntrySha = baseByPath.get(path) || '';
+
+    if (!headEntrySha) continue;
+    if (baseEntrySha && baseEntrySha === headEntrySha) continue;
+
+    seen.add(path);
+    changed.push(path);
+  }
+
+  return changed;
+}
+
+async function listChangedYamlFilesForPrWithFallback(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch?: string
+): Promise<string[]> {
+  const fromPullFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
+  if (fromPullFiles.length) return fromPullFiles;
+
+  const fallbackBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+  if (!fallbackBaseBranch) return [];
+
+  const fromTreeDiff = await listChangedYamlFilesForPrAgainstCurrentBase(context, repoInfo, pr, fallbackBaseBranch);
+
+  if (fromTreeDiff.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        baseBranch: fallbackBaseBranch,
+        changedRegistryFiles: fromTreeDiff,
+      },
+      'changed-registry-files:fallback-tree-diff'
+    );
+  }
+
+  return fromTreeDiff;
+}
+
+async function isPullRequestBehindCurrentBase(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  const headRef = toStringTrim(pr.head?.ref);
+  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+
+  if (!headSha || !baseRef) return false;
+
+  const baseHeadSha = await readBranchHeadSha(context, repoInfo, baseRef);
+  if (!baseHeadSha || baseHeadSha === headSha) return false;
+
+  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
+  const candidates: string[] = [`${headSha}...${baseHeadSha}`];
+
+  if (!sameRepoInfo(headRepoInfo, repoInfo) && headRef) {
+    candidates.push(`${headRepoInfo.owner}:${headRef}...${repoInfo.owner}:${baseRef}`);
+  }
+
+  for (const basehead of candidates) {
+    try {
+      const res = await (
+        context.octokit.repos as unknown as {
+          compareCommitsWithBasehead: (args: {
+            owner: string;
+            repo: string;
+            basehead: string;
+          }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
+        }
+      ).compareCommitsWithBasehead({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        basehead,
+      });
+
+      const status = toStringTrim(res?.data?.status).toLowerCase();
+      const aheadBy = typeof res?.data?.ahead_by === 'number' ? res.data.ahead_by : 0;
+
+      log(
+        context,
+        'info',
+        {
+          prNumber: pr.number,
+          basehead,
+          status,
+          aheadBy,
+          headSha,
+          baseHeadSha,
+          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+        },
+        'pull-request behind-current-base compare'
+      );
+
+      if (status === 'ahead' || status === 'diverged' || aheadBy > 0) return true;
+      if (status === 'identical') return false;
+    } catch (error: unknown) {
+      log(
+        context,
+        'warn',
+        {
+          prNumber: pr.number,
+          basehead,
+          headSha,
+          baseBranch: baseRef,
+          baseHeadSha,
+          err: getErrorMessage(error),
+          status: getHttpStatus(error),
+          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+        },
+        'pull-request behind-current-base compare failed'
+      );
+    }
+  }
+
+  return isPullRequestBehindBase(pr);
+}
+
+async function shouldUpdatePullRequestBranch(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string
+): Promise<boolean> {
+  if (isPullRequestBehindBase(pr)) return true;
+  return await isPullRequestBehindCurrentBase(context, repoInfo, pr, baseBranch);
+}
+
+function sequentialRegistryPrRepoKey(repoInfo: RepoInfo): string {
+  return `${repoInfo.owner}/${repoInfo.repo}`.toLowerCase();
+}
+
+function sequentialRegistryPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
+  return `${sequentialRegistryPrRepoKey(repoInfo)}#${prNumber}:${toStringTrim(headSha)}`;
+}
+
+function pruneSequentialRegistryPrSkipState(): void {
+  const now = Date.now();
+
+  for (const [key, until] of SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.entries()) {
+    if (until <= now) SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.delete(key);
+  }
+}
+
+function isSequentialRegistryPrHeadSkipped(repoInfo: RepoInfo, pr: PullRequestLike): boolean {
+  pruneSequentialRegistryPrSkipState();
+
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  const key = sequentialRegistryPrHeadKey(repoInfo, pr.number, headSha);
+  return (SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.get(key) || 0) > Date.now();
+}
+
+function markSequentialRegistryPrHeadSkipped(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): void {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return;
+
+  const key = sequentialRegistryPrHeadKey(repoInfo, pr.number, headSha);
+  SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.set(key, Date.now() + SEQUENTIAL_REGISTRY_PR_SKIP_TTL_MS);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha,
+      reason,
+    },
+    'sequential-registry-pr:head-skipped'
+  );
+}
+
+function getSequentialRegistryPrActive(repoInfo: RepoInfo): SequentialRegistryPrActive | null {
+  return SEQUENTIAL_REGISTRY_PR_ACTIVE.get(sequentialRegistryPrRepoKey(repoInfo)) || null;
+}
+
+function clearSequentialRegistryPrActive(repoInfo: RepoInfo): void {
+  SEQUENTIAL_REGISTRY_PR_ACTIVE.delete(sequentialRegistryPrRepoKey(repoInfo));
+}
+
+function markSequentialRegistryPrActive(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): void {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return;
+
+  const startedAt = Date.now();
+  const active: SequentialRegistryPrActive = {
+    prNumber: pr.number,
+    startedHeadSha: headSha,
+    startedAt,
+    expiresAt: startedAt + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
+    reason,
+  };
+
+  SEQUENTIAL_REGISTRY_PR_ACTIVE.set(sequentialRegistryPrRepoKey(repoInfo), active);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha,
+      expiresAt: active.expiresAt,
+      reason,
+    },
+    'sequential-registry-pr:active-set'
+  );
+}
+
+async function isSequentialRegistryPrActiveBlocking(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo
+): Promise<boolean> {
+  const active = getSequentialRegistryPrActive(repoInfo);
+  if (!active) return false;
+
+  if (active.expiresAt <= Date.now()) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: active.prNumber,
+        startedHeadSha: active.startedHeadSha,
+        reason: active.reason,
+      },
+      'sequential-registry-pr:active-expired'
+    );
+
+    clearSequentialRegistryPrActive(repoInfo);
+    return false;
+  }
+
+  const freshPr = await readFreshPullRequest(context, repoInfo, active.prNumber);
+
+  if (!freshPr || !isPullRequestOpen(freshPr)) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: active.prNumber,
+        startedHeadSha: active.startedHeadSha,
+        freshHeadSha: toStringTrim(freshPr?.head?.sha),
+        reason: active.reason,
+      },
+      'sequential-registry-pr:active-cleared-closed'
+    );
+
+    clearSequentialRegistryPrActive(repoInfo);
+    return false;
+  }
+
+  const baseBranch = toStringTrim(freshPr.base?.ref);
+  const isDirectRegistryPr = await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch);
+
+  if (!isDirectRegistryPr) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: active.prNumber,
+        startedHeadSha: active.startedHeadSha,
+        currentHeadSha: toStringTrim(freshPr.head?.sha),
+        reason: active.reason,
+      },
+      'sequential-registry-pr:active-cleared-non-direct'
+    );
+
+    clearSequentialRegistryPrActive(repoInfo);
+    return false;
+  }
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: active.prNumber,
+      startedHeadSha: active.startedHeadSha,
+      currentHeadSha: toStringTrim(freshPr.head?.sha),
+      reason: active.reason,
+    },
+    'sequential-registry-pr:active-blocking'
+  );
+
+  return true;
+}
+
+async function isSequentialDirectRegistryPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch?: string
+): Promise<boolean> {
+  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+  if (!targetBaseBranch) return false;
+  if (isSnapshotManagedRequestPr(pr)) return false;
+  if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
+
+  try {
+    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
+    return changedRegistryFiles.length > 0;
+  } catch (error) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        baseBranch: targetBaseBranch,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'sequential-registry-pr:changed-files-lookup-failed'
+    );
+
+    return false;
+  }
+}
+
+async function shouldDeferSequentialDirectRegistryPrProcessing(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<boolean> {
+  const active = getSequentialRegistryPrActive(repoInfo);
+  if (!active || active.prNumber === pr.number) return false;
+
+  if (!(await isSequentialRegistryPrActiveBlocking(context, repoInfo))) {
+    return false;
+  }
+
+  const currentActive = getSequentialRegistryPrActive(repoInfo);
+  if (!currentActive || currentActive.prNumber === pr.number) {
+    return false;
+  }
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      activePrNumber: currentActive.prNumber,
+      activeHeadSha: currentActive.startedHeadSha,
+    },
+    'sequential-registry-pr:auto-merge-deferred'
+  );
+
+  return true;
+}
+
+async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string,
+  reason: string
+): Promise<boolean> {
+  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
+
+  if (!(await isSequentialDirectRegistryPr(context, repoInfo, pr, targetBaseBranch))) {
+    return await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
+  }
+
+  const active = getSequentialRegistryPrActive(repoInfo);
+
+  if (active && active.prNumber === pr.number) {
+    const requested = await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
+
+    if (requested) {
+      markSequentialRegistryPrActive(context, repoInfo, pr, reason);
+    }
+
+    return requested;
+  }
+
+  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, targetBaseBranch, reason);
+  return result.updated;
+}
+
+async function advanceSequentialRegistryPrQueueAfterTerminalState(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<void> {
+  const active = getSequentialRegistryPrActive(repoInfo);
+  if (!active || active.prNumber !== pr.number) return;
+
+  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
+
+  if (freshPr && isPullRequestOpen(freshPr)) {
+    return;
+  }
+
+  clearSequentialRegistryPrActive(repoInfo);
+
+  const baseBranch = toStringTrim(freshPr?.base?.ref) || toStringTrim(pr.base?.ref);
+  if (!baseBranch) return;
+
+  await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
+}
+
+async function collectSequentialDirectRegistryPrCandidates(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  baseBranch: string,
+  reason: string
+): Promise<SequentialRegistryPrCandidate[]> {
+  const openPrs = await listOpenPullRequests(context, repoInfo);
+  const candidates: SequentialRegistryPrCandidate[] = [];
+
+  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
+    const headSha = toStringTrim(pr.head?.sha);
+    const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
+    const snapshotManaged = isSnapshotManagedRequestPr(pr);
+
+    const baseLog = {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      prNumber: pr.number,
+      title: toStringTrim(pr.title),
+      headSha,
+      headRef: toStringTrim(pr.head?.ref),
+      prBase: toStringTrim(pr.base?.ref),
+      baseBranch,
+      linkedIssueNumber,
+      snapshotManaged,
+      reason,
+    };
+
+    if (snapshotManaged) {
+      log(context, 'info', { ...baseLog, skipReason: 'snapshot-managed-request-pr' }, 'direct-pr-reeval:skip');
+      continue;
+    }
+
+    if (!headSha) {
+      log(context, 'info', { ...baseLog, skipReason: 'missing-head-sha' }, 'direct-pr-reeval:skip');
+      continue;
+    }
+
+    if (!pullRequestTargetsBranch(pr, baseBranch)) {
+      log(context, 'info', { ...baseLog, skipReason: 'different-base-branch' }, 'direct-pr-reeval:skip');
+      continue;
+    }
+
+    if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) {
+      log(context, 'info', { ...baseLog, skipReason: 'head-temporarily-skipped' }, 'direct-pr-reeval:skip');
+      continue;
+    }
+
+    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
+
+    if (!changedRegistryFiles.length) {
+      log(
+        context,
+        'info',
+        {
+          ...baseLog,
+          changedRegistryFiles,
+          skipReason: 'no-registry-yaml-files-changed',
+        },
+        'direct-pr-reeval:skip'
+      );
+      continue;
+    }
+
+    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+    const freshHeadSha = toStringTrim(freshPr.head?.sha);
+
+    if (!isPullRequestOpen(freshPr)) {
+      log(
+        context,
+        'info',
+        {
+          ...baseLog,
+          freshHeadSha,
+          changedRegistryFiles,
+          skipReason: 'pr-not-open',
+        },
+        'direct-pr-reeval:skip'
+      );
+      continue;
+    }
+
+    if (isPullRequestDirty(freshPr)) {
+      log(
+        context,
+        'warn',
+        {
+          ...baseLog,
+          freshHeadSha,
+          changedRegistryFiles,
+          mergeableState: readMergeableState(freshPr),
+          skipReason: 'pr-has-merge-conflicts',
+        },
+        'direct-pr-reeval:skip'
+      );
+      continue;
+    }
+
+    const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
+    const approvedForUpdate = mustUpdate
+      ? await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr)
+      : false;
+
+    log(
+      context,
+      'info',
+      {
+        ...baseLog,
+        freshHeadSha,
+        changedRegistryFiles,
+        mergeable: freshPr.mergeable,
+        mergeableState: readMergeableState(freshPr),
+        mustUpdate,
+        approvedForUpdate,
+      },
+      'direct-pr-reeval:update-check'
+    );
+
+    candidates.push({
+      pr,
+      freshPr,
+      changedRegistryFiles,
+      mustUpdate,
+      approvedForUpdate,
+    });
+  }
+
+  return candidates;
+}
+
+async function runOneSequentialDirectRegistryPrMaintenance(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  baseBranch: string,
+  reason: string
+): Promise<SequentialRegistryPrResult> {
+  const key = sequentialRegistryPrRepoKey(repoInfo);
+  const existing = SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.get(key);
+
+  if (existing) return await existing;
+
+  const pending = (async (): Promise<SequentialRegistryPrResult> => {
+    if (await isSequentialRegistryPrActiveBlocking(context, repoInfo)) {
+      return { updated: false, processed: false, blockedByActive: true };
+    }
+
+    const candidates = await collectSequentialDirectRegistryPrCandidates(context, repoInfo, baseBranch, reason);
+
+    for (const candidate of candidates.filter((item) => item.mustUpdate)) {
+      const requested = await requestPullRequestBranchUpdate(
+        context,
+        repoInfo,
+        candidate.freshPr,
+        candidate.approvedForUpdate
+          ? `${reason}:sequential-direct-pr-update-approved`
+          : `${reason}:sequential-direct-pr-refresh-stale`
+      );
+
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          prNumber: candidate.freshPr.number,
+          title: toStringTrim(candidate.freshPr.title),
+          headSha: toStringTrim(candidate.freshPr.head?.sha),
+          headRef: toStringTrim(candidate.freshPr.head?.ref),
+          baseBranch,
+          changedRegistryFiles: candidate.changedRegistryFiles,
+          requested,
+          reason,
+        },
+        'direct-pr-reeval:update-before-approval-result'
+      );
+
+      if (requested) {
+        markSequentialRegistryPrActive(context, repoInfo, candidate.freshPr, reason);
+        return { updated: true, processed: true, blockedByActive: false };
+      }
+
+      markSequentialRegistryPrHeadSkipped(context, repoInfo, candidate.freshPr, 'branch-update-request-failed');
+    }
+
+    for (const candidate of candidates.filter((item) => !item.mustUpdate)) {
+      const headSha = toStringTrim(candidate.freshPr.head?.sha);
+      const greenResult = headSha
+        ? await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha)
+        : {
+            green: false,
+            reason: 'missing-head-sha',
+            latestRuns: [],
+            blockingRuns: [],
+          };
+
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          prNumber: candidate.freshPr.number,
+          headSha,
+          baseBranch,
+          changedRegistryFiles: candidate.changedRegistryFiles,
+          green: greenResult.green,
+          greenReason: greenResult.reason,
+          blockingRuns: greenResult.blockingRuns,
+          latestRuns: greenResult.latestRuns.slice(0, 30),
+          reason,
+        },
+        'direct-pr-reeval:head-green'
+      );
+
+      if (!greenResult.green) {
+        continue;
+      }
+
+      await processPullRequestForAutoMerge(context, repoInfo, candidate.freshPr);
+      return { updated: false, processed: true, blockedByActive: false };
+    }
+
+    return { updated: false, processed: false, blockedByActive: false };
+  })().finally(() => {
+    SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.delete(key);
+  });
+
+  SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.set(key, pending);
+  return await pending;
+}
+
+async function markFailedRegistryPrHeadsForSha(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  headSha: string,
+  baseBranch: string,
+  reason: string
+): Promise<boolean> {
+  const sha = toStringTrim(headSha);
+  if (!sha) return false;
+
+  const openPrs = await listOpenPullRequests(context, repoInfo);
+  const matching = openPrs.filter((pr) => toStringTrim(pr.head?.sha) === sha);
+
+  let marked = false;
+
+  for (const pr of matching) {
+    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
+
+    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
+    if (!changedRegistryFiles.length) continue;
+
+    markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, reason);
+
+    const active = getSequentialRegistryPrActive(repoInfo);
+    if (active?.prNumber === pr.number) {
+      clearSequentialRegistryPrActive(repoInfo);
+    }
+
+    marked = true;
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: sha,
+        changedRegistryFiles,
+        reason,
+      },
+      'sequential-registry-pr:failed-head-marked'
+    );
+  }
+
+  return marked;
+}
+
+async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<void> {
+  const active = getSequentialRegistryPrActive(repoInfo);
+  if (!active || active.prNumber !== pr.number) return;
+
+  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
+  if (!freshPr || !isPullRequestOpen(freshPr)) {
+    clearSequentialRegistryPrActive(repoInfo);
+    return;
+  }
+
+  const headSha = toStringTrim(freshPr.head?.sha);
+  if (!headSha) return;
+
+  const approvedForMaintenance = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr);
+  if (approvedForMaintenance) {
+    return;
+  }
+
+  const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
+  if (!greenResult.green) return;
+
+  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-qualify-for-approval');
+  clearSequentialRegistryPrActive(repoInfo);
+
+  await runOneSequentialDirectRegistryPrMaintenance(
+    context,
+    repoInfo,
+    toStringTrim(freshPr.base?.ref),
+    'sequential-direct-pr:advance-after-not-approved'
+  );
+}
+
 async function readRepoFileTextAtRef(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3280,10 +5095,10 @@ async function readRepoFileTextAtRef(
 async function readRegistryDocForApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  filePath: string,
-  ref: string
+  pr: PullRequestLike,
+  filePath: string
 ): Promise<Record<string, unknown> | null> {
-  const raw = await readRepoFileTextAtRef(context, repoInfo, filePath, ref);
+  const raw = await readPullRequestHeadFileText(context, repoInfo, pr, filePath);
   if (!raw) return null;
 
   try {
@@ -3301,8 +5116,27 @@ async function evaluateChangedResourceApproval(
   filePath: string,
   requestAuthorId?: string
 ): Promise<ApprovalDecision> {
-  const parsed = await readRegistryDocForApproval(context, repoInfo, filePath, pr.head.ref);
-  if (!parsed) return { status: 'unknown' };
+  const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+  if (!parsed) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        filePath,
+        baseOwner: repoInfo.owner,
+        baseRepo: repoInfo.repo,
+        headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
+        headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
+        headRef: toStringTrim(pr.head?.ref),
+        headSha: toStringTrim(pr.head?.sha),
+        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      },
+      'direct-pr:on-approval:registry-doc-read-failed'
+    );
+
+    return { status: 'unknown' };
+  }
 
   const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
   if (!requestType) return { status: 'unknown' };
@@ -3310,7 +5144,7 @@ async function evaluateChangedResourceApproval(
   const resourceName = resolveRegistryDocResourceName(parsed);
   if (!resourceName) return { status: 'unknown' };
 
-  return normalizeApprovalDecision(
+  const decision = normalizeApprovalDecision(
     await runApprovalHook(context, repoInfo, {
       requestType,
       namespace: resourceName,
@@ -3327,24 +5161,80 @@ async function evaluateChangedResourceApproval(
       },
     })
   );
+
+  return promoteUnknownApprovalDecisionForDirectPrRequester(decision, requestAuthorId);
 }
 
 async function evaluateDirectPrOnApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  pr: PullRequestLike
+  pr: PullRequestLike,
+  requestAuthorIdOverride?: string,
+  options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalDecision> {
-  const changedFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
-  if (!changedFiles.length) return {};
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
 
-  const requestAuthorId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+  const fallbackRequestAuthorId = requestAuthorIdOverride
+    ? ''
+    : await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+
+  const requestAuthorId = toStringTrim(requestAuthorIdOverride) || fallbackRequestAuthorId;
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha: toStringTrim(pr.head?.sha),
+      headRef: toStringTrim(pr.head?.ref),
+      requestAuthorId,
+      changedFiles,
+      linkedIssueNumber: parseLinkedIssueNumberFromPr(pr, repoInfo),
+      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
+      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
+      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
+      hooksSource: context.resourceBotHooksSource,
+    },
+    'direct-pr:on-approval:start'
+  );
+
+  if (!changedFiles.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        headRef: toStringTrim(pr.head?.ref),
+      },
+      'direct-pr:on-approval:skip-no-registry-files'
+    );
+
+    return {};
+  }
 
   let sawApproved = false;
-  let sawUnknown = false;
+  let sawNonApproved = false;
   let approvedComment = '';
+  let firstUnknownDecision: ApprovalDecision | null = null;
 
   for (const filePath of changedFiles) {
     const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        filePath,
+        requestAuthorId,
+        status: toStringTrim(decision.status) || 'none',
+        reason: toStringTrim(decision.reason),
+        message: toStringTrim(decision.message),
+        path: toStringTrim(decision.path),
+      },
+      'direct-pr:on-approval:file-decision'
+    );
 
     if (decision.status === 'rejected') {
       return decision;
@@ -3356,40 +5246,151 @@ async function evaluateDirectPrOnApproval(
       continue;
     }
 
-    sawUnknown = true;
+    sawNonApproved = true;
+    if (decision.status === 'unknown' && !firstUnknownDecision) {
+      firstUnknownDecision = decision;
+    }
   }
 
-  if (sawApproved && !sawUnknown) {
+  if (sawApproved && !sawNonApproved) {
     return {
       status: 'approved',
       ...(approvedComment ? { comment: approvedComment } : {}),
     };
   }
 
+  if (firstUnknownDecision) {
+    return firstUnknownDecision;
+  }
+
+  if (sawNonApproved) {
+    return {
+      status: 'unknown',
+      reason: 'Manual review required because onApproval did not approve all changed registry files.',
+    };
+  }
+
   return {};
+}
+
+async function resolveDirectPrRequestTypes(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  options: DirectPrApprovalOptions = {}
+): Promise<string[]> {
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
+  const requestTypes: string[] = [];
+
+  for (const filePath of changedFiles) {
+    const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
+    if (!parsed) continue;
+
+    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
+    if (!requestType) continue;
+
+    requestTypes.push(requestType);
+  }
+
+  return Array.from(new Set(requestTypes));
+}
+
+async function handoverStandaloneDirectPrToReview(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: DirectPrApprovalOptions = {}
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+
+  const configuredApprovers = uniqLogins(
+    requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const hookApprovers = uniqLogins(decision.approvers || []);
+  const assignees = uniqLogins([...hookApprovers, ...configuredApprovers]);
+
+  if (assignees.length) {
+    await ensureAssigneesPresent(context, params, assignees);
+  }
+
+  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
+
+  await ensureLabelsPresentOnce(context, params, labelsToAdd);
+  await postApprovalUnknownOnce(context, params, decision);
+}
+
+async function handleDirectPrApprovalComment(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  commenter: string
+): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  const configuredApprovers = uniqLogins(
+    requestTypes.flatMap((requestType) =>
+      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+    )
+  );
+
+  const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
+    baseBranch: toStringTrim(pr.base?.ref),
+  });
+
+  if (approvalDecision.status === 'rejected') {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      buildApprovalRejectedBody(approvalDecision),
+      { minimizeTag: 'nsreq:on-approval:rejected' }
+    );
+    return;
+  }
+
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+  const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
+  if (!okApprover) {
+    await postOnce(
+      context,
+      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+    return;
+  }
+
+  const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, {
+    status: 'approved',
+    comment: `Approved by @${commenter}`,
+  });
+
+  if (!approved) return;
+
+  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'direct-pr-manual-approval');
 }
 
 async function maybeHandleStandaloneDirectPrApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  pr: PullRequestLike
+  pr: PullRequestLike,
+  options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalHandlingResult> {
-  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr);
+  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
 
   if (decision.status === 'approved') {
-    const headSha = toStringTrim(pr.head?.sha);
-
-    const alreadyApproved =
-      (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) ||
-      (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
-      (await hasApprovedReviewOnPr(context, repoInfo, pr.number));
-
-    if (!alreadyApproved) {
-      const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-      if (!approved) return 'continue';
-
-      await addApprovedLabelToPr(context, repoInfo, pr.number);
-    }
+    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
+    if (!approved) return 'continue';
 
     return 'approved';
   }
@@ -3416,6 +5417,11 @@ async function maybeHandleStandaloneDirectPrApproval(
     return 'rejected';
   }
 
+  if (decision.status === 'unknown') {
+    await handoverStandaloneDirectPrToReview(context, repoInfo, pr, decision, options);
+    return 'continue';
+  }
+
   return 'continue';
 }
 
@@ -3424,7 +5430,19 @@ async function closeLinkedIssuePrs(
   repoInfo: RepoInfo,
   issueNumber: number
 ): Promise<number[]> {
-  const prs = await findOpenIssuePrs(context, repoInfo, issueNumber);
+  let prs: PullRequestLike[] = [];
+
+  try {
+    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
+  } catch {
+    prs = [];
+  }
+
+  if (prs.length === 0) {
+    prs = (await listOpenPullRequests(context, repoInfo)).filter(
+      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
+    );
+  }
   const closed: number[] = [];
 
   for (const pr of prs) {
@@ -3484,7 +5502,7 @@ async function finalizeApprovedRequest(
   template: TemplateLike,
   parsedFormData: FormData,
   options: {
-    approvalPrefix: string;
+    approvalPrefix?: string;
     approvalComment?: string;
     autoApproved?: boolean;
   }
@@ -3505,12 +5523,29 @@ async function finalizeApprovedRequest(
     return;
   }
 
+  const requestType = resolveEffectiveRequestType(template, parsedFormData);
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType
+  );
+
   const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
   if (existing.length) {
     await applyApprovedRequestState(context, params, eff);
+
     if (autoApproved) {
       await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, existing[0].number);
     }
+
+    await ensureAssigneesPresent(
+      context,
+      { owner: params.owner, repo: params.repo, issue_number: existing[0].number },
+      hookApprovers
+    );
 
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
@@ -3530,6 +5565,12 @@ async function finalizeApprovedRequest(
       await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, pr.number);
     }
 
+    await ensureAssigneesPresent(
+      context,
+      { owner: params.owner, repo: params.repo, issue_number: pr.number },
+      hookApprovers
+    );
+
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
     const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
 
@@ -3539,12 +5580,7 @@ async function finalizeApprovedRequest(
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
 
-    await postOnce(
-      context,
-      params,
-      /^Failed to create PR automatically:/i.test(msg) ? msg : `Failed to create PR automatically: ${msg}`,
-      { minimizeTag: 'nsreq:approval-info' }
-    );
+    await postOnce(context, params, `Failed to create Pull Request: ${msg}`, { minimizeTag: 'nsreq:approval-info' });
   }
 }
 
@@ -3588,9 +5624,7 @@ async function maybeHandleApprovalDecision(
   }
 
   if (decision.status === 'unknown') {
-    await postOnce(context, params, buildApprovalUnknownBody(decision), {
-      minimizeTag: 'nsreq:on-approval:unknown',
-    });
+    await postApprovalUnknownOnce(context, params, decision);
   }
 
   return 'continue';
@@ -3601,36 +5635,34 @@ async function maybeHandleDirectPrApprovalForMerge(
   repoInfo: RepoInfo,
   issueParams: IssueParams,
   issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
+  _template: TemplateLike,
+  _parsedFormData: FormData,
   pr: PullRequestLike
 ): Promise<ApprovalHandlingResult> {
-  const requestAuthorId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
-  const decision = normalizeApprovalDecision(
-    await runApprovalHook(context, repoInfo, {
-      requestType: resolveEffectiveRequestType(template, parsedFormData),
-      namespace: toStringTrim(parsedFormData['namespace'] || parsedFormData['identifier']),
-      resourceName: extractResourceNameFromForm(parsedFormData, template),
-      formData: parsedFormData,
+  const issueAuthorId = normalizeLogin(issue.user?.login);
+  const prRequesterId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+  const requestAuthorId = issueAuthorId || prRequesterId;
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      linkedIssueNumber: issue.number,
+      issueAuthorId,
+      prRequesterId,
       requestAuthorId,
-      issue,
-    })
+    },
+    'direct-pr:linked-issue-requester-resolved'
+  );
+
+  const decision = normalizeApprovalDecision(
+    await evaluateDirectPrOnApproval(context, repoInfo, pr, requestAuthorId || undefined)
   );
 
   if (decision.status === 'approved') {
-    const headSha = toStringTrim(pr.head?.sha);
-
-    const alreadyApproved =
-      (headSha && (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha))) ||
-      (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) ||
-      (await hasApprovedReviewOnPr(context, repoInfo, pr.number));
-
-    if (!alreadyApproved) {
-      const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-      if (!approved) return 'continue';
-
-      await addApprovedLabelToPr(context, repoInfo, pr.number);
-    }
+    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
+    if (!approved) return 'continue';
 
     await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
     return 'approved';
@@ -3644,6 +5676,17 @@ async function maybeHandleDirectPrApprovalForMerge(
       { minimizeTag: 'nsreq:on-approval:rejected' }
     );
 
+    try {
+      await context.octokit.pulls.update({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        pull_number: pr.number,
+        state: 'closed',
+      });
+    } catch {
+      // ignore
+    }
+
     await rejectRequestFromApprovalHook(context, issueParams, issue, decision, {
       closeLinkedPrs: true,
       minimizeTag: 'nsreq:on-approval:issue-rejected',
@@ -3653,11 +5696,10 @@ async function maybeHandleDirectPrApprovalForMerge(
   }
 
   if (decision.status === 'unknown') {
-    await postOnce(
+    await postApprovalUnknownOnce(
       context,
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalUnknownBody(decision),
-      { minimizeTag: 'nsreq:on-approval:unknown' }
+      decision
     );
   }
 
@@ -3975,12 +6017,18 @@ async function processIssueEvent(
   // If the issue was previously closed as rejected and later reopened, clear that terminal status.
   await removeRejectedStatusLabel(context, params, toLabelNames(issue.labels));
 
-  const currentHash = calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
+  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
+  const currentHash =
+    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
 
   await normalizeIssueTitle(context, params, issue, template, parsedFormData);
 
   try {
-    await closeOutdatedRequestPrs(context, params, template, { parsedFormData, currentHash });
+    await closeOutdatedRequestPrs(context, params, template, {
+      parsedFormData,
+      currentHash,
+      acceptedHashes: snapshotHashes,
+    });
   } catch (e: unknown) {
     (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'closeOutdatedRequestPRs skipped');
   }
@@ -4099,10 +6147,55 @@ async function processIssueEvent(
 
   if (approvalOutcome !== 'continue') return;
 
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    result.template || template,
+    parsedFormData,
+    effectiveRequestType
+  );
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
+    extraApprovers: hookApprovers,
   });
+}
+
+async function resolveAdditionalIssueApproversFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType?: string
+): Promise<string[]> {
+  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
+  const resourceName = extractResourceNameFromForm(parsedFormData, template);
+
+  if (!effectiveRequestType) return [];
+
+  try {
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType: effectiveRequestType,
+          namespace: resourceName,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+          requestAuthorId: normalizeLogin(issue.user?.login),
+        }
+      )
+    );
+
+    return uniqLogins((decision.approvers || []).filter(Boolean));
+  } catch {
+    return [];
+  }
 }
 
 async function handleApprovalComment(
@@ -4114,10 +6207,11 @@ async function handleApprovalComment(
   commenter: string
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
+  const requestType = resolveEffectiveRequestType(template, parsedFormData);
 
-  const allowedApprovers = resolveApproversForRequestType(
+  const configuredApprovers = resolveApproversForRequestType(
     context,
-    resolveEffectiveRequestType(template, parsedFormData),
+    requestType,
     eff.approverUsernames,
     eff.approverPoolUsernames
   );
@@ -4133,7 +6227,22 @@ async function handleApprovalComment(
     return;
   }
 
-  const okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
+  let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+
+  if (!okApprover) {
+    const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType
+    );
+
+    allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
+    okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
+  }
   if (!okApprover) {
     const hasConfiguredApprovers = allowedApprovers.length > 0;
     const reason = hasConfiguredApprovers
@@ -4326,9 +6435,19 @@ async function handleAuthorUpdateComment(
 
       if (approvalOutcome !== 'continue') return;
 
+      const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+        context,
+        params,
+        issue,
+        tpl,
+        parsedAfterUpdate,
+        effectiveRequestType
+      );
+
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
         requestType: effectiveRequestType,
+        extraApprovers: hookApprovers,
       });
       return;
     }
@@ -5061,9 +7180,19 @@ ${mentions}`,
     minimizeTag: `${tagBase}:approved`,
   });
 
+  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt
+  );
+
   await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
     snapshotHash,
     requestType: effRt,
+    extraApprovers: hookApprovers,
   });
 
   return true;
@@ -5087,13 +7216,15 @@ async function postRoutingLockNoticeOnce(
     return;
   }
 
-  const p = (async (): Promise<void> => {
-    await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
-      minimizeTag: 'nsreq:routing-label-lock',
+  const p = Promise.resolve()
+    .then(async (): Promise<void> => {
+      await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
+        minimizeTag: 'nsreq:routing-label-lock',
+      });
+    })
+    .finally(() => {
+      ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
     });
-  })().finally(() => {
-    ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
-  });
 
   ROUTING_LOCK_NOTICE_INFLIGHT.set(key, p);
   await p;
@@ -5135,6 +7266,23 @@ function stripRoutingLockFromBody(issueBody: unknown): string {
 
 function readIssueBodyForProcessing(issueBody: unknown): string {
   return toStringTrim(stripContactApprovalFromBody(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody))));
+}
+
+function buildCompatibleRequestSnapshotHashes(
+  issueBody: unknown,
+  parsedFormData: FormData,
+  template: TemplateLike
+): string[] {
+  const processedBody = readIssueBodyForProcessing(issueBody);
+  const rawBody = String(issueBody || '');
+
+  return Array.from(
+    new Set(
+      [calcSnapshotHash(parsedFormData, template, processedBody), calcSnapshotHash(parsedFormData, template, rawBody)]
+        .map((value) => toStringTrim(value))
+        .filter(Boolean)
+    )
+  );
 }
 
 async function detectRoutingLabels(
@@ -5286,37 +7434,59 @@ async function closeOutdatedRequestPrs(
   context: BotContext<RequestEvents>,
   { owner, repo, issue_number }: IssueParams,
   template: TemplateLike,
-  options: { parsedFormData?: FormData; currentHash?: string } = {}
+  options: { parsedFormData?: FormData; currentHash?: string; acceptedHashes?: string[] } = {}
 ): Promise<void> {
   const ensureFormAndHash = async (): Promise<{
     parsedFormData: FormData;
     currentHash: string;
+    acceptedHashes: string[];
   }> => {
-    const { parsedFormData: givenForm, currentHash: givenHash } = options;
-    if (givenForm && givenHash) return { parsedFormData: givenForm, currentHash: givenHash };
+    const { parsedFormData: givenForm, currentHash: givenHash, acceptedHashes: givenAcceptedHashes } = options;
+
+    if (givenForm && givenHash) {
+      const acceptedHashes = Array.from(
+        new Set((givenAcceptedHashes || [givenHash]).map((value) => toStringTrim(value)).filter(Boolean))
+      );
+
+      return {
+        parsedFormData: givenForm,
+        currentHash: givenHash,
+        acceptedHashes: acceptedHashes.length ? acceptedHashes : [givenHash],
+      };
+    }
 
     const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
     const issue = data as unknown as IssueLike;
     const bodyStr = readIssueBodyForProcessing(issue.body);
     const form = parseForm(bodyStr, template);
-    const hash = calcSnapshotHash(form, template, readIssueBodyForProcessing(issue.body));
-    return { parsedFormData: form, currentHash: hash };
+    const acceptedHashes = buildCompatibleRequestSnapshotHashes(issue.body, form, template);
+    const currentHash = acceptedHashes[0] || calcSnapshotHash(form, template, bodyStr);
+
+    return {
+      parsedFormData: form,
+      currentHash,
+      acceptedHashes,
+    };
   };
 
   const closePr = async (prNum: number, ref: string): Promise<void> => {
     try {
       await context.octokit.pulls.update({ owner, repo, pull_number: prNum, state: 'closed' });
     } catch {
-      // ignore
+      /* empty */
     }
     try {
       await context.octokit.git.deleteRef({ owner, repo, ref: `heads/${ref}` });
     } catch {
-      // ignore
+      /* empty */
     }
   };
 
-  const { currentHash } = await ensureFormAndHash();
+  const { currentHash, acceptedHashes } = await ensureFormAndHash();
+  const acceptedHashSet = new Set((acceptedHashes || []).map((value) => toStringTrim(value)).filter(Boolean));
+
+  if (currentHash) acceptedHashSet.add(currentHash);
+
   const prs = await findOpenIssuePrs(context, { owner, repo }, issue_number);
   if (!prs.length) return;
 
@@ -5327,9 +7497,8 @@ async function closeOutdatedRequestPrs(
   for (const pr of prs) {
     const prHash = extractHashFromPrBody(toStringTrim(pr.body));
 
-    // Direct/manual PRs without request snapshot hash must not be treated as outdated
     if (!prHash) continue;
-    if (prHash === currentHash) continue;
+    if (acceptedHashSet.has(prHash)) continue;
 
     await closePr(pr.number, pr.head.ref);
     closed.push(pr.number);
@@ -5349,7 +7518,7 @@ async function closeOutdatedRequestPrs(
   try {
     await context.octokit.issues.removeLabel({ owner, repo, issue_number, name: onApproved });
   } catch {
-    // ignore
+    /* empty */
   }
 }
 
@@ -5369,28 +7538,51 @@ function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
 }
 
 export default function requestHandler(app: Probot): void {
-  const getStaticConfig = async (context: BotContext<RequestEvents>): Promise<NormalizedStaticConfig> => {
-    if (context.resourceBotConfig && context.resourceBotHooks !== undefined) return context.resourceBotConfig;
+  const getStaticConfig = async (
+    context: BotContext<RequestEvents>,
+    options: StaticConfigLoadOptions = {}
+  ): Promise<NormalizedStaticConfig> => {
+    const forceReload = options.forceReload === true;
+
+    if (!forceReload && context.resourceBotConfig && context.resourceBotHooks !== undefined) {
+      return context.resourceBotConfig;
+    }
 
     try {
       const { config, hooks, hooksSource } = await loadStaticConfig(context, {
         validate: false,
         updateIssue: false,
+        forceReload,
       });
 
       context.resourceBotConfig = config;
       context.resourceBotHooks = hooks;
       context.resourceBotHooksSource = hooksSource || null;
 
+      log(
+        context,
+        'info',
+        {
+          forceReload,
+          hooksSource: context.resourceBotHooksSource,
+        },
+        'static-config:context-loaded'
+      );
+
       return context.resourceBotConfig;
     } catch (err: unknown) {
       (app.log || console).warn?.(
-        { err: err instanceof Error ? err.message : String(err) },
+        {
+          err: err instanceof Error ? err.message : String(err),
+          forceReload,
+        },
         'failed to load resource-bot static config, using defaults'
       );
+
       context.resourceBotConfig = DEFAULT_CONFIG;
       context.resourceBotHooks = null;
       context.resourceBotHooksSource = null;
+
       return context.resourceBotConfig;
     }
   };
@@ -5775,9 +7967,6 @@ export default function requestHandler(app: Probot): void {
       await getStaticConfig(context);
 
       const issue = context.payload.issue as unknown as IssueLike;
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) return;
-      }
       const comment = context.payload.comment as unknown as CommentLike;
       const sender = context.payload.sender as unknown as SenderLike;
 
@@ -5801,6 +7990,23 @@ export default function requestHandler(app: Probot): void {
 
       const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
       const params: IssueParams = { owner, repo, issue_number: issueNumber };
+      const repoInfo: RepoInfo = { owner, repo };
+
+      const stripped = stripQuoteAndCode(comment.body || '');
+      const isApproval = isApprovalComment(context, stripped);
+
+      if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
+        const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
+
+        if (isPullRequestConversation && isApproval) {
+          const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
+          if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
+            await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
+          }
+        }
+
+        return;
+      }
 
       let template: TemplateLike;
       try {
@@ -5828,8 +8034,6 @@ export default function requestHandler(app: Probot): void {
         return;
       }
 
-      const stripped = stripQuoteAndCode(comment.body || '');
-      const isApproval = isApprovalComment(context, stripped);
       if (isApproval) {
         const handled = await handleParentOwnerApprovalIfNeeded(
           context,
@@ -5871,28 +8075,65 @@ export default function requestHandler(app: Probot): void {
     await getStaticConfig(context);
 
     const normalizedHeadSha = toStringTrim(headSha);
-    if (!normalizedHeadSha) return;
-
-    const headIsGreen = await isHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
-    if (!headIsGreen) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { owner: repoInfo.owner, repo: repoInfo.repo, headSha: normalizedHeadSha },
-          'skip direct PR approval until full validation pipeline is green'
-        );
-      }
+    if (!normalizedHeadSha) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+        },
+        'auto-merge:skip-missing-head-sha'
+      );
       return;
     }
+
+    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
+
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: normalizedHeadSha,
+        green: greenResult.green,
+        greenReason: greenResult.reason,
+        statusState: greenResult.statusState,
+        blockingRuns: greenResult.blockingRuns,
+        latestRuns: greenResult.latestRuns.slice(0, 30),
+      },
+      'auto-merge:head-green'
+    );
+
+    if (!greenResult.green) return;
 
     const candidates = (await listOpenPullRequests(context, repoInfo)).filter(
       (pr) => toStringTrim(pr.head?.sha) === normalizedHeadSha
     );
 
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        headSha: normalizedHeadSha,
+        candidatePrNumbers: candidates.map((pr) => pr.number),
+      },
+      'auto-merge:candidates'
+    );
+
     for (const pr of candidates) {
       try {
         await processPullRequestForAutoMerge(context, repoInfo, pr);
+        await releaseSequentialRegistryPrIfNotApprovedAfterGreen(context, repoInfo, pr);
+        await advanceSequentialRegistryPrQueueAfterTerminalState(
+          context,
+          repoInfo,
+          pr,
+          'sequential-direct-pr:advance-after-terminal-state'
+        );
       } catch (e: unknown) {
         log(
           context,
@@ -5903,61 +8144,275 @@ export default function requestHandler(app: Probot): void {
           },
           'auto-merge candidate processing failed'
         );
+
+        const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+        const baseBranch = toStringTrim(freshPr.base?.ref) || toStringTrim(pr.base?.ref);
+        const isSequentialDirectRegistry = baseBranch
+          ? await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch)
+          : false;
+
+        if (!isSequentialDirectRegistry) {
+          continue;
+        }
+
+        const active = getSequentialRegistryPrActive(repoInfo);
+        const wasActiveSequentialPr = active?.prNumber === freshPr.number || active?.prNumber === pr.number;
+
+        markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'auto-merge-candidate-processing-failed');
+
+        if (wasActiveSequentialPr) {
+          clearSequentialRegistryPrActive(repoInfo);
+
+          if (baseBranch) {
+            await runOneSequentialDirectRegistryPrMaintenance(
+              context,
+              repoInfo,
+              baseBranch,
+              'sequential-direct-pr:advance-after-processing-failure'
+            );
+          }
+        }
       }
     }
   };
 
-  app.on('push', async (context: BotContext<'push'>): Promise<void> => {
-    await getStaticConfig(context);
+  const maybeHandleDefaultBranchCheckSuiteSuccess = async (
+    context: BotContext<RequestEvents>,
+    payload: unknown,
+    checkSuite: CheckSuiteLike | null,
+    repoInfo: RepoInfo
+  ): Promise<void> => {
+    const defaultBranch = readDefaultBranchFromPayload(payload);
+    const headBranch = toStringTrim(checkSuite?.head_branch);
+    const headSha = toStringTrim(checkSuite?.head_sha);
+    const conclusion = toStringTrim(checkSuite?.conclusion).toLowerCase();
+    const status = toStringTrim(checkSuite?.status).toLowerCase();
 
-    const payload = context.payload as unknown;
-    if (!isDefaultBranchPush(payload)) return;
+    let isDefaultBranchSuite = Boolean(defaultBranch && headBranch && headBranch === defaultBranch);
+    let defaultBranchHeadSha = '';
 
-    const repoInfo = readRepoInfoFromPayload(payload);
-    if (!repoInfo) return;
+    if (!isDefaultBranchSuite && defaultBranch && headSha) {
+      try {
+        const branch = await context.octokit.repos.getBranch({
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          branch: defaultBranch,
+        });
 
-    const baseBranch = readDefaultBranchFromPush(payload);
+        defaultBranchHeadSha = toStringTrim(
+          (branch as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha
+        );
 
-    // if approval config changed, re-evaluate old direct PRs
-    if (isRelevantDefaultBranchPushForApprovalReevaluation(payload)) {
-      await reevaluateOpenDirectPullRequestsAfterApprovalConfigChange(context, repoInfo);
+        isDefaultBranchSuite = Boolean(defaultBranchHeadSha && defaultBranchHeadSha === headSha);
+      } catch (error: unknown) {
+        log(
+          context,
+          'warn',
+          {
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            defaultBranch,
+            headSha,
+            err: getErrorMessage(error),
+            status: getHttpStatus(error),
+          },
+          'default-branch-check-suite:branch-head-read-failed'
+        );
+      }
     }
 
-    // after main changed, keep already-approved green registry PRs up to date
-    await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
+    log(
+      context,
+      'info',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        defaultBranch,
+        headBranch,
+        headSha,
+        defaultBranchHeadSha,
+        conclusion,
+        status,
+        isDefaultBranchSuite,
+      },
+      'default-branch-check-suite:evaluated'
+    );
+
+    if (!isDefaultBranchSuite) return;
+    if (status && status !== 'completed') return;
+    if (conclusion !== 'success') return;
+
+    await getStaticConfig(context, { forceReload: true });
+
+    const directResult = await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
+      context,
+      repoInfo,
+      defaultBranch,
+      'default-branch-check-suite:direct-pr-reevaluation'
+    );
+
+    if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
+      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, defaultBranch);
+    }
+  };
+
+  app.on('push', async (context: BotContext<'push'>): Promise<void> => {
+    const payload = context.payload as unknown;
+    const repoInfo = readRepoInfoFromPayload(payload);
+    const ref = isPlainObject(payload) ? toStringTrim(payload['ref']) : '';
+    const baseBranch = readDefaultBranchFromPush(payload);
+    const changedFiles = readPushChangedFiles(payload);
+    const approvalConfigChangedFiles = changedFiles.filter(isApprovalConfigChangePath);
+    const defaultBranchPush = isDefaultBranchPush(payload);
+
+    log(
+      context,
+      'info',
+      {
+        event: toStringTrim((context as unknown as { name?: string }).name),
+        ref,
+        defaultBranch: baseBranch,
+        isDefaultBranchPush: defaultBranchPush,
+        owner: repoInfo?.owner,
+        repo: repoInfo?.repo,
+        changedFilesCount: changedFiles.length,
+        approvalConfigChangedFiles,
+      },
+      'default-branch-push:received'
+    );
+
+    if (!defaultBranchPush) return;
+
+    if (!repoInfo) {
+      log(
+        context,
+        'warn',
+        {
+          ref,
+          defaultBranch: baseBranch,
+        },
+        'default-branch-push:missing-repo-info'
+      );
+      return;
+    }
+
+    await getStaticConfig(context, { forceReload: true });
+
+    const directPrReevaluationReason = approvalConfigChangedFiles.length
+      ? 'default-branch-push:approval-config-change'
+      : 'default-branch-push:direct-pr-reevaluation';
+
+    const directResult = await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
+      context,
+      repoInfo,
+      baseBranch,
+      directPrReevaluationReason
+    );
+
+    if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
+      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
+    }
   });
 
   app.on(
     ['check_suite.completed', 'check_run.completed'],
     async (context: BotContext<'check_suite.completed' | 'check_run.completed'>): Promise<void> => {
       const payload = context.payload as unknown;
+      const action = isPlainObject(payload) ? toStringTrim(payload['action']).toLowerCase() : '';
+      const eventName = toStringTrim((context as unknown as { name?: string }).name);
+      const run = readCheckRunFromPayload(payload);
+      const checkSuite = readCheckSuiteFromPayload(payload);
+      const repoInfo = readRepoInfoFromPayload(payload);
 
-      if (context.name === 'check_run.completed') {
-        const payload = context.payload as unknown;
-        const run = readCheckRunFromPayload(payload);
+      log(
+        context,
+        'info',
+        {
+          event: eventName,
+          action,
+          hasCheckRun: Boolean(run),
+          hasCheckSuite: Boolean(checkSuite),
+          checkRunHeadSha: toStringTrim(run?.head_sha),
+          checkRunStatus: toStringTrim(run?.status).toLowerCase(),
+          checkRunConclusion: toStringTrim(run?.conclusion).toLowerCase(),
+          checkSuiteHeadSha: toStringTrim(checkSuite?.head_sha),
+          checkSuiteHeadBranch: toStringTrim(checkSuite?.head_branch),
+          checkSuiteStatus: toStringTrim(checkSuite?.status).toLowerCase(),
+          checkSuiteConclusion: toStringTrim(checkSuite?.conclusion).toLowerCase(),
+          owner: repoInfo?.owner,
+          repo: repoInfo?.repo,
+        },
+        'checks:event-classification'
+      );
 
+      if (run) {
         const conclusion = toStringTrim(run?.conclusion).toLowerCase();
         const status = toStringTrim(run?.status).toLowerCase();
         const headShaStr = toStringTrim(run?.head_sha);
 
+        if (!repoInfo) {
+          log(
+            context,
+            'warn',
+            {
+              event: eventName,
+              action,
+              conclusion,
+              status,
+              headShaStr,
+            },
+            'checks:check-run-missing-repo-info'
+          );
+          return;
+        }
+
+        const prNumbers = readCheckRunPrNumbers(run);
+
+        log(
+          context,
+          'info',
+          {
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            conclusion,
+            status,
+            headShaStr,
+            prNumbers,
+          },
+          'checks:check-run resolved'
+        );
+
         if (status !== 'completed') return;
+        if (conclusion && conclusion !== 'success') {
+          if (isBlockingCheckConclusion(conclusion)) {
+            const baseBranch = readDefaultBranchFromPayload(payload);
+            const marked = await markFailedRegistryPrHeadsForSha(
+              context,
+              repoInfo,
+              headShaStr,
+              baseBranch,
+              `check-run:${conclusion}`
+            );
+
+            if (marked) {
+              await runOneSequentialDirectRegistryPrMaintenance(
+                context,
+                repoInfo,
+                baseBranch,
+                `check-run:${conclusion}:advance-next-registry-pr`
+              );
+            }
+          }
+
+          return;
+        }
         if (conclusion !== 'success') return;
         if (!headShaStr) return;
-
-        const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
-        const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
-        const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
-        const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
-
-        if (!ownerLogin || !repoName) return;
-
-        const repoInfo = { owner: ownerLogin, repo: repoName };
-        const prNumbers = readCheckRunPrNumbers(run);
 
         for (const prNumber of prNumbers) {
           await collapseBotCommentsByPrefix(
             context,
-            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
+            { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: prNumber },
             {
               tagPrefix: 'nsreq:ci-validation',
               collapseBody: 'Validation issues resolved.',
@@ -5970,48 +8425,30 @@ export default function requestHandler(app: Probot): void {
         return;
       }
 
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { event: context.name, action: isPlainObject(payload) ? payload['action'] : undefined },
-          'dbg:checks:event received'
-        );
-      }
+      if (!checkSuite) return;
+      if (!repoInfo) return;
 
-      const suite = isPlainObject(payload) && 'check_suite' in payload ? payload['check_suite'] : undefined;
+      const conclusion = toStringTrim(checkSuite.conclusion).toLowerCase();
+      const headShaStr = toStringTrim(checkSuite.head_sha);
+      const ownerLogin = repoInfo.owner;
+      const repoName = repoInfo.repo;
 
-      let conclusionRaw: unknown;
-      if (isPlainObject(suite)) conclusionRaw = suite['conclusion'];
+      const prNumbers = await resolveCheckSuitePrNumbers(context, repoInfo, checkSuite, headShaStr);
 
-      let headShaRaw: unknown;
-      if (isPlainObject(suite)) headShaRaw = suite['head_sha'];
-
-      const conclusion = toStringTrim(conclusionRaw).toLowerCase();
-      const headShaStr = toStringTrim(headShaRaw);
-
-      const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
-      const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
-      const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
-      const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
-
-      if (!ownerLogin || !repoName) return;
-      const checkSuite = readCheckSuiteFromPayload(context.payload as unknown);
-      const prNumbers = await resolveCheckSuitePrNumbers(
+      log(
         context,
-        { owner: ownerLogin, repo: repoName },
-        checkSuite,
-        headShaStr
+        'info',
+        {
+          ownerLogin,
+          repoName,
+          conclusion,
+          headShaStr,
+          checkSuiteHeadBranch: toStringTrim(checkSuite.head_branch),
+          checkSuiteStatus: toStringTrim(checkSuite.status).toLowerCase(),
+          prNumbers,
+        },
+        'checks:context resolved'
       );
-
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { ownerLogin, repoName, conclusion, headShaStr, prNumbers },
-          'dbg:checks:context resolved'
-        );
-      }
 
       // success -> collapse old CI validation comments + keep existing auto-merge behavior
       if (conclusion === 'success') {
@@ -6026,6 +8463,11 @@ export default function requestHandler(app: Probot): void {
             }
           );
         }
+
+        await maybeHandleDefaultBranchCheckSuiteSuccess(context, payload, checkSuite, {
+          owner: ownerLogin,
+          repo: repoName,
+        });
 
         if (!headShaStr) return;
         await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, headShaStr);

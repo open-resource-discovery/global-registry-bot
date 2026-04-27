@@ -1,6 +1,6 @@
 {
   "name": "global-registry-bot",
-  "version": "0.1.1",
+  "version": "0.1.5",
   "private": true,
   "description": "A configurable GitHub App bot to validate and automate registry-related requests",
   "author": "SAP SE",
@@ -28,7 +28,7 @@
     "lint:staged": "lint-staged"
   },
   "dependencies": {
-    "ajv": "8.18.0",
+    "ajv": "8.20.0",
     "ajv-errors": "3.0.0",
     "ajv-formats": "3.0.1",
     "js-yaml": "4.1.1",
@@ -50,11 +50,11 @@
     "husky": "9.1.7",
     "jest": "30.3.0",
     "lint-staged": "16.4.0",
-    "nock": "14.0.12",
+    "nock": "14.0.13",
     "prettier": "3.8.1",
     "smee-client": "5.0.0",
     "ts-jest": "29.4.9",
-    "typescript": "6.0.2",
+    "typescript": "6.0.3",
     "is-ci": "4.1.0"
   },
   "engines": {
