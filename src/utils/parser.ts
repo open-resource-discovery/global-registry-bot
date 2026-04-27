@@ -41,47 +41,121 @@ const INTERNAL_ALLOWED_FIELD_IDS = [
   'correlation-id-types',
 ];
 
+const SCHEMA_PARSE_COMPAT_FIELD_ALIASES: Record<string, string[]> = {
+  contact: ['contacts'],
+  contacts: ['contact'],
+  description: ['system-description', 'sub-context-description'],
+  shortDescription: ['short-description'],
+  correlationIds: ['correlation-ids'],
+  correlationIdTypes: ['correlation-id-types'],
+};
+
 function addAllowedFieldId(out: Set<string>, value: unknown): void {
   const id = String(value ?? '').trim();
   if (id) out.add(id);
 }
 
-function collectAllowedFieldIdsFromSchema(schema: unknown, out: Set<string>): void {
+function toKebabCase(value: string): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[_\s]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function toSnakeCase(value: string): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function addAllowedCandidate(out: Set<string>, templateFieldIds: Set<string> | null, value: unknown): void {
+  const raw = String(value ?? '').trim();
+  if (!raw) return;
+
+  const variants = [raw, toKebabCase(raw), toSnakeCase(raw)];
+
+  for (const variant of variants) {
+    if (!variant) continue;
+    if (templateFieldIds && !templateFieldIds.has(variant)) continue;
+
+    out.add(variant);
+  }
+}
+
+function collectAllowedFieldIdsFromSchema(
+  schema: unknown,
+  out: Set<string>,
+  templateFieldIds: Set<string> | null
+): void {
   if (!isPlainObject(schema)) return;
 
   const props = isPlainObject(schema['properties']) ? schema['properties'] : null;
+
   if (props) {
-    for (const [propName, propDef] of Object.entries(props)) {
-      addAllowedFieldId(out, propName);
-      if (isPlainObject(propDef)) addAllowedFieldId(out, propDef['x-form-field']);
+    for (const [propertyName, propertyDef] of Object.entries(props)) {
+      const prop = isPlainObject(propertyDef) ? propertyDef : {};
+      const mappedFieldId = String(prop['x-form-field'] ?? '').trim();
+
+      if (mappedFieldId) {
+        addAllowedCandidate(out, templateFieldIds, mappedFieldId);
+      } else {
+        const isConstOnly = Object.hasOwn(prop, 'const');
+
+        // Schema constants such as "type" are generated data, not issue-form input.
+        if (!isConstOnly) {
+          addAllowedCandidate(out, templateFieldIds, propertyName);
+        }
+      }
+
+      for (const alias of SCHEMA_PARSE_COMPAT_FIELD_ALIASES[propertyName] || []) {
+        addAllowedCandidate(out, templateFieldIds, alias);
+      }
     }
   }
 
+  // Only schema composition can contribute top-level input fields.
+  // Do not blindly collect from $defs, otherwise nested object properties can become fake form fields.
   for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
     const entries = schema[key];
     if (!Array.isArray(entries)) continue;
-    for (const entry of entries) collectAllowedFieldIdsFromSchema(entry, out);
-  }
 
-  const defs = schema['$defs'];
-  if (isPlainObject(defs)) {
-    for (const entry of Object.values(defs)) collectAllowedFieldIdsFromSchema(entry, out);
+    for (const entry of entries) {
+      collectAllowedFieldIdsFromSchema(entry, out, templateFieldIds);
+    }
   }
 }
 
 export function buildAllowedFieldIdsFromSchema(
   schema: unknown,
-  extraAllowedFieldIds: Iterable<string> | null = null
+  extraAllowedFieldIds: Iterable<string> | null = null,
+  templateFieldIds: Iterable<string> | null = null
 ): string[] {
   const out = new Set<string>();
 
-  for (const id of INTERNAL_ALLOWED_FIELD_IDS) addAllowedFieldId(out, id);
+  const templateFieldIdSet = templateFieldIds
+    ? new Set(
+        Array.from(templateFieldIds)
+          .map((id) => String(id ?? '').trim())
+          .filter(Boolean)
+      )
+    : null;
 
-  if (extraAllowedFieldIds) {
-    for (const id of extraAllowedFieldIds) addAllowedFieldId(out, id);
+  for (const id of INTERNAL_ALLOWED_FIELD_IDS) {
+    addAllowedFieldId(out, id);
   }
 
-  collectAllowedFieldIdsFromSchema(schema, out);
+  if (extraAllowedFieldIds) {
+    for (const id of extraAllowedFieldIds) {
+      addAllowedFieldId(out, id);
+    }
+  }
+
+  collectAllowedFieldIdsFromSchema(schema, out, templateFieldIdSet);
 
   return Array.from(out);
 }
@@ -219,7 +293,7 @@ function toAllowedFieldSet(value: Iterable<string> | undefined): Set<string> {
 function filterParsedValues(
   values: Record<string, string>,
   template: TemplateLike,
-  allowedFieldIds?: Iterable<string>
+  allowedFieldIds?: Iterable<string> | null
 ): Record<string, string> {
   const allowed = toAllowedFieldSet(allowedFieldIds ?? template?._meta?.parseAllowedFieldIds);
   if (!allowed.size) return values;
@@ -236,7 +310,7 @@ function filterParsedValues(
 export function parseForm(
   body: unknown,
   template: TemplateLike,
-  options: { allowedFieldIds?: Iterable<string> } = {}
+  options: { allowedFieldIds?: Iterable<string> | null } = {}
 ): Record<string, string> {
   const result: Record<string, string> = {};
   if (!body || !template) return result;

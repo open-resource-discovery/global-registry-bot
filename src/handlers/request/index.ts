@@ -78,6 +78,7 @@ type TemplateMeta = {
   root?: string;
   schema?: string;
   path?: string;
+  parseAllowedFieldIds?: string[];
 };
 
 type TemplateLike = {
@@ -1432,9 +1433,17 @@ type LoadTemplateFn = (
   }
 ) => Promise<TemplateLike>;
 
-type ParseFormFn = (body: string, template: TemplateLike) => FormData;
+type ParseFormOptions = {
+  allowedFieldIds?: Iterable<string> | null;
+};
 
-type BuildAllowedFieldIdsFromSchemaFn = (schema: unknown, extraAllowedFieldIds?: Iterable<string> | null) => string[];
+type ParseFormFn = (body: string, template: TemplateLike, options?: ParseFormOptions) => FormData;
+
+type BuildAllowedFieldIdsFromSchemaFn = (
+  schema: unknown,
+  extraAllowedFieldIds?: Iterable<string> | null,
+  templateFieldIds?: Iterable<string> | null
+) => string[];
 
 type FilterParsedFormDataFn = (parsed: FormData, allowedFieldIds?: Iterable<string> | null) => FormData;
 
@@ -1518,6 +1527,26 @@ const extractHashFromPrBody = extractHashFromPRBodyRaw as unknown as ExtractHash
 const findOpenIssuePrs = findOpenIssuePRsRaw as unknown as FindOpenIssuePrsFn;
 const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
 const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
+
+function getTemplateFieldIdsForParseFilter(template: TemplateLike): string[] {
+  return (Array.isArray(template?.body) ? template.body : [])
+    .map((field) => (isPlainObject(field) ? toStringTrim(field['id']) : ''))
+    .filter(Boolean);
+}
+
+function getTemplateParseAllowedFieldIds(template: TemplateLike): string[] {
+  const raw = template?._meta?.parseAllowedFieldIds;
+
+  return Array.isArray(raw) ? raw.map((item) => toStringTrim(item)).filter(Boolean) : [];
+}
+
+function buildParseAllowedFieldIdsForTemplate(schemaObj: unknown, template: TemplateLike): string[] {
+  return buildAllowedFieldIdsFromSchema(
+    schemaObj,
+    getTemplateParseAllowedFieldIds(template),
+    getTemplateFieldIdsForParseFilter(template)
+  );
+}
 
 function readCheckRunFromPayload(payload: unknown): CheckRunLike | null {
   if (!isPlainObject(payload)) return null;
@@ -3544,7 +3573,9 @@ async function processPullRequestForAutoMerge(
     return;
   }
 
-  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+  const parsedFormData = template
+    ? await parseFilteredIssueForm(context, { owner: params.owner, repo: params.repo }, issue.body, template)
+    : {};
   if (!isRequestIssue(context, template, parsedFormData)) {
     log(
       context,
@@ -4023,7 +4054,11 @@ async function loadTemplateSchemaForParsing(
   const candidates = buildTemplateSchemaRepoCandidates(schemaPath);
   if (!candidates.length) return null;
 
-  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${candidates.join('|')}`;
+  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${candidates.join('|')}:${getTemplateFieldIdsForParseFilter(
+    template
+  )
+    .sort()
+    .join(',')}`;
   const cached = PARSED_FORM_SCHEMA_CACHE.get(cacheKey);
   if (cached) return await cached;
 
@@ -4052,12 +4087,22 @@ async function parseFilteredIssueForm(
   issueBody: unknown,
   template: TemplateLike
 ): Promise<FormData> {
-  const rawFormData = parseForm(readIssueBodyForProcessing(issueBody), template);
+  const body = readIssueBodyForProcessing(issueBody);
+
+  // First pass must be unfiltered. For partnerNamespace we need requestType
+  // before the effective request meta/schema path can be resolved.
+  const rawFormData = parseForm(body, template, { allowedFieldIds: [] });
+
+  const templateAllowedFieldIds = getTemplateParseAllowedFieldIds(template);
   const schemaObj = await loadTemplateSchemaForParsing(context, repoInfo, template, rawFormData);
 
-  if (!schemaObj) return rawFormData;
+  if (!schemaObj) {
+    return templateAllowedFieldIds.length ? filterParsedFormData(rawFormData, templateAllowedFieldIds) : rawFormData;
+  }
 
-  return filterParsedFormData(rawFormData, buildAllowedFieldIdsFromSchema(schemaObj));
+  const allowedFieldIds = buildParseAllowedFieldIdsForTemplate(schemaObj, template);
+
+  return allowedFieldIds.length ? filterParsedFormData(rawFormData, allowedFieldIds) : rawFormData;
 }
 
 function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: string): boolean {
@@ -6981,7 +7026,7 @@ ${mentions}`,
 
   const tpl = reval.template || template;
   const bodyStr = readIssueBodyForProcessing(issue.body);
-  const parsedNow = parseForm(bodyStr, tpl);
+  const parsedNow = await parseFilteredIssueForm(context, { owner: params.owner, repo: params.repo }, issue.body, tpl);
   const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
   const effRt = resolveEffectiveRequestType(tpl, parsedNow);
 

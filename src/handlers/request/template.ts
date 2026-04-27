@@ -1,5 +1,5 @@
 import YAML from 'yaml';
-import { parseForm as parseFormRaw } from '../../utils/parser.js';
+import { buildAllowedFieldIdsFromSchema, parseForm as parseFormRaw } from '../../utils/parser.js';
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -93,17 +93,6 @@ type ParseAllowedIdsTemplate = {
 
 const TEMPLATE_PARSE_ALLOWED_FIELD_IDS_CACHE = new Map<string, Promise<string[]>>();
 
-const PARSE_CONTROL_FIELD_IDS = new Set<string>(['requestType', 'request-type', 'open-system']);
-
-const SCHEMA_PARSE_COMPAT_FIELD_ALIASES: Record<string, string[]> = {
-  contact: ['contacts'],
-  contacts: ['contact'],
-  description: ['system-description', 'sub-context-description'],
-  shortDescription: ['short-description'],
-  correlationIds: ['correlation-ids'],
-  correlationIdTypes: ['correlation-id-types'],
-};
-
 function parseAllowedToString(value: unknown): string {
   return String(value ?? '').trim();
 }
@@ -119,22 +108,6 @@ function parseAllowedNormalizeRepoPath(value: unknown): string {
     .replace(/\/{2,}/g, '/');
 }
 
-function parseAllowedToKebabCase(value: string): string {
-  return parseAllowedToString(value)
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/[_\s]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function parseAllowedToSnakeCase(value: string): string {
-  return parseAllowedToString(value)
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[-\s]+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
-
 function buildTemplateFieldIdSetForParseFilter(template: ParseAllowedIdsTemplate): Set<string> {
   const out = new Set<string>();
 
@@ -146,66 +119,11 @@ function buildTemplateFieldIdSetForParseFilter(template: ParseAllowedIdsTemplate
   return out;
 }
 
-function addTemplateFieldCandidateForParseFilter(
-  templateFieldIds: Set<string>,
-  allowed: Set<string>,
-  candidate: unknown
-): void {
-  const raw = parseAllowedToString(candidate);
-  if (!raw) return;
-
-  const variants = [raw, parseAllowedToKebabCase(raw), parseAllowedToSnakeCase(raw)];
-  for (const variant of variants) {
-    if (!variant) continue;
-    if (!templateFieldIds.has(variant)) continue;
-    allowed.add(variant);
-  }
-}
-
-function addSchemaPropertyCandidatesForParseFilter(
-  templateFieldIds: Set<string>,
-  allowed: Set<string>,
-  propertyName: string,
-  propertyDef: unknown
-): void {
-  const prop = parseAllowedIsPlainObject(propertyDef) ? propertyDef : {};
-  const mappedFieldId = parseAllowedToString(prop['x-form-field']);
-
-  if (mappedFieldId) {
-    addTemplateFieldCandidateForParseFilter(templateFieldIds, allowed, mappedFieldId);
-  } else {
-    const isConstOnly = Object.hasOwn(prop, 'const');
-    if (!isConstOnly) {
-      addTemplateFieldCandidateForParseFilter(templateFieldIds, allowed, propertyName);
-    }
-  }
-
-  for (const alias of SCHEMA_PARSE_COMPAT_FIELD_ALIASES[propertyName] || []) {
-    addTemplateFieldCandidateForParseFilter(templateFieldIds, allowed, alias);
-  }
-}
-
 function buildParseAllowedFieldIds(template: ParseAllowedIdsTemplate, schemaObj: unknown): string[] {
-  const templateFieldIds = buildTemplateFieldIdSetForParseFilter(template);
-  if (!templateFieldIds.size) return [];
+  const templateFieldIds = Array.from(buildTemplateFieldIdSetForParseFilter(template));
+  if (!templateFieldIds.length) return [];
 
-  const allowed = new Set<string>();
-  const props =
-    parseAllowedIsPlainObject(schemaObj) && parseAllowedIsPlainObject(schemaObj['properties'])
-      ? schemaObj['properties']
-      : null;
-
-  if (props) {
-    for (const [propertyName, propertyDef] of Object.entries(props)) {
-      addSchemaPropertyCandidatesForParseFilter(templateFieldIds, allowed, propertyName, propertyDef);
-    }
-  }
-
-  for (const controlFieldId of PARSE_CONTROL_FIELD_IDS) {
-    if (templateFieldIds.has(controlFieldId)) allowed.add(controlFieldId);
-  }
-
-  return Array.from(allowed);
+  return buildAllowedFieldIdsFromSchema(schemaObj, null, templateFieldIds);
 }
 
 async function readSchemaTextForParseFilter(
@@ -816,15 +734,31 @@ function isTemplateField(value: unknown): value is TemplateFieldMinimal {
   return idOk && attrsOk;
 }
 
-export function parseForm(body: string, template: Template): Record<string, string> {
+type ParseFormOptions = {
+  allowedFieldIds?: Iterable<string> | null;
+};
+
+export function parseForm(body: string, template: Template, options: ParseFormOptions = {}): Record<string, string> {
   const bodyFields: TemplateFieldMinimal[] = Array.isArray(template.body) ? template.body.filter(isTemplateField) : [];
 
-  return parseFormRaw(body || '', {
-    body: bodyFields,
-    _meta: {
-      parseAllowedFieldIds: Array.isArray(template._meta?.parseAllowedFieldIds)
-        ? template._meta.parseAllowedFieldIds
-        : [],
+  const hasAllowedFieldOverride = Object.hasOwn(options, 'allowedFieldIds');
+
+  const allowedFieldIds = hasAllowedFieldOverride
+    ? (options.allowedFieldIds ?? [])
+    : Array.isArray(template._meta?.parseAllowedFieldIds)
+      ? template._meta.parseAllowedFieldIds
+      : [];
+
+  return parseFormRaw(
+    body || '',
+    {
+      body: bodyFields,
+      _meta: {
+        parseAllowedFieldIds: Array.from(allowedFieldIds || []),
+      },
     },
-  });
+    {
+      allowedFieldIds,
+    }
+  );
 }

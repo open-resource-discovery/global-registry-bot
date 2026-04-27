@@ -425,9 +425,17 @@ type LoadTemplateFn = (
   }
 ) => Promise<TemplateLike>;
 
-type ParseFormFn = (body: string, template: TemplateLike) => FormData;
+type ParseFormOptions = {
+  allowedFieldIds?: Iterable<string> | null;
+};
 
-type BuildAllowedFieldIdsFromSchemaFn = (schema: unknown, extraAllowedFieldIds?: Iterable<string> | null) => string[];
+type ParseFormFn = (body: string, template: TemplateLike, options?: ParseFormOptions) => FormData;
+
+type BuildAllowedFieldIdsFromSchemaFn = (
+  schema: unknown,
+  extraAllowedFieldIds?: Iterable<string> | null,
+  templateFieldIds?: Iterable<string> | null
+) => string[];
 
 type FilterParsedFormDataFn = (parsed: FormData, allowedFieldIds?: Iterable<string> | null) => FormData;
 
@@ -435,6 +443,16 @@ const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
 const parseForm = parseFormRaw as unknown as ParseFormFn;
 const buildAllowedFieldIdsFromSchema = buildAllowedFieldIdsFromSchemaRaw as unknown as BuildAllowedFieldIdsFromSchemaFn;
 const filterParsedFormData = filterParsedFormDataRaw as unknown as FilterParsedFormDataFn;
+
+function getTemplateFieldIdsForParseFilter(template: TemplateLike): string[] {
+  return (Array.isArray(template?.body) ? template.body : []).map((field) => toStringSafe(field?.id)).filter(Boolean);
+}
+
+function getTemplateParseAllowedFieldIds(template: TemplateLike): string[] {
+  const raw = template?._meta?.['parseAllowedFieldIds'];
+
+  return Array.isArray(raw) ? raw.map((item) => toStringSafe(item)).filter(Boolean) : [];
+}
 
 // Error buckets + formatting
 function newBuckets(): ValidationBuckets {
@@ -2334,27 +2352,50 @@ export async function validateRequestIssue(
   });
 
   // 3) form
-  const rawFormData = givenFormData || parseForm(String(issue.body || ''), template);
+  // First pass must be unfiltered. For partnerNamespace we need requestType before
+  // the effective request meta and schema path can be resolved.
+  const rawFormData = givenFormData || parseForm(String(issue.body || ''), template, { allowedFieldIds: [] });
 
   let formData = rawFormData;
-  let allowedTemplateFieldIds: Set<string> | null = null;
+  let parseAllowedFieldIds = getTemplateParseAllowedFieldIds(template);
+  let allowedTemplateFieldIds: Set<string> | null = parseAllowedFieldIds.length ? new Set(parseAllowedFieldIds) : null;
 
-  const resolvedTemplate = resolveTemplateAndRequestType(context, template, formData, errors, buckets);
+  const resolvedTemplate = resolveTemplateAndRequestType(context, template, rawFormData, errors, buckets);
   if ('result' in resolvedTemplate) return resolvedTemplate.result;
 
   template = resolvedTemplate.template;
   const { requestType, requestCfg } = resolvedTemplate;
 
+  // Re-read from resolved template because partnerNamespace may clone/update _meta.
+  parseAllowedFieldIds = getTemplateParseAllowedFieldIds(template);
+  allowedTemplateFieldIds = parseAllowedFieldIds.length ? new Set(parseAllowedFieldIds) : null;
+
   const schemaPathForParseFilter = String(template?._meta?.schema || '').trim();
+
   if (schemaPathForParseFilter) {
     try {
       const schemaObjForParseFilter = await loadSchemaFromRepoOrLocal(context, owner, repo, schemaPathForParseFilter);
-      const allowedFieldIds = buildAllowedFieldIdsFromSchema(schemaObjForParseFilter);
-      formData = filterParsedFormData(rawFormData, allowedFieldIds);
-      allowedTemplateFieldIds = new Set(allowedFieldIds);
+
+      parseAllowedFieldIds = buildAllowedFieldIdsFromSchema(
+        schemaObjForParseFilter,
+        null,
+        getTemplateFieldIdsForParseFilter(template)
+      );
+
+      formData = filterParsedFormData(rawFormData, parseAllowedFieldIds);
+      allowedTemplateFieldIds = new Set(parseAllowedFieldIds);
     } catch {
-      formData = rawFormData;
+      if (parseAllowedFieldIds.length) {
+        formData = filterParsedFormData(rawFormData, parseAllowedFieldIds);
+        allowedTemplateFieldIds = new Set(parseAllowedFieldIds);
+      } else {
+        formData = rawFormData;
+        allowedTemplateFieldIds = null;
+      }
     }
+  } else if (parseAllowedFieldIds.length) {
+    formData = filterParsedFormData(rawFormData, parseAllowedFieldIds);
+    allowedTemplateFieldIds = new Set(parseAllowedFieldIds);
   }
 
   if (DBG && context.log?.info) context.log.info({ formData }, 'ns:parsedFormData');
@@ -2437,6 +2478,11 @@ export async function validateRequestIssue(
         );
       }
     }
+  }
+
+  // Hooks may mutate formData. Keep UI-only fields out after hook mutation as well.
+  if (parseAllowedFieldIds.length) {
+    formData = filterParsedFormData(formData, parseAllowedFieldIds);
   }
 
   // 5) Required field check from template
