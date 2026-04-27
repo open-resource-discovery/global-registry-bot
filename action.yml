@@ -37,7 +37,7 @@ runs:
   using: composite
   steps:
     - name: Setup Node
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
       with:
         node-version: ${{ inputs.node-version }}
         token: ${{ github.token }}
@@ -231,6 +231,6 @@ runs:
 
     - name: Auto approve PR
       if: ${{ inputs.auto-approve == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true && steps.validate_registry.outcome == 'success' && success() && steps.auto_approve_gate.outputs.result == 'true' }}
-      uses: hmarr/auto-approve-action@v4
+      uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
       with:
         review-message: 'Auto approved registry PR'
