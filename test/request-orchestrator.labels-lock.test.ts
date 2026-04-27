@@ -1073,7 +1073,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
-      issue_number: 8,
+      issue_number: 9,
       name: 'route-2',
     });
     expect(postOnce).toHaveBeenCalledTimes(1);
@@ -1171,19 +1171,57 @@ describe('request handler label guards (workflow-label-lock + routing label lock
   });
 
   test('issues.labeled: closed non-approved issues tolerate label refresh failures while clearing progress labels', async () => {
-        body: 'B\n\n<!-- nsreq:routing-lock = {oops} -->',
-        state: 'open',
-        labels: [{ name: 'route-1' }, { name: 'route-2' }],
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const cfg: StaticConfig = {
+      workflow: {
+        labels: {
+          approvalSuccessful: ['Approved'],
+          authorAction: 'Requester Action',
+          approverAction: 'Review Pending',
+        },
+        approvers: [],
+      },
+      requests: {},
+    };
+
+    const octokit = mkOctokit();
+
+    octokit.issues.get.mockRejectedValue(new Error('label refresh failed'));
+
+    const ctx = mkCtx({
+      eventName: 'issues.labeled',
+      action: 'labeled',
+      issue: {
+        number: 11,
+        title: 'T',
+        body: 'B',
+        state: 'closed',
+        labels: [{ name: 'Review Pending' }],
         user: { login: 'alice' },
       },
       sender: { type: 'User', login: 'bob' },
-      labelName: 'route-2',
+      labelName: 'Review Pending',
       config: cfg,
       octokit,
     });
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
+    expect(octokit.issues.addLabels).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      issue_number: 11,
+      labels: ['Rejected'],
+    });
+
+    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      issue_number: 11,
+      name: 'Review Pending',
+    });
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -1197,27 +1235,36 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockRejectedValue(new Error('boom'));
 
-    loadTemplate.mockRejectedValue(new Error('template lookup failed'));
+    octokit.issues.get.mockResolvedValueOnce({
+      data: {
+        number: 12,
+        title: 'T',
+        body: 'B',
+        labels: [{ name: 'route-1' }, { name: 'route-bad' }],
+        user: { login: 'alice' },
+      },
+    });
 
-    const octokit = mkOctokit();
+    loadTemplate.mockImplementation(async (_ctx: unknown, args: LoadTemplateArgs) => {
+      const lbls = Array.isArray(args.issueLabels) ? args.issueLabels.map(String) : [];
+
+      if (lbls.length === 1 && lbls[0] === 'route-1') return DEFAULT_TEMPLATE;
+      if (lbls.length === 1 && lbls[0] === 'route-bad') throw new Error('template lookup failed');
+      if (lbls.length > 1) throw new Error('Cannot resolve template: multiple routing label');
+
+      throw new Error('no routing label found');
+    });
+
     const ctx = mkCtx({
       eventName: 'issues.labeled',
       action: 'labeled',
       issue: {
-        number: 11,
+        number: 12,
         title: 'T',
-        body: 'B',
-        state: 'closed',
-        labels: [],
-        user: { login: 'alice' },
-      },
-      sender: { type: 'User', login: 'bob' },
-      labelName: 'other',
         body: 'B\n\n<!-- nsreq:routing-lock = {"v":1,"expected":"route-1"} -->',
         state: 'open',
-        labels: [{ name: 'route-bad' }],
+        labels: [{ name: 'route-1' }, { name: 'route-bad' }],
         user: { login: 'alice' },
       },
       sender: { type: 'User', login: 'bob' },
@@ -1228,15 +1275,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.addLabels).toHaveBeenCalledWith({
-      owner: 'o',
-      repo: 'r',
-      issue_number: 11,
-      labels: ['Rejected'],
-    });
     expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-      labels: ['route-1'],
-    });
+    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 });

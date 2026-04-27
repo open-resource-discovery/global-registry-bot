@@ -1623,6 +1623,23 @@ describe('parent owner approval gating', () => {
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
     (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return {
+          data: {
+            content: b64('type: vendor\nname: sap\ncontacts:\n  - "@vendorOwner"\n'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      if (path === 'data/namespaces/sap.yaml') {
+        return {
+          data: {
+            content: b64('contacts:\n  - "@vendorOwner"\n'),
+            encoding: 'base64',
+          },
+        };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return {
           data: {
@@ -7891,6 +7908,18 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     const ctx = mkIssuesContext({ issue, action: 'opened', withCachedConfig: true, config: productCfg() });
     ctx.octokit.issues.update.mockRejectedValueOnce(new Error('cannot add marker'));
     ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return {
+          data: {
+            content: b64('type: vendor\nname: sap\ncontacts:\n  - "@vendorOwner"\n'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      if (path === 'data/namespaces/sap.yaml') {
+        return { data: { content: b64('contacts:\n  - "@vendorOwner"\n'), encoding: 'base64' } };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return { data: { content: b64('contacts:\n  - "@topOwner"\n'), encoding: 'base64' } };
       }
