@@ -4465,7 +4465,8 @@ function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestE
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
   const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
   const vendorEntry = isPlainObject(reqs['vendor']) ? reqs['vendor'] : null;
-  return normalizeRepoPath(vendorEntry ? vendorEntry['folderName'] : '') || 'data/vendors';
+  const vendorRoot = normalizeRepoPath(vendorEntry ? vendorEntry['folderName'] : '').replace(/\/+$/, '');
+  return vendorRoot || 'data/vendors';
 }
 
 async function repoYamlExists(context: BotContext<RequestEvents>, repo: RepoInfo, basePath: string): Promise<boolean> {
@@ -4608,7 +4609,17 @@ const CONTACT_APPROVAL_READ_RE = /<!--\s*nsreq:contact-approval\s*=\s*({[\s\S]*?
 const CONTACT_APPROVAL_STRIP_RE = /<!--\s*nsreq:contact-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
 
 function sameNormalizedLoginSet(a: string[], b: string[]): boolean {
-  return uniqLogins(a).join('|').toLowerCase() === uniqLogins(b).join('|').toLowerCase();
+  const normalizedA = uniqLogins(a)
+    .map((login) => normalizeLogin(login))
+    .filter((login): login is string => !!login)
+    .sort((left, right) => left.localeCompare(right));
+  const normalizedB = uniqLogins(b)
+    .map((login) => normalizeLogin(login))
+    .filter((login): login is string => !!login)
+    .sort((left, right) => left.localeCompare(right));
+
+  if (normalizedA.length !== normalizedB.length) return false;
+  return normalizedA.every((login, index) => login === normalizedB[index]);
 }
 
 function isSubContextRequestType(requestType: unknown): boolean {
