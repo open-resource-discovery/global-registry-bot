@@ -17,6 +17,97 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - non-schema fields are filtered before validation and YAML generation
   - fields like `justification` stay visible in GitHub issues without affecting registry data
 
+## [[0.1.5](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.5)] - 2026-04-24
+
+### Added
+
+- Approval comments are now supported directly on standalone direct PRs.
+- Standalone PR approval checks now include hook-provided approvers.
+- Request issue approval checks also include hook-provided approvers.
+
+### Changed
+
+- onApproval approvers are preserved and reused in PR and issue approval flows.
+- Standalone PRs with manual hook approvers can now be approved properly.
+- Existing auto-approval logic remains unchanged.
+
+### Fixed
+
+- Fixed standalone PRs getting stuck when onApproval returned manual approvers.
+- Fixed issue approval comments ignoring hook-provided approvers.
+- Fixed missing manual approval path for standalone direct PRs.
+
+## [[0.1.4](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.4)] - 2026-04-24
+
+### Added
+
+- Support for extra manual approvers returned by onApproval.
+- Hook-provided approvers are preserved in approval decisions.
+- Extra manual approvers are merged with configured approvers and approver pools.
+
+### Changed
+
+- Manual approval checks now include hook-provided approvers.
+- Matched requests can be approved by additional approvers from onApproval.
+- Existing auto-approval and normal review flow remain unchanged.
+
+### Fixed
+
+- Prevented hook approvers from being dropped during approval normalization.
+
+## [[0.1.3](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.3)] - 2026-04-24
+
+### Changed
+
+- Approved registry PR branch updates now run sequentially.
+- Only approved registry PRs are considered for branch updates.
+- Registry PRs are processed from newest to oldest.
+- The bot now prevents multiple registry PR update pipelines from running at once.
+
+### Added
+
+- Approval detection from auto-approval reviews.
+- Approval detection from manual PR reviews.
+- Approval detection from the approved label.
+- Queue continuation after the current PR finishes.
+
+### Fixed
+
+- Prevented parallel CI runs caused by multiple registry PR branch updates.
+- Reduced unnecessary updateBranch calls.
+- Improved controlled processing of registry PR maintenance.
+
+## [[0.1.2](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.2)] - 2026-04-24
+
+### Changed
+
+- Direct PRs are re-evaluated on every default branch update.
+- Old open direct PRs now use the latest default branch config.
+- Stale direct PR branches are updated before approval re-evaluation.
+- Approval is only evaluated on the latest PR head with fresh CI state.
+- Merge gating now requires valid approval and green checks on the current head.
+- Linked issue detection now checks PR body, title, and branch name.
+- Requester resolution avoids using bot users for linked direct PRs.
+- Registry PR maintenance now runs sequentially to avoid GHES overload.
+- Only PRs with registry YAML changes are considered for branch updates.
+
+### Added
+
+- Automatic re-evaluation of open direct PRs on default branch updates.
+- Tree-diff fallback for detecting changed registry files.
+- SHA-specific auto-approval checks.
+- onApproval support for cross-repo and fork PRs.
+- Sequential PR processing with active PR tracking and skip logic.
+
+### Fixed
+
+- Removed stale-head approvals causing blocked merges.
+- Prevented merge/update loops.
+- Improved updateBranch retry handling.
+- Fixed cross-repo PRs being skipped due to wrong head resolution.
+- Prevented parallel registry PR rebases from overloading GHES.
+- Failed PRs are now skipped instead of blocking the queue.
+
 ## [[0.1.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.1)] - 2026-04-21
 
 ## Summary

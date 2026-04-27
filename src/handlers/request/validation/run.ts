@@ -143,6 +143,7 @@ export type ApprovalHookDecision = Readonly<{
   reason?: string;
   comment?: string;
   message?: string;
+  approvers?: readonly string[];
   error?: readonly {
     field?: string;
     message?: string;
@@ -162,6 +163,7 @@ type ApprovalHookResult =
       reason?: unknown;
       comment?: unknown;
       message?: unknown;
+      approvers?: unknown;
       error?: unknown;
       errors?: unknown;
       approved?: unknown;
@@ -482,6 +484,8 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
 
   if (!isPlainObject(value)) return {};
 
+  const approvers = toLoginArray(value['approvers']);
+
   if (value['approved'] === true) {
     const comment = toStringSafe(value['comment']);
     const message = toStringSafe(value['message']);
@@ -490,6 +494,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
       status: 'approved',
       ...(comment ? { comment } : {}),
       ...(message ? { message } : {}),
+      ...(approvers.length ? { approvers } : {}),
     };
   }
 
@@ -507,6 +512,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
       ...(reason ? { reason } : {}),
       ...(comment ? { comment } : {}),
       ...(message ? { message } : {}),
+      ...(approvers.length ? { approvers } : {}),
       ...(errors.length ? { errors } : {}),
     };
   }
@@ -2780,7 +2786,11 @@ function buildApprovalHookArgs(
 ): OnApprovalArgs {
   const namespace = resolveApprovalNamespace(args);
   const resourceName = resolveApprovalResourceName(args, namespace);
-  const requesterId = toStringSafe(args.requestAuthorId) || toStringSafe(args.issue?.user?.login);
+
+  const hasExplicitRequestAuthorId = args.requestAuthorId !== undefined && args.requestAuthorId !== null;
+  const requesterId = hasExplicitRequestAuthorId
+    ? toStringSafe(args.requestAuthorId)
+    : toStringSafe(args.issue?.user?.login);
 
   return {
     requestType: toStringSafe(args.requestType),
