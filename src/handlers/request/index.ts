@@ -2318,7 +2318,8 @@ async function resolvePullRequestRequestAuthorId(
 async function addApprovedLabelToPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  prNumber: number
+  prNumber: number,
+  options: { skipStateCleanup?: boolean } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
   const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
@@ -2338,6 +2339,10 @@ async function addApprovedLabelToPr(
   } catch {
     return;
   }
+
+  // Standalone cross-repo direct PRs must stay PR-only here.
+  // Reading the PR as an issue would break the no-linked-issue guarantee.
+  if (options.skipStateCleanup) return;
 
   await removeReviewPendingLabelsAfterApproval(context, params, eff);
 
@@ -2363,7 +2368,8 @@ async function ensureAutomatedApprovalReviewForCurrentHead(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
-  decision: ApprovalDecision
+  decision: ApprovalDecision,
+  options: { skipApprovedLabelStateCleanup?: boolean } = {}
 ): Promise<boolean> {
   const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return false;
@@ -2378,7 +2384,10 @@ async function ensureAutomatedApprovalReviewForCurrentHead(
 
   markAutoApprovedPrHead(repoInfo, pr.number, headSha);
 
-  await addApprovedLabelToPr(context, repoInfo, pr.number);
+  await addApprovedLabelToPr(context, repoInfo, pr.number, {
+    skipStateCleanup: options.skipApprovedLabelStateCleanup === true,
+  });
+
   return true;
 }
 
@@ -5638,7 +5647,10 @@ async function maybeHandleStandaloneDirectPrApproval(
   const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
 
   if (decision.status === 'approved') {
-    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
+    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision, {
+      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
+    });
+
     if (!approved) return 'continue';
 
     return 'approved';
