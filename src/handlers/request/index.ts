@@ -301,6 +301,8 @@ function singleMachineReadableIssue(field: string, message: string, filePath = '
 }
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
+const MERGE_INFLIGHT = new Map<string, Promise<void>>();
+const AUTO_APPROVED_PR_HEADS = new Set<string>();
 
 function normalizeSchemaFieldAlias(value: unknown): string {
   const raw = toStringTrim(value);
@@ -2353,12 +2355,6 @@ async function addApprovedLabelToPr(
 
 const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
 
-const AUTO_APPROVED_PR_HEADS = new Set<string>();
-
-function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}:${toStringTrim(headSha)}`.toLowerCase();
-}
-
 function buildAutoApprovalReviewMarker(headSha: string): string {
   return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
@@ -2373,13 +2369,14 @@ async function ensureAutomatedApprovalReviewForCurrentHead(
   if (!headSha) return false;
 
   if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
+    markAutoApprovedPrHead(repoInfo, pr.number, headSha);
     return true;
   }
 
   const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
   if (!approved) return false;
 
-  AUTO_APPROVED_PR_HEADS.add(autoApprovedPrHeadKey(repoInfo, pr.number, headSha));
+  markAutoApprovedPrHead(repoInfo, pr.number, headSha);
 
   await addApprovedLabelToPr(context, repoInfo, pr.number);
   return true;
@@ -2480,7 +2477,8 @@ async function hasApprovedLabelOnPr(
 async function isPullRequestApprovedForBranchMaintenance(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  pr: PullRequestLike
+  pr: PullRequestLike,
+  options: { allowLabelFallback?: boolean } = {}
 ): Promise<boolean> {
   let reviews: PullRequestReviewLike[];
   try {
@@ -2519,7 +2517,7 @@ async function isPullRequestApprovedForBranchMaintenance(
     return true;
   }
 
-  if (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) {
+  if (options.allowLabelFallback !== false && (await hasApprovedLabelOnPr(context, repoInfo, pr.number))) {
     return true;
   }
 
@@ -2730,10 +2728,22 @@ async function evaluateHeadGreenForApprovalReevaluation(
   }
 }
 
-const MERGE_INFLIGHT = new Map<string, Promise<void>>();
-
 function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
+}
+
+function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}:${toStringTrim(headSha)}`.toLowerCase();
+}
+
+function markAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): void {
+  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
+  if (key) AUTO_APPROVED_PR_HEADS.add(key);
+}
+
+function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): boolean {
+  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
+  return Boolean(key && AUTO_APPROVED_PR_HEADS.has(key));
 }
 
 class CooldownUntilMap extends Map<string, number> {
@@ -3265,7 +3275,15 @@ async function runMergeApprovedPrOrUpdateBranch(
     return;
   }
 
-  const hasMergeApproval = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr);
+  const hasCurrentHeadAutoApproval = currentHeadSha
+    ? hasAutoApprovedPrHead(repoInfo, currentPr.number, currentHeadSha)
+    : false;
+
+  const hasMergeApproval =
+    hasCurrentHeadAutoApproval ||
+    (await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr, {
+      allowLabelFallback: !isCrossRepositoryPullRequest(currentPr, repoInfo),
+    }));
 
   if (!hasMergeApproval) {
     log(
