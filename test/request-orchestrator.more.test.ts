@@ -287,6 +287,21 @@ function mkStatusContext(args: {
   return ctx;
 }
 
+async function runIssueCommentWithoutJestWorker(handler: (ctx: any) => Promise<void>, ctx: any): Promise<void> {
+  const previousJestWorkerId = process.env.JEST_WORKER_ID;
+
+  try {
+    delete process.env.JEST_WORKER_ID;
+    await handler(ctx);
+  } finally {
+    if (previousJestWorkerId === undefined) {
+      delete process.env.JEST_WORKER_ID;
+    } else {
+      process.env.JEST_WORKER_ID = previousJestWorkerId;
+    }
+  }
+}
+
 beforeAll(async () => {
   await jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
     setStateLabel,
@@ -5614,6 +5629,945 @@ public
         process.env.JEST_WORKER_ID = previousJestWorkerId;
       }
     }
+  });
+  test('check_suite.success: standalone direct PR approval label cleanup is skipped for cross-repo PRs', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-cross-repo-approved-cleanup',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    const forkRepo = {
+      full_name: 'fork-owner/fork-repo',
+      name: 'fork-repo',
+      owner: { login: 'fork-owner' },
+    };
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 201,
+            body: 'manual direct pr',
+            title: 'Direct from fork',
+            user: { login: 'fork-author' },
+            head: {
+              ref: 'feature/issue-999-from-fork',
+              sha: 'sha-cross-repo-approved-cleanup',
+              repo: forkRepo,
+            },
+            base: { ref: 'main', sha: 'base-sha' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-cross-cleanup.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+      if (
+        owner === 'fork-owner' &&
+        repo === 'fork-repo' &&
+        path === 'resources/product-cross-cleanup.yaml' &&
+        ref === 'sha-cross-repo-approved-cleanup'
+      ) {
+        return {
+          data: {
+            content: Buffer.from('type: product\nname: product-cross-cleanup\n', 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      throw httpErr(404);
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'fork-author' } }],
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 201,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct from fork',
+        user: { login: 'fork-author' },
+        head: {
+          ref: 'feature/issue-999-from-fork',
+          sha: 'sha-cross-repo-approved-cleanup',
+          repo: forkRepo,
+        },
+        base: { ref: 'main', sha: 'base-sha' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 201,
+        labels: ['Approved'],
+      })
+    );
+
+    expect(ctx.octokit.issues.get).not.toHaveBeenCalled();
+    expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
+
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestType: 'product',
+        namespace: 'product-cross-cleanup',
+        resourceName: 'product-cross-cleanup',
+        requestAuthorId: 'fork-author',
+      })
+    );
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 201,
+        mergeMethod: 'squash',
+      })
+    );
+  });
+
+  test('check_suite.success: standalone same-repo direct PR approved path cleans review and rejected labels after approved label', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: [],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-same-repo-cleanup',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 202,
+            body: 'manual direct pr',
+            title: 'Direct same repo',
+            user: { login: 'requester' },
+            head: { ref: 'feature/direct-cleanup', sha: 'sha-same-repo-cleanup' },
+            base: { ref: 'main', sha: 'base-sha' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-same-cleanup.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-same-cleanup\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 202,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct same repo',
+        user: { login: 'requester' },
+        head: { ref: 'feature/direct-cleanup', sha: 'sha-same-repo-cleanup' },
+        base: { ref: 'main', sha: 'base-sha' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [{ name: 'Approved' }, { name: 'needs-review' }, { name: 'Requester Action' }, { name: 'Rejected' }],
+        assignees: [],
+      },
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    await handler(ctx);
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 202,
+        labels: ['Approved'],
+      })
+    );
+
+    expect(ctx.octokit.issues.get).toHaveBeenCalledWith({
+      owner: 'o1',
+      repo: 'r1',
+      issue_number: 202,
+    });
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 202,
+        name: 'needs-review',
+      })
+    );
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 202,
+        name: 'Requester Action',
+      })
+    );
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 202,
+        name: 'Rejected',
+      })
+    );
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 202,
+        mergeMethod: 'squash',
+      })
+    );
+  });
+
+  test('check_suite.success: standalone direct PR unknown approval falls back to global pool when registry doc cannot resolve request type', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+        approversPool: ['globalPoolB', 'globalPoolA'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-unknown-global-pool',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 203,
+            body: 'manual direct pr',
+            title: 'Direct unresolved doc',
+            user: { login: 'requester' },
+            head: { ref: 'feature/unresolved-doc', sha: 'sha-unknown-global-pool' },
+            base: { ref: 'main' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-unresolved.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockRejectedValue(httpErr(404));
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    Object.assign(ctx.octokit.issues, { addAssignees });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    expect(setStateLabel).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 203 }),
+      expect.objectContaining({ number: 203 }),
+      'review'
+    );
+
+    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 203 }),
+      expect.objectContaining({ number: 203 }),
+      ['globalPoolA'],
+    ]);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 203,
+        assignees: ['globalPoolA'],
+      })
+    );
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 203,
+        labels: ['registry-bot', 'needs-review'],
+      })
+    );
+
+    const posted = postedBodies();
+
+    expect(posted).toContain('### ✅ No issues detected');
+    expect(posted).toContain('### ➡️ Routing to an approver for review');
+    expect(posted).toContain('<!-- nsreq:snapshot:');
+    expect(posted).toContain('<!-- nsreq:handover -->');
+  });
+
+  test('issue_comment.created: standalone direct PR approval is ignored before review handover', async () => {
+    const cfg = {
+      requests: {
+        product: { folderName: 'resources' },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['allowedApprover'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const ctx: any = {
+      name: 'issue_comment.created',
+      payload: {
+        issue: {
+          number: 204,
+          body: 'manual direct pr',
+          title: 'Direct PR',
+          user: { login: 'requester' },
+          pull_request: {},
+          labels: [],
+        },
+        comment: {
+          body: 'Approved',
+          user: { login: 'allowedApprover' },
+        },
+        sender: {
+          login: 'allowedApprover',
+          type: 'User',
+        },
+      },
+      issue: () => ({ owner: 'o1', repo: 'r1', issue_number: 204 }),
+      octokit: mkCheckSuiteContext({
+        event: 'check_suite.completed',
+        conclusion: 'success',
+        sha: 'sha-unused',
+        ownerLogin: 'o1',
+        repoName: 'r1',
+        withCachedConfig: true,
+        config: cfg,
+      }).octokit,
+      log: {
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      },
+      resourceBotConfig: cfg,
+      resourceBotHooks: {},
+      resourceBotHooksSource: 'test',
+    };
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 204,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct PR',
+        user: { login: 'requester' },
+        head: { ref: 'feature/direct-pr', sha: 'sha-direct-comment' },
+        base: { ref: 'main' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValueOnce({
+      data: {
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    await runIssueCommentWithoutJestWorker(handler, ctx);
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    expect(postedBodies()).toContain(
+      'Approval ignored: direct PR is not in review state. Please wait until validation has routed it to review.'
+    );
+  });
+
+  test('issue_comment.created: standalone direct PR approval rejects unauthorized commenter in review state', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['allowedApprover'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const ctx: any = {
+      name: 'issue_comment.created',
+      payload: {
+        issue: {
+          number: 205,
+          body: 'manual direct pr',
+          title: 'Direct PR',
+          user: { login: 'requester' },
+          pull_request: {},
+          labels: [{ name: 'needs-review' }],
+        },
+        comment: {
+          body: 'Approved',
+          user: { login: 'intruder' },
+        },
+        sender: {
+          login: 'intruder',
+          type: 'User',
+        },
+      },
+      issue: () => ({ owner: 'o1', repo: 'r1', issue_number: 205 }),
+      octokit: mkCheckSuiteContext({
+        event: 'check_suite.completed',
+        conclusion: 'success',
+        sha: 'sha-unused',
+        ownerLogin: 'o1',
+        repoName: 'r1',
+        withCachedConfig: true,
+        config: cfg,
+      }).octokit,
+      log: {
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      },
+      resourceBotConfig: cfg,
+      resourceBotHooks: {},
+      resourceBotHooksSource: 'test',
+    };
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 205,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct PR',
+        user: { login: 'requester' },
+        head: { ref: 'feature/direct-pr', sha: 'sha-direct-comment-denied' },
+        base: { ref: 'main' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValueOnce({
+      data: {
+        labels: [{ name: 'needs-review' }],
+        assignees: [],
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-denied.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-denied\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({
+      status: 'unknown',
+      message: 'manual review required',
+    } as any);
+
+    await runIssueCommentWithoutJestWorker(handler, ctx);
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    expect(postedBodies()).toContain(
+      'Approval ignored: commenter intruder is not an allowed approver for this direct PR.'
+    );
+  });
+
+  test('issue_comment.created: standalone direct PR approval by allowed approver creates review and tries merge', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['allowedApprover'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const ctx: any = {
+      name: 'issue_comment.created',
+      payload: {
+        issue: {
+          number: 206,
+          body: 'manual direct pr',
+          title: 'Direct PR',
+          user: { login: 'requester' },
+          pull_request: {},
+          labels: [{ name: 'needs-review' }],
+        },
+        comment: {
+          body: 'Approved',
+          user: { login: 'allowedApprover' },
+        },
+        sender: {
+          login: 'allowedApprover',
+          type: 'User',
+        },
+      },
+      issue: () => ({ owner: 'o1', repo: 'r1', issue_number: 206 }),
+      octokit: mkCheckSuiteContext({
+        event: 'check_suite.completed',
+        conclusion: 'success',
+        sha: 'sha-unused',
+        ownerLogin: 'o1',
+        repoName: 'r1',
+        withCachedConfig: true,
+        config: cfg,
+      }).octokit,
+      log: {
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      },
+      resourceBotConfig: cfg,
+      resourceBotHooks: {},
+      resourceBotHooksSource: 'test',
+    };
+
+    ctx.octokit.pulls.get
+      .mockResolvedValueOnce({
+        data: {
+          number: 206,
+          state: 'open',
+          body: 'manual direct pr',
+          title: 'Direct PR',
+          user: { login: 'requester' },
+          head: { ref: 'feature/direct-pr', sha: 'sha-direct-comment-approved' },
+          base: { ref: 'main' },
+          mergeable: true,
+          mergeable_state: 'clean',
+        },
+      })
+      .mockResolvedValue({
+        data: {
+          number: 206,
+          state: 'open',
+          body: 'manual direct pr',
+          title: 'Direct PR',
+          user: { login: 'requester' },
+          head: { ref: 'feature/direct-pr', sha: 'sha-direct-comment-approved' },
+          base: { ref: 'main' },
+          mergeable: true,
+          mergeable_state: 'clean',
+        },
+      });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [{ name: 'needs-review' }],
+        assignees: [],
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-approved.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-approved\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    ctx.octokit.pulls.listReviews.mockResolvedValue({
+      data: [],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({
+      status: 'unknown',
+      message: 'manual review required',
+    } as any);
+
+    await runIssueCommentWithoutJestWorker(handler, ctx);
+
+    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        pull_number: 206,
+        event: 'APPROVE',
+        body: expect.stringContaining('Approved by @allowedApprover'),
+      })
+    );
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 206,
+        mergeMethod: 'squash',
+      })
+    );
+  });
+
+  test('check_suite.failure: registry validate annotations are grouped and posted to matching PR', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'failure',
+      sha: 'sha-validation-failure',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: {
+        requests: {
+          product: { folderName: 'resources' },
+        },
+        workflow: {
+          labels: { approvalSuccessful: ['Approved'] },
+          approvers: [],
+        },
+      },
+    });
+
+    ctx.payload.check_suite.id = 777;
+    ctx.payload.check_suite.pull_requests = [{ number: 301 }];
+
+    ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+      data: {
+        check_runs: [{ id: 888, conclusion: 'failure', html_url: 'https://example.test/checks/888' }],
+      },
+    });
+
+    ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+      data: [
+        {
+          path: 'resources/product-bad.yaml',
+          title: 'registry-validate: schema',
+          message:
+            "/name required property 'name' [file=resources/product-bad.yaml schema=schemas/product.schema.json]",
+          annotation_level: 'failure',
+        },
+      ],
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        html_url: 'https://github.example/o1/r1/pull/301',
+      },
+    });
+
+    await handler(ctx);
+
+    const posted = postedBodies();
+
+    expect(posted).toContain('## Detected issues');
+    expect(posted).toContain('### File: `resources/product-bad.yaml`');
+    expect(posted).toContain('required property');
+    expect(posted).toContain('<summary>Show as JSON (Robots Friendly)</summary>');
+  });
+
+  test('status.success: triggers direct PR auto merge for matching head sha', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers.status[0];
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-status-success',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: {
+        requests: {
+          product: { folderName: 'resources' },
+        },
+        workflow: {
+          labels: { approvalSuccessful: ['Approved'] },
+          approvers: [],
+        },
+      },
+    });
+
+    ctx.name = 'status';
+    ctx.payload = {
+      state: 'success',
+      sha: 'sha-status-success',
+      repository: {
+        name: 'r1',
+        owner: { login: 'o1' },
+      },
+    };
+
+    ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      data: {
+        check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
+      },
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 401,
+            body: 'manual direct pr',
+            title: 'Direct status PR',
+            user: { login: 'requester' },
+            head: { ref: 'feature/status-pr', sha: 'sha-status-success' },
+            base: { ref: 'main' },
+            mergeable: true,
+            mergeable_state: 'clean',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-status.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-status\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValue({
+      data: {
+        number: 401,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct status PR',
+        user: { login: 'requester' },
+        head: { ref: 'feature/status-pr', sha: 'sha-status-success' },
+        base: { ref: 'main' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
+
+    await handler(ctx);
+
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestType: 'product',
+        namespace: 'product-status',
+        resourceName: 'product-status',
+        requestAuthorId: 'requester',
+      })
+    );
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 401,
+        mergeMethod: 'squash',
+      })
+    );
+  });
+
+  test('status.non-success: is ignored', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers.status[0];
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-status-ignored',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: {},
+    });
+
+    ctx.name = 'status';
+    ctx.payload = {
+      state: 'failure',
+      sha: 'sha-status-ignored',
+      repository: {
+        name: 'r1',
+        owner: { login: 'o1' },
+      },
+    };
+
+    await handler(ctx);
+
+    expect(ctx.octokit.checks.listForRef).not.toHaveBeenCalled();
+    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(runApprovalHook).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
   test('check_suite.success: promoted hook approver approval does not expose manual approval message in review body', async () => {
     const cfg = {
