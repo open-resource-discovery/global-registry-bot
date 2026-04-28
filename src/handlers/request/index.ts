@@ -1715,7 +1715,9 @@ function buildReviewHandoverBody(context: BotContext<RequestEvents>, snapshotHas
 
 ---
 
-Once reviewed, please comment \`Approved\` to create an automatic Pull Request.${docsSection}${snapshotMarker}`;
+Once reviewed, please comment \`Approved\` to create an automatic Pull Request.${docsSection}${snapshotMarker}
+
+<!-- nsreq:handover -->`;
 }
 
 async function handoverToCpa(
@@ -2093,6 +2095,22 @@ function resolveReviewAssigneesForRequestTypes(
   const eff = resolveEffectiveConstants(context);
   const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
 
+  const pickForRouting = (routing: { approvalUsernames: string[]; autoAssigneePoolUsernames: string[] }): string[] =>
+    routing.autoAssigneePoolUsernames.length
+      ? pickAutoAssigneeFromPool(reviewTarget, routing.autoAssigneePoolUsernames)
+      : routing.approvalUsernames;
+
+  if (!types.length) {
+    const fallbackRouting = resolveApproverRoutingForRequestType(
+      context,
+      '',
+      eff.approverUsernames,
+      eff.approverPoolUsernames
+    );
+
+    return uniqLogins(pickForRouting(fallbackRouting));
+  }
+
   const assignees: string[] = [];
 
   for (const requestType of types) {
@@ -2103,14 +2121,28 @@ function resolveReviewAssigneesForRequestTypes(
       eff.approverPoolUsernames
     );
 
-    const picked = routing.autoAssigneePoolUsernames.length
-      ? pickAutoAssigneeFromPool(reviewTarget, routing.autoAssigneePoolUsernames)
-      : routing.approvalUsernames;
-
-    assignees.push(...picked);
+    assignees.push(...pickForRouting(routing));
   }
 
   return uniqLogins(assignees);
+}
+
+function resolveAllowedApproversForRequestTypes(context: BotContext<RequestEvents>, requestTypes: string[]): string[] {
+  const eff = resolveEffectiveConstants(context);
+  const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
+
+  if (!types.length) {
+    return resolveApproverRoutingForRequestType(context, '', eff.approverUsernames, eff.approverPoolUsernames)
+      .approvalUsernames;
+  }
+
+  return uniqLogins(
+    types.flatMap(
+      (requestType) =>
+        resolveApproverRoutingForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+          .approvalUsernames
+    )
+  );
 }
 
 function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: string[]): string {
@@ -2290,16 +2322,45 @@ async function addApprovedLabelToPr(
   const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
   if (!approvedLabel) return;
 
+  const params: IssueParams = {
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    issue_number: prNumber,
+  };
+
   try {
     await context.octokit.issues.addLabels({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      issue_number: prNumber,
+      ...params,
       labels: [approvedLabel],
     });
   } catch {
-    // ignore
+    return;
   }
+
+  await removeReviewPendingLabelsAfterApproval(context, params, eff);
+
+  try {
+    const labelsAfter = await fetchIssueLabels(context, params);
+
+    if (labelsMatching(labelsAfter, approvedLabel).length) {
+      await removeProgressStatusLabels(context, params, labelsAfter);
+      await removeRejectedStatusLabel(context, params, labelsAfter);
+    }
+  } catch {
+    // best effort cleanup only
+  }
+}
+
+const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
+
+const AUTO_APPROVED_PR_HEADS = new Set<string>();
+
+function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}:${toStringTrim(headSha)}`.toLowerCase();
+}
+
+function buildAutoApprovalReviewMarker(headSha: string): string {
+  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
 async function ensureAutomatedApprovalReviewForCurrentHead(
@@ -2318,14 +2379,10 @@ async function ensureAutomatedApprovalReviewForCurrentHead(
   const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
   if (!approved) return false;
 
+  AUTO_APPROVED_PR_HEADS.add(autoApprovedPrHeadKey(repoInfo, pr.number, headSha));
+
   await addApprovedLabelToPr(context, repoInfo, pr.number);
   return true;
-}
-
-const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
-
-function buildAutoApprovalReviewMarker(headSha: string): string {
-  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
 async function listPullRequestReviews(
@@ -2455,6 +2512,10 @@ async function isPullRequestApprovedForBranchMaintenance(
   }
 
   if (latestStateValues.has('APPROVED')) {
+    return true;
+  }
+
+  if (headSha && AUTO_APPROVED_PR_HEADS.has(autoApprovedPrHeadKey(repoInfo, pr.number, headSha))) {
     return true;
   }
 
@@ -5440,6 +5501,8 @@ async function handoverStandaloneDirectPrToReview(
   const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
   const prIssue = prAsIssueLike(pr);
 
+  await setStateLabel(context, params, prIssue, 'review');
+
   const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
 
@@ -5512,11 +5575,7 @@ async function handleDirectPrApprovalComment(
     baseBranch: toStringTrim(pr.base?.ref),
   });
 
-  const configuredApprovers = uniqLogins(
-    requestTypes.flatMap((requestType) =>
-      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
-    )
-  );
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
 
   const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
     baseBranch: toStringTrim(pr.base?.ref),

@@ -5300,10 +5300,13 @@ public
     );
   });
 
-  test('check_suite.success: neutral standalone direct PR assigns hook approvers via GitHub assignees and review labels', async () => {
+  test('check_suite.success: neutral standalone direct PR posts handover and assigns request-type pool, not hook approvers', async () => {
     const cfg = {
       requests: {
-        product: { folderName: 'resources' },
+        product: {
+          folderName: 'resources',
+          approversPool: ['poolB', 'poolA'],
+        },
       },
       workflow: {
         labels: {
@@ -5311,7 +5314,8 @@ public
           approvalRequested: ['needs-review'],
           approvalSuccessful: ['Approved'],
         },
-        approvers: [],
+        approvers: ['globalApprover'],
+        approversPool: ['globalPool'],
       },
     };
 
@@ -5362,7 +5366,7 @@ public
     runApprovalHook.mockResolvedValueOnce({
       status: 'unknown',
       message: 'manual review required',
-      approvers: ['reviewer1'],
+      approvers: ['hookApproverShouldNotBeAssigned'],
     } as any);
 
     ctx.octokit.issues.get.mockResolvedValue({
@@ -5383,14 +5387,34 @@ public
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+    expect(setStateLabel).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 161 }),
+      expect.objectContaining({ number: 161 }),
+      'review'
+    );
+
+    expect(ensureAssigneesOnce).toHaveBeenCalled();
+
+    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 161 }),
+      expect.objectContaining({ number: 161 }),
+      ['poolA'],
+    ]);
 
     expect(addAssignees).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
         issue_number: 161,
-        assignees: ['reviewer1'],
+        assignees: ['poolA'],
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['hookApproverShouldNotBeAssigned']),
       })
     );
 
@@ -5403,12 +5427,14 @@ public
       })
     );
 
-    expect(postOnce).toHaveBeenCalledWith(
-      ctx,
-      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 161 }),
-      expect.stringContaining('manual review required'),
-      expect.objectContaining({ minimizeTag: 'nsreq:on-approval:unknown' })
-    );
+    const posted = postedBodies();
+
+    expect(posted).toContain('### ✅ No issues detected');
+    expect(posted).toContain('### ➡️ Routing to an approver for review');
+    expect(posted).toContain('<!-- nsreq:snapshot:');
+    expect(posted).toContain('<!-- nsreq:handover -->');
+    expect(posted).toContain('manual review required');
+    expect(posted).toContain('<summary>Decision details</summary>');
   });
   test('issue_comment: standalone direct PR Approved comment by hook approver creates automated approval review', async () => {
     const previousJestWorkerId = process.env.JEST_WORKER_ID;
