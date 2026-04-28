@@ -16,6 +16,7 @@ import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type Reg
 import { getDocLinksFromConfig } from './constants.js';
 import type { Context, Probot } from 'probot';
 import YAML from 'yaml';
+import { createHash } from 'node:crypto';
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -1703,6 +1704,20 @@ async function ensureAssigneesPresent(
   }
 }
 
+function buildReviewHandoverBody(context: BotContext<RequestEvents>, snapshotHash?: string): string {
+  const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
+  const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
+  const snapshotMarker = snapshotHash ? `\n\n<!-- nsreq:snapshot:${snapshotHash} -->` : '';
+
+  return `### ✅ No issues detected
+
+### ➡️ Routing to an approver for review
+
+---
+
+Once reviewed, please comment \`Approved\` to create an automatic Pull Request.${docsSection}${snapshotMarker}`;
+}
+
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1747,17 +1762,7 @@ async function handoverToCpa(
     }
   }
 
-  const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
-  const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
-  const snapshotMarker = options.snapshotHash ? `\n\n<!-- nsreq:snapshot:${options.snapshotHash} -->` : '';
-
-  const handoverMsg = `### ✅ No issues detected
-
-### ➡️ Routing to an approver for review
-
----
-
-Once reviewed, please comment \`Approved\` to create an automatic Pull Request.${docsSection}${snapshotMarker}`;
+  const handoverMsg = buildReviewHandoverBody(context, options.snapshotHash);
 
   await postOnce(context, params, handoverMsg, { minimizeTag: 'nsreq:handover' });
 }
@@ -2067,6 +2072,54 @@ async function applyApprovedRequestState(
   } catch {
     // ignore
   }
+}
+
+function prAsIssueLike(pr: PullRequestLike): IssueLike {
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body,
+    state: pr.state,
+    user: pr.user,
+    labels: [],
+  };
+}
+
+function resolveReviewAssigneesForRequestTypes(
+  context: BotContext<RequestEvents>,
+  reviewTarget: IssueLike,
+  requestTypes: string[]
+): string[] {
+  const eff = resolveEffectiveConstants(context);
+  const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
+
+  const assignees: string[] = [];
+
+  for (const requestType of types) {
+    const routing = resolveApproverRoutingForRequestType(
+      context,
+      requestType,
+      eff.approverUsernames,
+      eff.approverPoolUsernames
+    );
+
+    const picked = routing.autoAssigneePoolUsernames.length
+      ? pickAutoAssigneeFromPool(reviewTarget, routing.autoAssigneePoolUsernames)
+      : routing.approvalUsernames;
+
+    assignees.push(...picked);
+  }
+
+  return uniqLogins(assignees);
+}
+
+function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: string[]): string {
+  const payload = {
+    headSha: toStringTrim(pr.head?.sha),
+    files: Array.from(new Set((changedFiles || []).map(normalizeRepoPath).filter(Boolean))).sort(),
+  };
+
+  return createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
 async function createAutomatedApprovalReview(
@@ -5385,26 +5438,53 @@ async function handoverStandaloneDirectPrToReview(
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
   const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
+  const prIssue = prAsIssueLike(pr);
 
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
 
-  const configuredApprovers = uniqLogins(
-    requestTypes.flatMap((requestType) =>
-      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
-    )
-  );
-
-  const hookApprovers = uniqLogins(decision.approvers || []);
-  const assignees = uniqLogins([...hookApprovers, ...configuredApprovers]);
+  const assignees = resolveReviewAssigneesForRequestTypes(context, prIssue, requestTypes);
 
   if (assignees.length) {
+    await ensureAssigneesOnce(context, params, prIssue, assignees);
     await ensureAssigneesPresent(context, params, assignees);
   }
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
-
   await ensureLabelsPresentOnce(context, params, labelsToAdd);
+
+  if (eff.labelOnApproved) {
+    try {
+      await context.octokit.issues.removeLabel({
+        ...params,
+        name: eff.labelOnApproved,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  const snapshotHash = calcStandaloneDirectPrSnapshotHash(pr, changedFiles);
+
+  await postOnce(context, params, buildReviewHandoverBody(context, snapshotHash), {
+    minimizeTag: 'nsreq:handover',
+  });
+
   await postApprovalUnknownOnce(context, params, decision);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      requestTypes,
+      changedFiles,
+      assignees,
+      snapshotHash,
+      decisionStatus: toStringTrim(decision.status) || 'none',
+    },
+    'direct-pr:handover-to-review'
+  );
 }
 
 async function handleDirectPrApprovalComment(
@@ -5414,6 +5494,19 @@ async function handleDirectPrApprovalComment(
   commenter: string
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
+  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
+  const prIssue = prAsIssueLike(pr);
+
+  const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, prIssue, eff);
+  if (!reviewOk) {
+    await postOnce(
+      context,
+      params,
+      'Approval ignored: direct PR is not in review state. Please wait until validation has routed it to review.',
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+    return;
+  }
 
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
     baseBranch: toStringTrim(pr.base?.ref),
@@ -5430,21 +5523,19 @@ async function handleDirectPrApprovalComment(
   });
 
   if (approvalDecision.status === 'rejected') {
-    await postOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalRejectedBody(approvalDecision),
-      { minimizeTag: 'nsreq:on-approval:rejected' }
-    );
+    await postOnce(context, params, buildApprovalRejectedBody(approvalDecision), {
+      minimizeTag: 'nsreq:on-approval:rejected',
+    });
     return;
   }
 
   const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
   const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
+
   if (!okApprover) {
     await postOnce(
       context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      params,
       `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
       { minimizeTag: 'nsreq:approval-info' }
     );
