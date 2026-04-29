@@ -2154,20 +2154,15 @@ function resolveReviewAssigneesForRequestTypes(
   const eff = resolveEffectiveConstants(context);
   const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
 
-  const pickForRouting = (routing: { approvalUsernames: string[]; autoAssigneePoolUsernames: string[] }): string[] =>
-    routing.autoAssigneePoolUsernames.length
-      ? pickAutoAssigneeFromPool(reviewTarget, routing.autoAssigneePoolUsernames)
-      : routing.approvalUsernames;
+  const pickFromPoolOnly = (pool: string[]): string[] => {
+    const normalizedPool = uniqLogins((pool || []).map(toStringTrim).filter(Boolean));
+    return normalizedPool.length ? pickAutoAssigneeFromPool(reviewTarget, normalizedPool) : [];
+  };
 
+  // Standalone direct PR with unresolved request type:
+  // assign from workflow approversPool only. Do not assign all workflow approvers.
   if (!types.length) {
-    const fallbackRouting = resolveApproverRoutingForRequestType(
-      context,
-      '',
-      eff.approverUsernames,
-      eff.approverPoolUsernames
-    );
-
-    return uniqLogins(pickForRouting(fallbackRouting));
+    return pickFromPoolOnly(eff.approverPoolUsernames);
   }
 
   const assignees: string[] = [];
@@ -2180,7 +2175,10 @@ function resolveReviewAssigneesForRequestTypes(
       eff.approverPoolUsernames
     );
 
-    assignees.push(...pickForRouting(routing));
+    // Important:
+    // For standalone direct PR assignment, only approversPool is used.
+    // approvalUsernames remain allowed to approve, but are not all assigned.
+    assignees.push(...pickFromPoolOnly(routing.autoAssigneePoolUsernames));
   }
 
   return uniqLogins(assignees);
@@ -5637,6 +5635,73 @@ async function resolveDirectPrRequestTypes(
   return Array.from(new Set(requestTypes));
 }
 
+function isApprovalReviewForCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
+  const normalizedHeadSha = toStringTrim(headSha);
+  if (!normalizedHeadSha) return false;
+
+  const state = toStringTrim(review?.state).toUpperCase();
+  if (state !== 'APPROVED') return false;
+
+  const commitId = toStringTrim(review?.commit_id);
+  if (commitId && commitId === normalizedHeadSha) return true;
+
+  const marker = buildAutoApprovalReviewMarker(normalizedHeadSha);
+  return Boolean(marker && toStringTrim(review?.body).includes(marker));
+}
+
+async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: DirectPrApprovalOptions = {}
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  let reviews: PullRequestReviewLike[] = [];
+
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    return false;
+  }
+
+  const latestStates = getLatestActionableReviewStates(reviews);
+  if (new Set(latestStates.values()).has('CHANGES_REQUESTED')) {
+    return false;
+  }
+
+  // Bot-created approval review with the current-head marker is trusted,
+  // because the bot already performed authorization when creating it.
+  if (
+    reviews.some(
+      (review) =>
+        isApprovalReviewForCurrentHead(review, headSha) &&
+        toStringTrim(review.body).includes(buildAutoApprovalReviewMarker(headSha))
+    )
+  ) {
+    return true;
+  }
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const hookApprovers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
+
+  const allowedApprovers = new Set(
+    uniqLogins([...(configuredApprovers || []), ...hookApprovers]).map((login) => normalizeLogin(login).toLowerCase())
+  );
+
+  if (!allowedApprovers.size) return false;
+
+  return reviews.some((review) => {
+    if (!isApprovalReviewForCurrentHead(review, headSha)) return false;
+
+    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
+    return Boolean(reviewer && allowedApprovers.has(reviewer));
+  });
+}
+
 function reviewTargetsCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
   const normalizedHeadSha = toStringTrim(headSha);
   if (!normalizedHeadSha) return false;
@@ -5940,6 +6005,25 @@ async function maybeHandleStandaloneDirectPrApproval(
   options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalHandlingResult> {
   const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
+
+  if (
+    decision.status !== 'approved' &&
+    decision.status !== 'rejected' &&
+    (await hasAllowedStandaloneDirectPrApprovalForCurrentHead(context, repoInfo, pr, decision, options))
+  ) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        decisionStatus: toStringTrim(decision.status) || 'none',
+      },
+      'direct-pr:standalone-current-head-approval-present'
+    );
+
+    return 'approved';
+  }
 
   if (decision.status === 'approved') {
     const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision, {
