@@ -1,9 +1,6 @@
 import jsYamlModule from 'js-yaml';
 import { calcSnapshotHash as calcSnapshotHashRaw, SNAPSHOT_HASH_MARKER_KEY } from './snapshot.js';
-import {
-  tryEnableAutoMerge as tryEnableAutoMergeRaw,
-  tryMergeIfGreen as tryMergeIfGreenRaw,
-} from '../../../lib/auto-merge.js';
+import { tryEnableAutoMerge as tryEnableAutoMergeRaw } from '../../../lib/auto-merge.js';
 import { loadTemplate as loadTemplateRaw } from '../template.js';
 import { loadStaticConfig as loadStaticConfigRaw } from '../../../config.js';
 import {
@@ -18,7 +15,6 @@ const CONFIG_BASE_DIR = '.github/registry-bot';
 type JsonObject = Record<string, unknown>;
 type JsonValue = unknown;
 
-type MergeMethodRest = 'merge' | 'squash' | 'rebase';
 type MergeMethodGraphql = 'MERGE' | 'SQUASH' | 'REBASE';
 
 type GitHubLabel = string | { name?: string | null };
@@ -189,18 +185,6 @@ const tryEnableAutoMerge = tryEnableAutoMergeRaw as unknown as (
   context: unknown,
   pr: Pick<PullRequestLike, 'number' | 'node_id'>,
   opts?: { mergeMethod?: MergeMethodGraphql }
-) => Promise<boolean>;
-
-const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as (
-  context: unknown,
-  args: {
-    owner: string;
-    repo: string;
-    prNumber: number;
-    mergeMethod?: MergeMethodRest;
-    requireApproval?: boolean;
-    prData?: PullRequestLike;
-  }
 ) => Promise<boolean>;
 
 // helpers
@@ -942,13 +926,14 @@ export async function createRequestPr(
     }
 
     if (prOpts.autoMergeEnabled) {
-      await tryMergeIfGreen(context, {
-        owner,
-        repo,
-        prNumber: pr.number,
-        mergeMethod: prOpts.autoMergeMethod as MergeMethodRest,
-        prData: pr,
-      });
+      context.log?.info?.(
+        {
+          prNumber: pr.number,
+          autoMergeEnabled: enabled,
+          mergeMethod: prOpts.autoMergeMethod,
+        },
+        'pr:create:defer-merge-until-ci'
+      );
     }
 
     return pr;
@@ -1135,13 +1120,14 @@ export async function createRequestPr(
   }
 
   if (prOpts.autoMergeEnabled) {
-    await tryMergeIfGreen(context, {
-      owner,
-      repo,
-      prNumber: pr.number,
-      mergeMethod: prOpts.autoMergeMethod as MergeMethodRest,
-      prData: pr,
-    });
+    context.log?.info?.(
+      {
+        prNumber: pr.number,
+        autoMergeEnabled: enabled,
+        mergeMethod: prOpts.autoMergeMethod,
+      },
+      'pr:create:defer-merge-until-ci'
+    );
   }
 
   context.log?.info?.(

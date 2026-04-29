@@ -33,7 +33,10 @@ type OctokitLike = {
   };
   checks: {
     listForRef: (args: { owner: string; repo: string; ref: string }) => Promise<{
-      data: { total_count: number; check_runs: { conclusion: string | null }[] };
+      data: {
+        total_count: number;
+        check_runs: { status?: string | null; conclusion: string | null }[];
+      };
     }>;
   };
 };
@@ -45,6 +48,20 @@ export type ContextLike = {
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? '');
+}
+
+function isExpectedBranchProtectionBlock(e: unknown): boolean {
+  const msg = errorMessage(e).toLowerCase();
+
+  return (
+    msg.includes('at least 1 approving review is required') ||
+    msg.includes('approving review is required') ||
+    msg.includes('required status check') ||
+    msg.includes('is queued') ||
+    msg.includes('is expected') ||
+    msg.includes('protected branch') ||
+    msg.includes('pull request is not mergeable')
+  );
 }
 
 const OK_CHECK_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']); // per GitHub docs, other values mean not-ok
@@ -108,15 +125,15 @@ export async function tryMergeIfGreen(
   if (!pr || pr.state !== 'open') return false;
   if (pr.draft) return false;
 
-  // Combined status (commit statuses)
+  // Combined status (legacy commit statuses)
   const { data: combined } = await context.octokit.repos.getCombinedStatusForRef({
     owner,
     repo,
     ref: pr.head.sha,
   });
 
-  // IMPORTANT: pending if there are no statuses -> treat total_count=0 as OK
-  const allStatusesOk = combined.total_count === 0 || combined.state === 'success';
+  const statusCount = Number(combined.total_count || 0);
+  const allStatusesOk = statusCount === 0 || combined.state === 'success';
 
   // Checks API
   const checks = await context.octokit.checks.listForRef({
@@ -125,9 +142,24 @@ export async function tryMergeIfGreen(
     ref: pr.head.sha,
   });
 
+  const checkRuns = Array.isArray(checks.data.check_runs) ? checks.data.check_runs : [];
+  const checkCount = Number(checks.data.total_count || checkRuns.length || 0);
+
   const allChecksOk =
-    checks.data.total_count === 0 ||
-    checks.data.check_runs.every((c) => OK_CHECK_CONCLUSIONS.has(String(c.conclusion || '')));
+    checkCount === 0 ||
+    checkRuns.every((c) => {
+      const status = String(c.status || '').toLowerCase();
+      const conclusion = String(c.conclusion || '').toLowerCase();
+
+      return (!status || status === 'completed') && OK_CHECK_CONCLUSIONS.has(conclusion);
+    });
+
+  const hasAnyCiSignal = statusCount > 0 || checkCount > 0;
+
+  if (!hasAnyCiSignal) {
+    context.log.info(`PR #${prNumber} not merged yet (no commit statuses or check runs visible yet)`);
+    return false;
+  }
 
   // require at least one APPROVED review
   let approved = true;
@@ -151,7 +183,11 @@ export async function tryMergeIfGreen(
       context.log.info(`PR #${prNumber} merged (all checks green, method=${mergeMethod})`);
       return true;
     } catch (e: unknown) {
-      context.log.warn({ err: e }, `Merge failed for PR #${prNumber}`);
+      if (isExpectedBranchProtectionBlock(e)) {
+        context.log.info(`PR #${prNumber} not merged yet (branch protection not satisfied: ${errorMessage(e)})`);
+      } else {
+        context.log.warn({ err: e }, `Merge failed for PR #${prNumber}`);
+      }
     }
   } else {
     context.log.info(

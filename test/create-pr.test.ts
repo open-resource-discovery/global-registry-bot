@@ -435,7 +435,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     expect(ctx.octokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
-  it('product: creates file + PR, adds parent when allowed, strips defaults, auto-merge enable fails => label + merge', async () => {
+  it('product: creates file + PR, adds parent when allowed, strips defaults, auto-merge enable fails => label + deferred merge', async () => {
     const { createRequestPr, mocks } = await loadSubject();
 
     const ctx = mkContext();
@@ -569,14 +569,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
         labels: ['auto-merge-candidate'],
       });
 
-      // tryMergeIfGreen invoked
-      expect(mocks.tryMergeIfGreen).toHaveBeenCalled();
-      const mig = mocks.tryMergeIfGreen.mock.calls[0][1] as {
-        prNumber: number;
-        mergeMethod?: 'merge' | 'squash' | 'rebase';
-      };
-      expect(mig.mergeMethod).toBe('squash');
-      expect(mig.prNumber).toBe(5);
+      // Merge execution is intentionally deferred to CI webhooks.
+      expect(mocks.tryMergeIfGreen).not.toHaveBeenCalled();
 
       // debug log branch hit (DEBUG_NS=1)
       expect(ctx.log.info).toHaveBeenCalled();
@@ -586,7 +580,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     }
   });
 
-  it('product: parent forbidden by subschema (parent=false) => do NOT inject parent; existing PR reused; auto-merge enable succeeds => no label', async () => {
+  it('product: parent forbidden by subschema (parent=false) => do NOT inject parent; existing PR reused; auto-merge enable succeeds => no label and deferred merge', async () => {
     const { createRequestPr, mocks } = await loadSubject();
 
     const ctx = mkContext();
@@ -673,8 +667,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     // enable succeeded => no labels
     expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
 
-    // merge attempted
-    expect(mocks.tryMergeIfGreen).toHaveBeenCalled();
+    // Auto-merge can still be enabled at PR creation time, but direct REST merge is deferred to CI webhooks.
     expect(mocks.tryEnableAutoMerge).toHaveBeenCalled();
     expect(
       (
@@ -683,6 +676,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
         }
       ).mergeMethod
     ).toBe('MERGE');
+
+    expect(mocks.tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
   it('systemnamespace: builds corrIds (+ cld/stc/ppms), parses correlationIdTypes from YAML, pulls.list errors are ignored => PR gets created, auto-merge enabled', async () => {

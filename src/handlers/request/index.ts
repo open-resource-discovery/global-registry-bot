@@ -16,6 +16,7 @@ import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type Reg
 import { getDocLinksFromConfig } from './constants.js';
 import type { Context, Probot } from 'probot';
 import YAML from 'yaml';
+import { createHash } from 'node:crypto';
 
 const DBG = process.env.DEBUG_NS === '1';
 
@@ -139,6 +140,7 @@ type PullRequestReviewLike = {
   body?: string | null;
   submitted_at?: string | null;
   user?: UserLike | null;
+  commit_id?: string | null;
 };
 
 type RefCheckRunLike = {
@@ -180,6 +182,10 @@ type GitTreeLike = {
 
 type DirectPrApprovalOptions = {
   baseBranch?: string;
+};
+
+type AutomatedApprovalReviewOptions = {
+  skipApprovedLabelStateCleanup?: boolean;
 };
 
 type HeadGreenRunSummary = {
@@ -300,6 +306,14 @@ function singleMachineReadableIssue(field: string, message: string, filePath = '
 }
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
+const MERGE_INFLIGHT = new Map<string, Promise<void>>();
+const AUTO_APPROVED_PR_HEADS = new Set<string>();
+
+const AUTO_APPROVAL_REVIEW_INFLIGHT = new Map<string, Promise<boolean>>();
+const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
+
+const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
+const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 
 function normalizeSchemaFieldAlias(value: unknown): string {
   const raw = toStringTrim(value);
@@ -1572,6 +1586,23 @@ async function fetchIssueLabels(
 const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
 const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
 
+function isAutoMergeEvaluationRecentlyCompleted(key: string): boolean {
+  const until = AUTO_MERGE_EVALUATION_RECENT_UNTIL.get(key);
+
+  if (!until) return false;
+
+  if (until <= Date.now()) {
+    AUTO_MERGE_EVALUATION_RECENT_UNTIL.delete(key);
+    return false;
+  }
+
+  return true;
+}
+
+function markAutoMergeEvaluationRecentlyCompleted(key: string): void {
+  AUTO_MERGE_EVALUATION_RECENT_UNTIL.set(key, Date.now() + AUTO_MERGE_EVALUATION_RECENT_TTL_MS);
+}
+
 function issueScopedKey(params: IssueParams, suffix: string): string {
   return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
 }
@@ -1703,6 +1734,32 @@ async function ensureAssigneesPresent(
   }
 }
 
+function buildReviewHandoverBody(
+  context: BotContext<RequestEvents>,
+  snapshotHash?: string,
+  options: { target?: 'issue' | 'pull_request' } = {}
+): string {
+  const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
+  const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
+  const snapshotMarker = snapshotHash ? `\n\n<!-- nsreq:snapshot:${snapshotHash} -->` : '';
+
+  const target = options.target || 'issue';
+  const instruction =
+    target === 'pull_request'
+      ? 'Once reviewed, please comment `Approved` to approve this PR for merge.'
+      : 'Once reviewed, please comment `Approved` to create an automatic Pull Request.';
+
+  return `### ✅ No issues detected
+
+### ➡️ Routing to an approver for review
+
+---
+
+${instruction}${docsSection}${snapshotMarker}
+
+<!-- nsreq:handover -->`;
+}
+
 async function handoverToCpa(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1710,7 +1767,12 @@ async function handoverToCpa(
   _nsType: string,
   _namespace: string,
   _links: string[] = [],
-  options: { snapshotHash?: string; requestType?: string; extraApprovers?: string[] } = {}
+  options: {
+    snapshotHash?: string;
+    requestType?: string;
+    extraApprovers?: string[];
+    manualApproversOverride?: string[];
+  } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
 
@@ -1727,7 +1789,13 @@ async function handoverToCpa(
     ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
     : approverRouting.approvalUsernames;
 
-  const mergedAssignees = uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
+  const manualApproversOverride = uniqLogins(
+    (options.manualApproversOverride || []).map((value) => toStringTrim(value)).filter(Boolean)
+  );
+
+  const mergedAssignees = manualApproversOverride.length
+    ? manualApproversOverride
+    : uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
 
   await ensureAssigneesOnce(context, params, issue, mergedAssignees);
   await ensureAssigneesPresent(context, params, mergedAssignees);
@@ -1747,17 +1815,7 @@ async function handoverToCpa(
     }
   }
 
-  const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
-  const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
-  const snapshotMarker = options.snapshotHash ? `\n\n<!-- nsreq:snapshot:${options.snapshotHash} -->` : '';
-
-  const handoverMsg = `### ✅ No issues detected
-
-### ➡️ Routing to an approver for review
-
----
-
-Once reviewed, please comment \`Approved\` to create an automatic Pull Request.${docsSection}${snapshotMarker}`;
+  const handoverMsg = buildReviewHandoverBody(context, options.snapshotHash);
 
   await postOnce(context, params, handoverMsg, { minimizeTag: 'nsreq:handover' });
 }
@@ -1960,6 +2018,14 @@ function normalizeApprovalDecision(decision: ApprovalDecision | boolean): Approv
   };
 }
 
+function getUnknownManualApprovers(decision: ApprovalDecision): string[] {
+  const normalized = normalizeApprovalDecision(decision);
+
+  if (normalized.status !== 'unknown') return [];
+
+  return uniqLogins((normalized.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
+}
+
 function isManualApprovalRequiredText(value: unknown): boolean {
   return /\bmanual approval required\b/i.test(toStringTrim(value));
 }
@@ -2067,6 +2133,82 @@ async function applyApprovedRequestState(
   } catch {
     // ignore
   }
+}
+
+function prAsIssueLike(pr: PullRequestLike): IssueLike {
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body,
+    state: pr.state,
+    user: pr.user,
+    labels: [],
+  };
+}
+
+function resolveReviewAssigneesForRequestTypes(
+  context: BotContext<RequestEvents>,
+  reviewTarget: IssueLike,
+  requestTypes: string[]
+): string[] {
+  const eff = resolveEffectiveConstants(context);
+  const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
+
+  const pickFromPoolOnly = (pool: string[]): string[] => {
+    const normalizedPool = uniqLogins((pool || []).map(toStringTrim).filter(Boolean));
+    return normalizedPool.length ? pickAutoAssigneeFromPool(reviewTarget, normalizedPool) : [];
+  };
+
+  // Standalone direct PR with unresolved request type:
+  // assign from workflow approversPool only. Do not assign all workflow approvers.
+  if (!types.length) {
+    return pickFromPoolOnly(eff.approverPoolUsernames);
+  }
+
+  const assignees: string[] = [];
+
+  for (const requestType of types) {
+    const routing = resolveApproverRoutingForRequestType(
+      context,
+      requestType,
+      eff.approverUsernames,
+      eff.approverPoolUsernames
+    );
+
+    // Important:
+    // For standalone direct PR assignment, only approversPool is used.
+    // approvalUsernames remain allowed to approve, but are not all assigned.
+    assignees.push(...pickFromPoolOnly(routing.autoAssigneePoolUsernames));
+  }
+
+  return uniqLogins(assignees);
+}
+
+function resolveAllowedApproversForRequestTypes(context: BotContext<RequestEvents>, requestTypes: string[]): string[] {
+  const eff = resolveEffectiveConstants(context);
+  const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
+
+  if (!types.length) {
+    return resolveApproverRoutingForRequestType(context, '', eff.approverUsernames, eff.approverPoolUsernames)
+      .approvalUsernames;
+  }
+
+  return uniqLogins(
+    types.flatMap(
+      (requestType) =>
+        resolveApproverRoutingForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
+          .approvalUsernames
+    )
+  );
+}
+
+function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: string[]): string {
+  const payload = {
+    headSha: toStringTrim(pr.head?.sha),
+    files: Array.from(new Set((changedFiles || []).map(normalizeRepoPath).filter(Boolean))).sort(),
+  };
+
+  return createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
 async function createAutomatedApprovalReview(
@@ -2231,48 +2373,121 @@ async function resolvePullRequestRequestAuthorId(
 async function addApprovedLabelToPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  prNumber: number
+  prNumber: number,
+  options: { skipStateCleanup?: boolean } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
   const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
   if (!approvedLabel) return;
 
+  const params: IssueParams = {
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    issue_number: prNumber,
+  };
+
   try {
     await context.octokit.issues.addLabels({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      issue_number: prNumber,
+      ...params,
       labels: [approvedLabel],
     });
   } catch {
-    // ignore
-  }
-}
-
-async function ensureAutomatedApprovalReviewForCurrentHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision
-): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
-    return true;
+    return;
   }
 
-  const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-  if (!approved) return false;
+  // Standalone cross-repo direct PRs must stay PR-only here.
+  // Reading the PR as an issue would break the no-linked-issue guarantee.
+  if (options.skipStateCleanup) return;
 
-  await addApprovedLabelToPr(context, repoInfo, pr.number);
-  return true;
+  await removeReviewPendingLabelsAfterApproval(context, params, eff);
+
+  try {
+    const labelsAfter = await fetchIssueLabels(context, params);
+
+    if (labelsMatching(labelsAfter, approvedLabel).length) {
+      await removeProgressStatusLabels(context, params, labelsAfter);
+      await removeRejectedStatusLabel(context, params, labelsAfter);
+    }
+  } catch {
+    // best effort cleanup only
+  }
 }
 
 const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
 
 function buildAutoApprovalReviewMarker(headSha: string): string {
   return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
+}
+
+async function runEnsureAutomatedApprovalReviewForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  headSha: string,
+  options: AutomatedApprovalReviewOptions = {}
+): Promise<boolean> {
+  if (hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
+    return true;
+  }
+
+  if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
+    markAutoApprovedPrHead(repoInfo, pr.number, headSha);
+    return true;
+  }
+
+  const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
+  if (!approved) return false;
+
+  markAutoApprovedPrHead(repoInfo, pr.number, headSha);
+
+  await addApprovedLabelToPr(context, repoInfo, pr.number, {
+    skipStateCleanup: options.skipApprovedLabelStateCleanup === true,
+  });
+
+  return true;
+}
+
+async function ensureAutomatedApprovalReviewForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: AutomatedApprovalReviewOptions = {}
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  const key = autoApprovedPrHeadKey(repoInfo, pr.number, headSha);
+
+  const existing = AUTO_APPROVAL_REVIEW_INFLIGHT.get(key);
+  if (existing) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+      },
+      'automated PR approval review deduped: already in flight'
+    );
+
+    return await existing;
+  }
+
+  const pending = runEnsureAutomatedApprovalReviewForCurrentHead(
+    context,
+    repoInfo,
+    pr,
+    decision,
+    headSha,
+    options
+  ).finally(() => {
+    AUTO_APPROVAL_REVIEW_INFLIGHT.delete(key);
+  });
+
+  AUTO_APPROVAL_REVIEW_INFLIGHT.set(key, pending);
+  return await pending;
 }
 
 async function listPullRequestReviews(
@@ -2370,7 +2585,8 @@ async function hasApprovedLabelOnPr(
 async function isPullRequestApprovedForBranchMaintenance(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
-  pr: PullRequestLike
+  pr: PullRequestLike,
+  options: { allowLabelFallback?: boolean } = {}
 ): Promise<boolean> {
   let reviews: PullRequestReviewLike[];
   try {
@@ -2405,7 +2621,11 @@ async function isPullRequestApprovedForBranchMaintenance(
     return true;
   }
 
-  if (await hasApprovedLabelOnPr(context, repoInfo, pr.number)) {
+  if (headSha && AUTO_APPROVED_PR_HEADS.has(autoApprovedPrHeadKey(repoInfo, pr.number, headSha))) {
+    return true;
+  }
+
+  if (options.allowLabelFallback !== false && (await hasApprovedLabelOnPr(context, repoInfo, pr.number))) {
     return true;
   }
 
@@ -2616,10 +2836,22 @@ async function evaluateHeadGreenForApprovalReevaluation(
   }
 }
 
-const MERGE_INFLIGHT = new Map<string, Promise<void>>();
-
 function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
+}
+
+function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}:${toStringTrim(headSha)}`.toLowerCase();
+}
+
+function markAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): void {
+  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
+  if (key) AUTO_APPROVED_PR_HEADS.add(key);
+}
+
+function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): boolean {
+  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
+  return Boolean(key && AUTO_APPROVED_PR_HEADS.has(key));
 }
 
 class CooldownUntilMap extends Map<string, number> {
@@ -3151,7 +3383,15 @@ async function runMergeApprovedPrOrUpdateBranch(
     return;
   }
 
-  const hasMergeApproval = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr);
+  const hasCurrentHeadAutoApproval = currentHeadSha
+    ? hasAutoApprovedPrHead(repoInfo, currentPr.number, currentHeadSha)
+    : false;
+
+  const hasMergeApproval =
+    hasCurrentHeadAutoApproval ||
+    (await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr, {
+      allowLabelFallback: !isCrossRepositoryPullRequest(currentPr, repoInfo),
+    }));
 
   if (!hasMergeApproval) {
     log(
@@ -3180,9 +3420,28 @@ async function runMergeApprovedPrOrUpdateBranch(
           headSha: currentHeadSha,
           greenReason: greenResult.reason,
           blockingRuns: greenResult.blockingRuns,
+          latestRuns: greenResult.latestRuns.slice(0, 30),
           reason,
         },
         'pull-request merge skipped: current head checks are not green'
+      );
+
+      return;
+    }
+
+    const pendingRuns = greenResult.latestRuns.filter((run) => toStringTrim(run.status).toLowerCase() !== 'completed');
+
+    if (pendingRuns.length) {
+      log(
+        context,
+        'info',
+        {
+          prNumber: currentPr.number,
+          headSha: currentHeadSha,
+          pendingRuns,
+          reason,
+        },
+        'pull-request merge skipped: current head checks are still pending'
       );
 
       return;
@@ -5376,6 +5635,235 @@ async function resolveDirectPrRequestTypes(
   return Array.from(new Set(requestTypes));
 }
 
+function isApprovalReviewForCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
+  const normalizedHeadSha = toStringTrim(headSha);
+  if (!normalizedHeadSha) return false;
+
+  const state = toStringTrim(review?.state).toUpperCase();
+  if (state !== 'APPROVED') return false;
+
+  const commitId = toStringTrim(review?.commit_id);
+  if (commitId && commitId === normalizedHeadSha) return true;
+
+  const marker = buildAutoApprovalReviewMarker(normalizedHeadSha);
+  return Boolean(marker && toStringTrim(review?.body).includes(marker));
+}
+
+async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: DirectPrApprovalOptions = {}
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  let reviews: PullRequestReviewLike[] = [];
+
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    return false;
+  }
+
+  const latestStates = getLatestActionableReviewStates(reviews);
+  if (new Set(latestStates.values()).has('CHANGES_REQUESTED')) {
+    return false;
+  }
+
+  // Bot-created approval review with the current-head marker is trusted,
+  // because the bot already performed authorization when creating it.
+  if (
+    reviews.some(
+      (review) =>
+        isApprovalReviewForCurrentHead(review, headSha) &&
+        toStringTrim(review.body).includes(buildAutoApprovalReviewMarker(headSha))
+    )
+  ) {
+    return true;
+  }
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const hookApprovers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
+
+  const allowedApprovers = new Set(
+    uniqLogins([...(configuredApprovers || []), ...hookApprovers]).map((login) => normalizeLogin(login).toLowerCase())
+  );
+
+  if (!allowedApprovers.size) return false;
+
+  return reviews.some((review) => {
+    if (!isApprovalReviewForCurrentHead(review, headSha)) return false;
+
+    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
+    return Boolean(reviewer && allowedApprovers.has(reviewer));
+  });
+}
+
+function reviewTargetsCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
+  const normalizedHeadSha = toStringTrim(headSha);
+  if (!normalizedHeadSha) return false;
+
+  const reviewCommitId = toStringTrim(review?.commit_id);
+  if (reviewCommitId && reviewCommitId === normalizedHeadSha) return true;
+
+  const body = toStringTrim(review?.body);
+  if (!body) return false;
+
+  return body.includes(buildAutoApprovalReviewMarker(normalizedHeadSha));
+}
+
+function extractApprovedByLoginFromReviewBody(body: unknown): string {
+  const raw = toStringTrim(body);
+  if (!raw) return '';
+
+  const match = /\bApproved by\s+@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\b/i.exec(raw);
+  return normalizeLogin(match?.[1]);
+}
+
+function resolveEffectiveReviewApproverLogin(review: PullRequestReviewLike): string {
+  // Manual fallback approvals created by the bot have:
+  // "Approved by @realApprover"
+  // in the review body, while the GitHub review author is the bot.
+  const approvedByFromBody = extractApprovedByLoginFromReviewBody(review?.body);
+  if (approvedByFromBody) return approvedByFromBody;
+
+  return normalizeLogin(review?.user?.login);
+}
+
+async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: DirectPrApprovalOptions = {}
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const hookManualApprovers = uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean));
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
+
+  let requesterLogin = normalizeLogin(pr.user?.login);
+
+  try {
+    requesterLogin = (await resolvePullRequestRequestAuthorId(context, repoInfo, pr)) || requesterLogin;
+  } catch {
+    // keep PR author fallback
+  }
+
+  let reviews: PullRequestReviewLike[] = [];
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const currentHeadReviews = reviews
+    .filter((review) => reviewTargetsCurrentHead(review, headSha))
+    .filter((review) => ACTIONABLE_REVIEW_STATES.has(toStringTrim(review?.state).toUpperCase()));
+
+  if (!currentHeadReviews.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+        allowedApprovers,
+      },
+      'direct-pr:current-head-manual-approval:not-found'
+    );
+
+    return false;
+  }
+
+  const latestByEffectiveApprover = new Map<string, PullRequestReviewLike>();
+
+  for (const review of sortPullRequestReviewsChronologically(currentHeadReviews)) {
+    const approver = resolveEffectiveReviewApproverLogin(review).toLowerCase();
+    if (!approver) continue;
+
+    latestByEffectiveApprover.set(approver, review);
+  }
+
+  const latestCurrentHeadReviews = Array.from(latestByEffectiveApprover.values());
+
+  const hasBlockingChangesRequested = latestCurrentHeadReviews.some(
+    (review) => toStringTrim(review?.state).toUpperCase() === 'CHANGES_REQUESTED'
+  );
+
+  if (hasBlockingChangesRequested) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+      },
+      'direct-pr:current-head-manual-approval:blocking-changes-requested'
+    );
+
+    return false;
+  }
+
+  const approvingReview = latestCurrentHeadReviews.find((review) => {
+    const state = toStringTrim(review?.state).toUpperCase();
+    if (state !== 'APPROVED') return false;
+
+    const approver = resolveEffectiveReviewApproverLogin(review);
+    return isAuthorizedApprover(approver, requesterLogin || pr.user?.login, allowedApprovers);
+  });
+
+  if (!approvingReview) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+        requesterLogin,
+        allowedApprovers,
+        currentHeadReviewApprovers: latestCurrentHeadReviews.map((review) => ({
+          state: toStringTrim(review?.state).toUpperCase(),
+          user: normalizeLogin(review?.user?.login),
+          approvedBy: extractApprovedByLoginFromReviewBody(review?.body),
+          commitId: toStringTrim(review?.commit_id),
+        })),
+      },
+      'direct-pr:current-head-manual-approval:no-authorized-approval'
+    );
+
+    return false;
+  }
+
+  const approver = resolveEffectiveReviewApproverLogin(approvingReview);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha,
+      requestTypes,
+      requesterLogin,
+      approver,
+      allowedApprovers,
+    },
+    'direct-pr:current-head-manual-approval:accepted'
+  );
+
+  return true;
+}
+
 async function handoverStandaloneDirectPrToReview(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5385,26 +5873,59 @@ async function handoverStandaloneDirectPrToReview(
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
   const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
+  const prIssue = prAsIssueLike(pr);
 
+  await setStateLabel(context, params, prIssue, 'review');
+
+  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
 
-  const configuredApprovers = uniqLogins(
-    requestTypes.flatMap((requestType) =>
-      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
-    )
-  );
+  const manualApproversOverride = getUnknownManualApprovers(decision);
 
-  const hookApprovers = uniqLogins(decision.approvers || []);
-  const assignees = uniqLogins([...hookApprovers, ...configuredApprovers]);
+  const assignees = manualApproversOverride.length
+    ? manualApproversOverride
+    : resolveReviewAssigneesForRequestTypes(context, prIssue, requestTypes);
 
   if (assignees.length) {
+    await ensureAssigneesOnce(context, params, prIssue, assignees);
     await ensureAssigneesPresent(context, params, assignees);
   }
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
-
   await ensureLabelsPresentOnce(context, params, labelsToAdd);
+
+  if (eff.labelOnApproved) {
+    try {
+      await context.octokit.issues.removeLabel({
+        ...params,
+        name: eff.labelOnApproved,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  const snapshotHash = calcStandaloneDirectPrSnapshotHash(pr, changedFiles);
+
+  await postOnce(context, params, buildReviewHandoverBody(context, snapshotHash, { target: 'pull_request' }), {
+    minimizeTag: 'nsreq:handover',
+  });
+
   await postApprovalUnknownOnce(context, params, decision);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      requestTypes,
+      changedFiles,
+      assignees,
+      snapshotHash,
+      decisionStatus: toStringTrim(decision.status) || 'none',
+    },
+    'direct-pr:handover-to-review'
+  );
 }
 
 async function handleDirectPrApprovalComment(
@@ -5414,47 +5935,63 @@ async function handleDirectPrApprovalComment(
   commenter: string
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
+  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
+  const prIssue = prAsIssueLike(pr);
+
+  const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, prIssue, eff);
+  if (!reviewOk) {
+    await postOnce(
+      context,
+      params,
+      'Approval ignored: direct PR is not in review state. Please wait until validation has routed it to review.',
+      { minimizeTag: 'nsreq:approval-info' }
+    );
+    return;
+  }
 
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
     baseBranch: toStringTrim(pr.base?.ref),
   });
 
-  const configuredApprovers = uniqLogins(
-    requestTypes.flatMap((requestType) =>
-      resolveApproversForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
-    )
-  );
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
 
   const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
     baseBranch: toStringTrim(pr.base?.ref),
   });
 
   if (approvalDecision.status === 'rejected') {
-    await postOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalRejectedBody(approvalDecision),
-      { minimizeTag: 'nsreq:on-approval:rejected' }
-    );
+    await postOnce(context, params, buildApprovalRejectedBody(approvalDecision), {
+      minimizeTag: 'nsreq:on-approval:rejected',
+    });
     return;
   }
 
   const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+
   const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
+
   if (!okApprover) {
     await postOnce(
       context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+      params,
       `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
       { minimizeTag: 'nsreq:approval-info' }
     );
     return;
   }
 
-  const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, {
-    status: 'approved',
-    comment: `Approved by @${commenter}`,
-  });
+  const approved = await ensureAutomatedApprovalReviewForCurrentHead(
+    context,
+    repoInfo,
+    pr,
+    {
+      status: 'approved',
+      comment: `Approved by @${commenter}`,
+    },
+    {
+      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
+    }
+  );
 
   if (!approved) return;
 
@@ -5469,8 +6006,30 @@ async function maybeHandleStandaloneDirectPrApproval(
 ): Promise<ApprovalHandlingResult> {
   const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
 
+  if (
+    decision.status !== 'approved' &&
+    decision.status !== 'rejected' &&
+    (await hasAllowedStandaloneDirectPrApprovalForCurrentHead(context, repoInfo, pr, decision, options))
+  ) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        decisionStatus: toStringTrim(decision.status) || 'none',
+      },
+      'direct-pr:standalone-current-head-approval-present'
+    );
+
+    return 'approved';
+  }
+
   if (decision.status === 'approved') {
-    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
+    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision, {
+      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
+    });
+
     if (!approved) return 'continue';
 
     return 'approved';
@@ -5499,6 +6058,22 @@ async function maybeHandleStandaloneDirectPrApproval(
   }
 
   if (decision.status === 'unknown') {
+    const hasCurrentHeadManualApproval = await hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
+      context,
+      repoInfo,
+      pr,
+      decision,
+      options
+    );
+
+    if (hasCurrentHeadManualApproval) {
+      await addApprovedLabelToPr(context, repoInfo, pr.number, {
+        skipStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
+      });
+
+      return 'approved';
+    }
+
     await handoverStandaloneDirectPrToReview(context, repoInfo, pr, decision, options);
     return 'continue';
   }
@@ -6185,6 +6760,37 @@ async function processIssueEvent(
 
   if (gated) return;
 
+  const contactGated = await maybeRequireSystemContactOwnerApproval(
+    context,
+    params,
+    issue,
+    parsedFormData,
+    effectiveRequestType,
+    validatedNamespace
+  );
+
+  if (contactGated) return;
+
+  const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, validatedNamespace);
+  if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
+    const approvalOutcome = await maybeHandleApprovalDecision(
+      context,
+      params,
+      issue,
+      result.template || template,
+      parsedFormData,
+      effectiveRequestType,
+      validatedNamespace
+    );
+
+    if (approvalOutcome !== 'continue') return;
+
+    await finalizeApprovedRequest(context, params, issue, result.template || template, parsedFormData, {
+      approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
+    });
+    return;
+  }
+
   const approvalOutcome = await maybeHandleApprovalDecision(
     context,
     params,
@@ -6197,7 +6803,7 @@ async function processIssueEvent(
 
   if (approvalOutcome !== 'continue') return;
 
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
     context,
     params,
     issue,
@@ -6206,10 +6812,22 @@ async function processIssueEvent(
     effectiveRequestType
   );
 
+  const hookApprovers = manualApproversOverride.length
+    ? []
+    : await resolveAdditionalIssueApproversFromApprovalHook(
+        context,
+        params,
+        issue,
+        result.template || template,
+        parsedFormData,
+        effectiveRequestType
+      );
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
     extraApprovers: hookApprovers,
+    manualApproversOverride,
   });
 }
 
@@ -6243,6 +6861,41 @@ async function resolveAdditionalIssueApproversFromApprovalHook(
     );
 
     return uniqLogins((decision.approvers || []).filter(Boolean));
+  } catch {
+    return [];
+  }
+}
+
+async function resolveManualReviewApproverOverrideFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType?: string
+): Promise<string[]> {
+  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
+  const resourceName = extractResourceNameFromForm(parsedFormData, template);
+
+  if (!effectiveRequestType) return [];
+
+  try {
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType: effectiveRequestType,
+          namespace: resourceName,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+          requestAuthorId: normalizeLogin(issue.user?.login),
+        }
+      )
+    );
+
+    return getUnknownManualApprovers(decision);
   } catch {
     return [];
   }
@@ -6442,6 +7095,37 @@ async function handleAuthorUpdateComment(
 
       if (gated) return;
 
+      const contactGated = await maybeRequireSystemContactOwnerApproval(
+        context,
+        params,
+        issue,
+        parsedAfterUpdate,
+        effectiveRequestType,
+        namespace
+      );
+
+      if (contactGated) return;
+
+      const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, namespace);
+      if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
+        const approvalOutcome = await maybeHandleApprovalDecision(
+          context,
+          params,
+          issue,
+          tpl,
+          parsedAfterUpdate,
+          effectiveRequestType,
+          namespace
+        );
+
+        if (approvalOutcome !== 'continue') return;
+
+        await finalizeApprovedRequest(context, params, issue, tpl, parsedAfterUpdate, {
+          approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
+        });
+        return;
+      }
+
       const approvalOutcome = await maybeHandleApprovalDecision(
         context,
         params,
@@ -6454,7 +7138,7 @@ async function handleAuthorUpdateComment(
 
       if (approvalOutcome !== 'continue') return;
 
-      const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+      const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
         context,
         params,
         issue,
@@ -6463,10 +7147,22 @@ async function handleAuthorUpdateComment(
         effectiveRequestType
       );
 
+      const hookApprovers = manualApproversOverride.length
+        ? []
+        : await resolveAdditionalIssueApproversFromApprovalHook(
+            context,
+            params,
+            issue,
+            tpl,
+            parsedAfterUpdate,
+            effectiveRequestType
+          );
+
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
         requestType: effectiveRequestType,
         extraApprovers: hookApprovers,
+        manualApproversOverride,
       });
       return;
     }
@@ -6496,6 +7192,31 @@ async function handleAuthorUpdateComment(
   }
 }
 
+function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestEvents>): string {
+  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
+  const vendorEntry = isPlainObject(reqs['vendor']) ? reqs['vendor'] : null;
+  const vendorRoot = normalizeRepoPath(vendorEntry ? vendorEntry['folderName'] : '').replace(/\/+$/, '');
+  return vendorRoot || 'data/vendors';
+}
+
+async function repoYamlExists(context: BotContext<RequestEvents>, repo: RepoInfo, basePath: string): Promise<boolean> {
+  for (const ext of ['yaml', 'yml']) {
+    try {
+      await context.octokit.repos.getContent({
+        owner: repo.owner,
+        repo: repo.repo,
+        path: `${basePath}.${ext}`,
+      });
+      return true;
+    } catch (e: unknown) {
+      if (getHttpStatus(e) !== 404) throw e;
+    }
+  }
+
+  return false;
+}
+
 async function checkParentChainExistsInFlatStructure(
   context: BotContext<RequestEvents>,
   { owner, repo }: RepoInfo,
@@ -6504,34 +7225,34 @@ async function checkParentChainExistsInFlatStructure(
   explicitResourceName?: string
 ): Promise<string | null> {
   const rootRaw = toStringTrim(template?._meta?.root);
-  const STRUCT_ROOT = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!STRUCT_ROOT) return null;
+  const structRoot = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!structRoot) return null;
 
   const rt = toStringTrim(template?._meta?.requestType).toLowerCase();
   const isNamespaceLike = rt.includes('namespace') || rt === 'subcontext' || rt === 'system' || rt === 'authority';
-
   if (!isNamespaceLike) return null;
 
   const resourceName = toStringTrim(explicitResourceName) || extractResourceNameFromForm(formData, template);
   const parts = toStringTrim(resourceName).split('.').filter(Boolean);
-
-  // Needs at least 2 segments like "sap.cds"
   if (parts.length < 2) return null;
 
-  // Check parents from closest to last top-level:
-  // sap.cds.foo.bar.test -> sap.cds.foo.bar -> sap.cds.foo -> sap.cds
-  for (let i = parts.length - 1; i >= 2; i -= 1) {
-    const parentName = parts.slice(0, i).join('.');
-    const parentFilePath = `${STRUCT_ROOT}/${parentName}.yaml`;
+  const repoInfo: RepoInfo = { owner, repo };
+  const vendorRoot = resolveVendorRegistryRootForRequestHandler(context);
 
-    try {
-      await context.octokit.repos.getContent({ owner, repo, path: parentFilePath });
-    } catch (e: unknown) {
-      if (getHttpStatus(e) === 404) {
-        return `Parent resource '${parentName}' is not present. Please register the parent first.`;
-      }
-      throw e;
-    }
+  for (let i = parts.length - 1; i >= 1; i -= 1) {
+    const parentName = parts.slice(0, i).join('.');
+    if (!parentName) continue;
+
+    const exists =
+      i === 1
+        ? await repoYamlExists(context, repoInfo, `${vendorRoot}/${parentName}`)
+        : await repoYamlExists(context, repoInfo, `${structRoot}/${parentName}`);
+
+    if (exists) continue;
+
+    return i === 1
+      ? `Vendor '${parentName}' is not present. Please register the vendor first.`
+      : `Parent resource '${parentName}' is not present. Please register the parent first.`;
   }
 
   return null;
@@ -6606,6 +7327,322 @@ type ParentApprovalMeta = {
   approvedBy?: string;
   approvedAt?: string;
 };
+
+type ContactApprovalMeta = {
+  v: 1;
+  target: string;
+  owners: string[];
+  approvedBy?: string;
+  approvedAt?: string;
+};
+
+const CONTACT_APPROVAL_READ_RE = /<!--\s*nsreq:contact-approval\s*=\s*({[\s\S]*?})\s*-->/i;
+const CONTACT_APPROVAL_STRIP_RE = /<!--\s*nsreq:contact-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
+
+function sameNormalizedLoginSet(a: string[], b: string[]): boolean {
+  const normalizedA = uniqLogins(a)
+    .map((login) => normalizeLogin(login))
+    .filter((login): login is string => !!login)
+    .sort((left, right) => left.localeCompare(right));
+  const normalizedB = uniqLogins(b)
+    .map((login) => normalizeLogin(login))
+    .filter((login): login is string => !!login)
+    .sort((left, right) => left.localeCompare(right));
+
+  if (normalizedA.length !== normalizedB.length) return false;
+  return normalizedA.every((login, index) => login === normalizedB[index]);
+}
+
+function isSubContextRequestType(requestType: unknown): boolean {
+  const rt = normalizeTypeToken(requestType);
+  return rt === 'subcontextnamespace' || rt === 'subcontext';
+}
+
+function getApprovedParentOwnerLogin(issueBody: unknown, target: string): string {
+  const meta = readParentApprovalMeta(issueBody);
+  if (!meta) return '';
+
+  const approvedBy = normalizeLogin(meta.approvedBy);
+  if (!approvedBy) return '';
+
+  return normalizeKey(meta.target) === normalizeKey(target) ? approvedBy : '';
+}
+
+function stripContactApprovalFromBody(issueBody: unknown): string {
+  const body = String(issueBody || '');
+  return body.replace(CONTACT_APPROVAL_STRIP_RE, '').trimEnd();
+}
+
+function readContactApprovalMeta(issueBody: unknown): ContactApprovalMeta | null {
+  const body = String(issueBody || '');
+  const m = body.match(CONTACT_APPROVAL_READ_RE);
+  if (!m) return null;
+
+  try {
+    const raw = JSON.parse(String(m[1] || ''));
+    if (!isPlainObject(raw)) return null;
+    if (raw['v'] !== 1) return null;
+
+    const target = toStringTrim(raw['target']);
+    const ownersRaw = raw['owners'];
+    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
+    const approvedBy = normalizeLogin(raw['approvedBy']);
+    const approvedAt = toStringTrim(raw['approvedAt']);
+
+    if (!target || !owners.length) return null;
+
+    const out: ContactApprovalMeta = { v: 1, target, owners };
+    if (approvedBy) out.approvedBy = approvedBy;
+    if (approvedAt) out.approvedAt = approvedAt;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureContactApprovalMarker(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  meta: ContactApprovalMeta | null
+): Promise<boolean> {
+  const current = readContactApprovalMeta(issue.body);
+  const cleaned = stripContactApprovalFromBody(issue.body);
+
+  if (!meta) {
+    if (!current) return false;
+
+    try {
+      const nextBody = `${cleaned}\n`;
+      await context.octokit.issues.update({ ...params, body: nextBody });
+      issue.body = nextBody;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const next: ContactApprovalMeta = {
+    v: 1,
+    target: toStringTrim(meta.target),
+    owners: uniqLogins(meta.owners || []),
+  };
+
+  const approvedBy = normalizeLogin(meta.approvedBy);
+  const approvedAt = toStringTrim(meta.approvedAt);
+
+  if (approvedBy) next.approvedBy = approvedBy;
+  if (approvedAt) next.approvedAt = approvedAt;
+
+  if (!next.target || !next.owners.length) return false;
+
+  const same =
+    current &&
+    normalizeKey(current.target) === normalizeKey(next.target) &&
+    sameNormalizedLoginSet(current.owners, next.owners) &&
+    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
+    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
+
+  if (same) return false;
+
+  const metaStr = JSON.stringify(next);
+  const nextBody = `${cleaned}\n\n<!-- nsreq:contact-approval = ${metaStr} -->\n`;
+
+  try {
+    await context.octokit.issues.update({ ...params, body: nextBody });
+    issue.body = nextBody;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRequestContactOwnerLogins(
+  context: BotContext<RequestEvents>,
+  formData: FormData
+): Promise<string[]> {
+  const contacts = formData['contact'] ?? formData['contacts'] ?? '';
+  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
+
+  const resolved: string[] = [...directLogins];
+  for (const email of emails.slice(0, 10)) {
+    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
+  }
+
+  return uniqLogins(resolved);
+}
+
+async function maybeRequireSystemContactOwnerApproval(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  parsedFormData: FormData,
+  requestType: string,
+  validatedNamespace: string
+): Promise<boolean> {
+  if (normalizeTypeToken(requestType) !== 'systemnamespace') {
+    await ensureContactApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const target = toStringTrim(validatedNamespace);
+  const owners = await resolveRequestContactOwnerLogins(context, parsedFormData);
+  const requester = normalizeLogin(issue.user?.login);
+
+  if (!target || !owners.length) {
+    await ensureContactApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  if (requester && owners.some((owner) => owner.toLowerCase() === requester.toLowerCase())) {
+    await ensureContactApprovalMarker(context, params, issue, null);
+    return false;
+  }
+
+  const current = readContactApprovalMeta(issue.body);
+  const alreadyApproved =
+    current &&
+    normalizeKey(current.target) === normalizeKey(target) &&
+    sameNormalizedLoginSet(current.owners, owners) &&
+    Boolean(normalizeLogin(current.approvedBy));
+
+  if (alreadyApproved) return false;
+
+  await ensureContactApprovalMarker(context, params, issue, { v: 1, target, owners });
+
+  const mentions = owners.map((owner) => `@${owner}`).join(' ');
+  const tag = `nsreq:contact-approval:${normalizeKey(target)}`;
+
+  await postOnce(
+    context,
+    params,
+    `### 🔒 Contact owner approval required
+
+Requester @${requester || 'unknown'} is not listed in the contact owners for \`${target}\`.
+
+${mentions}
+
+Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
+    { minimizeTag: tag }
+  );
+
+  await setStateLabel(context, params, issue, 'author');
+  return true;
+}
+
+async function handleSystemContactOwnerApprovalIfNeeded(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  commenter: string
+): Promise<boolean> {
+  const meta = readContactApprovalMeta(issue.body);
+  if (!meta) return false;
+  if (normalizeLogin(meta.approvedBy)) return false;
+
+  const commenterLogin = normalizeLogin(commenter);
+  const owners = uniqLogins(meta.owners || []);
+  const isOwner = owners.some((owner) => owner.toLowerCase() === commenterLogin.toLowerCase());
+  const tagBase = `nsreq:contact-approval:${normalizeKey(meta.target)}`;
+
+  if (!isOwner) {
+    const mentions = owners.map((owner) => `@${owner}`).join(' ');
+    await postOnce(
+      context,
+      params,
+      `Approval ignored: this request requires contact owner approval for \`${meta.target}\` first.
+
+${mentions}`,
+      { minimizeTag: `${tagBase}:pending` }
+    );
+    return true;
+  }
+
+  const reval = await validateRequestIssue(context, params, issue, {
+    template,
+    formData: parsedFormData,
+  });
+
+  if (reval.errors?.length) {
+    const listFallback = (reval.errors || []).map((error) => `- ${error}`).join('\n');
+    const message =
+      reval.errorsFormattedSingle?.trim() ||
+      reval.errorsFormatted?.trim() ||
+      listFallback ||
+      'Unknown validation error.';
+
+    await postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(
+        message,
+        normalizeMachineReadableIssues(
+          (reval.validationIssues || []).map((validationIssue) => ({
+            field: toStringTrim(validationIssue.path) || 'details',
+            message: toStringTrim(validationIssue.message),
+          }))
+        )
+      ),
+      { minimizeTag: 'nsreq:validation' }
+    );
+    await setStateLabel(context, params, issue, 'author');
+    return true;
+  }
+
+  const tpl = reval.template || template;
+  const bodyStr = readIssueBodyForProcessing(issue.body);
+  const parsedNow = parseForm(bodyStr, tpl);
+  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
+  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
+
+  await ensureContactApprovalMarker(context, params, issue, {
+    v: 1,
+    target: meta.target,
+    owners,
+    approvedBy: commenterLogin,
+    approvedAt: new Date().toISOString(),
+  });
+
+  const approvalOutcome = await maybeHandleApprovalDecision(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt,
+    reval.namespace
+  );
+
+  if (approvalOutcome !== 'continue') return true;
+
+  await postOnce(context, params, `Contact owner approved by @${commenterLogin}. Continuing with standard review.`, {
+    minimizeTag: `${tagBase}:approved`,
+  });
+
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt
+  );
+
+  const hookApprovers = manualApproversOverride.length
+    ? []
+    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
+
+  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
+    snapshotHash,
+    requestType: effRt,
+    extraApprovers: hookApprovers,
+    manualApproversOverride,
+  });
+
+  return true;
+}
 
 function stripParentApprovalFromBody(issueBody: unknown): string {
   const body = String(issueBody || '');
@@ -6862,11 +7899,18 @@ ${mentions}`,
 
   if (approvalOutcome !== 'continue') return true;
 
+  if (isSubContextRequestType(effRt)) {
+    await finalizeApprovedRequest(context, params, issue, tpl, parsedNow, {
+      approvalPrefix: `Approved by parent namespace owner @${commenterLogin}`,
+    });
+    return true;
+  }
+
   await postOnce(context, params, `Parent namespace approved by @${commenterLogin}. Continuing with standard review.`, {
     minimizeTag: `${tagBase}:approved`,
   });
 
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
     context,
     params,
     issue,
@@ -6875,10 +7919,15 @@ ${mentions}`,
     effRt
   );
 
+  const hookApprovers = manualApproversOverride.length
+    ? []
+    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
+
   await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
     snapshotHash,
     requestType: effRt,
     extraApprovers: hookApprovers,
+    manualApproversOverride,
   });
 
   return true;
@@ -6951,7 +8000,7 @@ function stripRoutingLockFromBody(issueBody: unknown): string {
 }
 
 function readIssueBodyForProcessing(issueBody: unknown): string {
-  return toStringTrim(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody)));
+  return toStringTrim(stripContactApprovalFromBody(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody))));
 }
 
 function buildCompatibleRequestSnapshotHashes(
@@ -7731,6 +8780,16 @@ export default function requestHandler(app: Probot): void {
         );
         if (handled) return;
 
+        const contactHandled = await handleSystemContactOwnerApprovalIfNeeded(
+          context,
+          params,
+          issue,
+          template,
+          parsedFormData,
+          commenter
+        );
+        if (contactHandled) return;
+
         await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
         return;
       }
@@ -7743,26 +8802,12 @@ export default function requestHandler(app: Probot): void {
     }
   );
 
-  const tryAutoMerge = async (
+  const runAutoMergeEvaluation = async (
     context: BotContext<RequestEvents>,
     repoInfo: RepoInfo,
-    headSha: string
+    normalizedHeadSha: string
   ): Promise<void> => {
     await getStaticConfig(context);
-
-    const normalizedHeadSha = toStringTrim(headSha);
-    if (!normalizedHeadSha) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-        },
-        'auto-merge:skip-missing-head-sha'
-      );
-      return;
-    }
 
     const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
 
@@ -7850,6 +8895,68 @@ export default function requestHandler(app: Probot): void {
         }
       }
     }
+  };
+
+  const tryAutoMerge = async (
+    context: BotContext<RequestEvents>,
+    repoInfo: RepoInfo,
+    headSha: string
+  ): Promise<void> => {
+    const normalizedHeadSha = toStringTrim(headSha);
+    if (!normalizedHeadSha) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+        },
+        'auto-merge:skip-missing-head-sha'
+      );
+      return;
+    }
+
+    const key = `${repoInfo.owner}/${repoInfo.repo}:${normalizedHeadSha}:auto-merge-evaluation`.toLowerCase();
+
+    const existing = AUTO_MERGE_EVALUATION_INFLIGHT.get(key);
+    if (existing) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          headSha: normalizedHeadSha,
+        },
+        'auto-merge:evaluation deduped: already in flight'
+      );
+
+      await existing;
+      return;
+    }
+
+    if (isAutoMergeEvaluationRecentlyCompleted(key)) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          headSha: normalizedHeadSha,
+        },
+        'auto-merge:evaluation skipped: recently completed'
+      );
+
+      return;
+    }
+
+    const pending = runAutoMergeEvaluation(context, repoInfo, normalizedHeadSha).finally(() => {
+      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
+      markAutoMergeEvaluationRecentlyCompleted(key);
+    });
+
+    AUTO_MERGE_EVALUATION_INFLIGHT.set(key, pending);
+    await pending;
   };
 
   const maybeHandleDefaultBranchCheckSuiteSuccess = async (

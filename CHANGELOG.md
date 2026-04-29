@@ -7,6 +7,33 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## Enhance approval flow with subcontext direct PR, system contact gate and full parent chain validation
+
+### Changed
+
+- Added contact-owner approval gate for `systemNamespace` requests.
+- Added parent-owner approval shortcut for `subContextNamespace` requests.
+  - Parent-owner approval can now directly create the PR and skip redundant global approval.
+- Added full parent-chain validation down to the vendor/root level.
+- Added `contact-approval` marker flow, similar to existing `parent-approval`.
+- Improved hidden marker cleanup so form parsing and snapshot hashes stay stable.
+- Hardened standalone direct PR approval behavior:
+  - green CI alone no longer causes merge
+  - unknown/no-match `onApproval` goes to manual review
+  - manual `Approved` comment from allowed approver creates real PR review approval
+- Reduced reviewer noise:
+  - assignments now use `approversPool`
+  - request-type-specific pool wins over global pool
+  - only one deterministic pool assignee is selected
+
+### Impact
+
+- Safer namespace approval flow
+- Fewer redundant approvals
+- No accidental direct-PR merge without valid approval
+- Cleaner reviewer assignment
+- Stronger validation consistency across namespace hierarchy
+
 ## [[0.1.5](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.5)] - 2026-04-24
 
 ### Added

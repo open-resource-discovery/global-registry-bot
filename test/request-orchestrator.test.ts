@@ -349,6 +349,78 @@ test('issues.opened: strips routing-lock marker before parsing and does not rewr
   expect(ctx.octokit.issues.update).not.toHaveBeenCalled();
 });
 
+test('issues.opened: rewrites malformed routing-lock markers with a valid expected label', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  loadTemplate.mockImplementation(async function (...args: any[]) {
+    const opts = args[1];
+    const labels = Array.isArray(opts?.issueLabels) ? opts.issueLabels : [];
+    if (labels.includes('route-1')) {
+      return {
+        _meta: { requestType: 'systemNamespace', root: '/data/namespaces', schema: 's' },
+        title: 'T',
+      };
+    }
+    throw new Error('no routing label found');
+  });
+
+  parseForm.mockReturnValue({ identifier: 'x' });
+
+  const ctx: any = mkIssueContext({
+    action: 'opened',
+    issue: {
+      number: 2,
+      state: 'closed',
+      body: 'body\n\n<!-- nsreq:routing-lock = not-json -->\n',
+      labels: ['route-1'],
+      user: { login: 'alice' },
+    },
+  });
+
+  await handlers['issues.opened'][0](ctx);
+
+  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      issue_number: 2,
+      body: expect.stringContaining('"expected":"route-1"'),
+    })
+  );
+});
+
+test('issues.opened: tolerates routing-lock marker update failures', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  loadTemplate.mockImplementation(async function (...args: any[]) {
+    const opts = args[1];
+    const labels = Array.isArray(opts?.issueLabels) ? opts.issueLabels : [];
+    if (labels.includes('route-1')) {
+      return {
+        _meta: { requestType: 'systemNamespace', root: '/data/namespaces', schema: 's' },
+        title: 'T',
+      };
+    }
+    throw new Error('no routing label found');
+  });
+
+  parseForm.mockReturnValue({ identifier: 'x' });
+
+  const ctx: any = mkIssueContext({
+    action: 'opened',
+    issue: {
+      number: 3,
+      state: 'closed',
+      body: 'body',
+      labels: ['route-1'],
+      user: { login: 'alice' },
+    },
+  });
+  ctx.octokit.issues.update.mockRejectedValueOnce(new Error('boom'));
+
+  await expect(handlers['issues.opened'][0](ctx)).resolves.toBeUndefined();
+});
+
 test('issues.opened: loads static config via loadStaticConfig when not cached', async () => {
   const { app, handlers } = mkApp();
   requestHandler(app);
