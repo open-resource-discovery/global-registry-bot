@@ -183,6 +183,10 @@ type DirectPrApprovalOptions = {
   baseBranch?: string;
 };
 
+type AutomatedApprovalReviewOptions = {
+  skipApprovedLabelStateCleanup?: boolean;
+};
+
 type HeadGreenRunSummary = {
   id?: number;
   name: string;
@@ -303,6 +307,12 @@ function singleMachineReadableIssue(field: string, message: string, filePath = '
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
 const MERGE_INFLIGHT = new Map<string, Promise<void>>();
 const AUTO_APPROVED_PR_HEADS = new Set<string>();
+
+const AUTO_APPROVAL_REVIEW_INFLIGHT = new Map<string, Promise<boolean>>();
+const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
+
+const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
+const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 
 function normalizeSchemaFieldAlias(value: unknown): string {
   const raw = toStringTrim(value);
@@ -1575,6 +1585,23 @@ async function fetchIssueLabels(
 const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
 const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
 
+function isAutoMergeEvaluationRecentlyCompleted(key: string): boolean {
+  const until = AUTO_MERGE_EVALUATION_RECENT_UNTIL.get(key);
+
+  if (!until) return false;
+
+  if (until <= Date.now()) {
+    AUTO_MERGE_EVALUATION_RECENT_UNTIL.delete(key);
+    return false;
+  }
+
+  return true;
+}
+
+function markAutoMergeEvaluationRecentlyCompleted(key: string): void {
+  AUTO_MERGE_EVALUATION_RECENT_UNTIL.set(key, Date.now() + AUTO_MERGE_EVALUATION_RECENT_TTL_MS);
+}
+
 function issueScopedKey(params: IssueParams, suffix: string): string {
   return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
 }
@@ -1706,10 +1733,20 @@ async function ensureAssigneesPresent(
   }
 }
 
-function buildReviewHandoverBody(context: BotContext<RequestEvents>, snapshotHash?: string): string {
+function buildReviewHandoverBody(
+  context: BotContext<RequestEvents>,
+  snapshotHash?: string,
+  options: { target?: 'issue' | 'pull_request' } = {}
+): string {
   const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
   const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
   const snapshotMarker = snapshotHash ? `\n\n<!-- nsreq:snapshot:${snapshotHash} -->` : '';
+
+  const target = options.target || 'issue';
+  const instruction =
+    target === 'pull_request'
+      ? 'Once reviewed, please comment `Approved` to approve this PR for merge.'
+      : 'Once reviewed, please comment `Approved` to create an automatic Pull Request.';
 
   return `### ✅ No issues detected
 
@@ -1717,7 +1754,7 @@ function buildReviewHandoverBody(context: BotContext<RequestEvents>, snapshotHas
 
 ---
 
-Once reviewed, please comment \`Approved\` to create an automatic Pull Request.${docsSection}${snapshotMarker}
+${instruction}${docsSection}${snapshotMarker}
 
 <!-- nsreq:handover -->`;
 }
@@ -1729,7 +1766,12 @@ async function handoverToCpa(
   _nsType: string,
   _namespace: string,
   _links: string[] = [],
-  options: { snapshotHash?: string; requestType?: string; extraApprovers?: string[] } = {}
+  options: {
+    snapshotHash?: string;
+    requestType?: string;
+    extraApprovers?: string[];
+    manualApproversOverride?: string[];
+  } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
 
@@ -1746,7 +1788,13 @@ async function handoverToCpa(
     ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
     : approverRouting.approvalUsernames;
 
-  const mergedAssignees = uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
+  const manualApproversOverride = uniqLogins(
+    (options.manualApproversOverride || []).map((value) => toStringTrim(value)).filter(Boolean)
+  );
+
+  const mergedAssignees = manualApproversOverride.length
+    ? manualApproversOverride
+    : uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
 
   await ensureAssigneesOnce(context, params, issue, mergedAssignees);
   await ensureAssigneesPresent(context, params, mergedAssignees);
@@ -1967,6 +2015,14 @@ function normalizeApprovalDecision(decision: ApprovalDecision | boolean): Approv
     ...normalizedWithoutApprovers,
     ...(approvers.length ? { approvers } : {}),
   };
+}
+
+function getUnknownManualApprovers(decision: ApprovalDecision): string[] {
+  const normalized = normalizeApprovalDecision(decision);
+
+  if (normalized.status !== 'unknown') return [];
+
+  return uniqLogins((normalized.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
 }
 
 function isManualApprovalRequiredText(value: unknown): boolean {
@@ -2364,15 +2420,17 @@ function buildAutoApprovalReviewMarker(headSha: string): string {
   return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
-async function ensureAutomatedApprovalReviewForCurrentHead(
+async function runEnsureAutomatedApprovalReviewForCurrentHead(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   decision: ApprovalDecision,
-  options: { skipApprovedLabelStateCleanup?: boolean } = {}
+  headSha: string,
+  options: AutomatedApprovalReviewOptions = {}
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
+  if (hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
+    return true;
+  }
 
   if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
     markAutoApprovedPrHead(repoInfo, pr.number, headSha);
@@ -2389,6 +2447,48 @@ async function ensureAutomatedApprovalReviewForCurrentHead(
   });
 
   return true;
+}
+
+async function ensureAutomatedApprovalReviewForCurrentHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: AutomatedApprovalReviewOptions = {}
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  const key = autoApprovedPrHeadKey(repoInfo, pr.number, headSha);
+
+  const existing = AUTO_APPROVAL_REVIEW_INFLIGHT.get(key);
+  if (existing) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+      },
+      'automated PR approval review deduped: already in flight'
+    );
+
+    return await existing;
+  }
+
+  const pending = runEnsureAutomatedApprovalReviewForCurrentHead(
+    context,
+    repoInfo,
+    pr,
+    decision,
+    headSha,
+    options
+  ).finally(() => {
+    AUTO_APPROVAL_REVIEW_INFLIGHT.delete(key);
+  });
+
+  AUTO_APPROVAL_REVIEW_INFLIGHT.set(key, pending);
+  return await pending;
 }
 
 async function listPullRequestReviews(
@@ -3321,9 +3421,28 @@ async function runMergeApprovedPrOrUpdateBranch(
           headSha: currentHeadSha,
           greenReason: greenResult.reason,
           blockingRuns: greenResult.blockingRuns,
+          latestRuns: greenResult.latestRuns.slice(0, 30),
           reason,
         },
         'pull-request merge skipped: current head checks are not green'
+      );
+
+      return;
+    }
+
+    const pendingRuns = greenResult.latestRuns.filter((run) => toStringTrim(run.status).toLowerCase() !== 'completed');
+
+    if (pendingRuns.length) {
+      log(
+        context,
+        'info',
+        {
+          prNumber: currentPr.number,
+          headSha: currentHeadSha,
+          pendingRuns,
+          reason,
+        },
+        'pull-request merge skipped: current head checks are still pending'
       );
 
       return;
@@ -5533,7 +5652,11 @@ async function handoverStandaloneDirectPrToReview(
   const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
 
-  const assignees = resolveReviewAssigneesForRequestTypes(context, prIssue, requestTypes);
+  const manualApproversOverride = getUnknownManualApprovers(decision);
+
+  const assignees = manualApproversOverride.length
+    ? manualApproversOverride
+    : resolveReviewAssigneesForRequestTypes(context, prIssue, requestTypes);
 
   if (assignees.length) {
     await ensureAssigneesOnce(context, params, prIssue, assignees);
@@ -5556,7 +5679,7 @@ async function handoverStandaloneDirectPrToReview(
 
   const snapshotHash = calcStandaloneDirectPrSnapshotHash(pr, changedFiles);
 
-  await postOnce(context, params, buildReviewHandoverBody(context, snapshotHash), {
+  await postOnce(context, params, buildReviewHandoverBody(context, snapshotHash, { target: 'pull_request' }), {
     minimizeTag: 'nsreq:handover',
   });
 
@@ -5615,7 +5738,12 @@ async function handleDirectPrApprovalComment(
     return;
   }
 
-  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+  const manualApproversOverride = getUnknownManualApprovers(approvalDecision);
+
+  const allowedApprovers = manualApproversOverride.length
+    ? manualApproversOverride
+    : uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+
   const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
 
   if (!okApprover) {
@@ -5628,10 +5756,18 @@ async function handleDirectPrApprovalComment(
     return;
   }
 
-  const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, {
-    status: 'approved',
-    comment: `Approved by @${commenter}`,
-  });
+  const approved = await ensureAutomatedApprovalReviewForCurrentHead(
+    context,
+    repoInfo,
+    pr,
+    {
+      status: 'approved',
+      comment: `Approved by @${commenter}`,
+    },
+    {
+      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
+    }
+  );
 
   if (!approved) return;
 
@@ -6408,7 +6544,7 @@ async function processIssueEvent(
 
   if (approvalOutcome !== 'continue') return;
 
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
     context,
     params,
     issue,
@@ -6417,10 +6553,22 @@ async function processIssueEvent(
     effectiveRequestType
   );
 
+  const hookApprovers = manualApproversOverride.length
+    ? []
+    : await resolveAdditionalIssueApproversFromApprovalHook(
+        context,
+        params,
+        issue,
+        result.template || template,
+        parsedFormData,
+        effectiveRequestType
+      );
+
   await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
     snapshotHash: currentHash,
     requestType: effectiveRequestType,
     extraApprovers: hookApprovers,
+    manualApproversOverride,
   });
 }
 
@@ -6459,6 +6607,41 @@ async function resolveAdditionalIssueApproversFromApprovalHook(
   }
 }
 
+async function resolveManualReviewApproverOverrideFromApprovalHook(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike,
+  template: TemplateLike,
+  parsedFormData: FormData,
+  requestType?: string
+): Promise<string[]> {
+  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
+  const resourceName = extractResourceNameFromForm(parsedFormData, template);
+
+  if (!effectiveRequestType) return [];
+
+  try {
+    const decision = normalizeApprovalDecision(
+      await runApprovalHook(
+        context,
+        { owner: params.owner, repo: params.repo },
+        {
+          requestType: effectiveRequestType,
+          namespace: resourceName,
+          resourceName,
+          formData: parsedFormData,
+          issue,
+          requestAuthorId: normalizeLogin(issue.user?.login),
+        }
+      )
+    );
+
+    return getUnknownManualApprovers(decision);
+  } catch {
+    return [];
+  }
+}
+
 async function handleApprovalComment(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -6488,10 +6671,22 @@ async function handleApprovalComment(
     return;
   }
 
-  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType
+  );
+
+  let allowedApprovers = manualApproversOverride.length
+    ? manualApproversOverride
+    : uniqLogins([...(configuredApprovers || [])]);
+
   let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
 
-  if (!okApprover) {
+  if (!manualApproversOverride.length && !okApprover) {
     const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
       context,
       params,
@@ -6696,7 +6891,7 @@ async function handleAuthorUpdateComment(
 
       if (approvalOutcome !== 'continue') return;
 
-      const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+      const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
         context,
         params,
         issue,
@@ -6705,10 +6900,22 @@ async function handleAuthorUpdateComment(
         effectiveRequestType
       );
 
+      const hookApprovers = manualApproversOverride.length
+        ? []
+        : await resolveAdditionalIssueApproversFromApprovalHook(
+            context,
+            params,
+            issue,
+            tpl,
+            parsedAfterUpdate,
+            effectiveRequestType
+          );
+
       await handoverToCpa(context, params, issue, nsType, namespace, [], {
         snapshotHash,
         requestType: effectiveRequestType,
         extraApprovers: hookApprovers,
+        manualApproversOverride,
       });
       return;
     }
@@ -7167,9 +7374,24 @@ ${mentions}`,
     minimizeTag: `${tagBase}:approved`,
   });
 
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
+    context,
+    params,
+    issue,
+    tpl,
+    parsedNow,
+    effRt
+  );
+
+  const hookApprovers = manualApproversOverride.length
+    ? []
+    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
+
   await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
     snapshotHash,
     requestType: effRt,
+    extraApprovers: hookApprovers,
+    manualApproversOverride,
   });
 
   return true;
@@ -7441,7 +7663,7 @@ ${mentions}`,
     minimizeTag: `${tagBase}:approved`,
   });
 
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
     context,
     params,
     issue,
@@ -7450,10 +7672,15 @@ ${mentions}`,
     effRt
   );
 
+  const hookApprovers = manualApproversOverride.length
+    ? []
+    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
+
   await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
     snapshotHash,
     requestType: effRt,
     extraApprovers: hookApprovers,
+    manualApproversOverride,
   });
 
   return true;
@@ -8328,26 +8555,12 @@ export default function requestHandler(app: Probot): void {
     }
   );
 
-  const tryAutoMerge = async (
+  const runAutoMergeEvaluation = async (
     context: BotContext<RequestEvents>,
     repoInfo: RepoInfo,
-    headSha: string
+    normalizedHeadSha: string
   ): Promise<void> => {
     await getStaticConfig(context);
-
-    const normalizedHeadSha = toStringTrim(headSha);
-    if (!normalizedHeadSha) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-        },
-        'auto-merge:skip-missing-head-sha'
-      );
-      return;
-    }
 
     const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
 
@@ -8435,6 +8648,68 @@ export default function requestHandler(app: Probot): void {
         }
       }
     }
+  };
+
+  const tryAutoMerge = async (
+    context: BotContext<RequestEvents>,
+    repoInfo: RepoInfo,
+    headSha: string
+  ): Promise<void> => {
+    const normalizedHeadSha = toStringTrim(headSha);
+    if (!normalizedHeadSha) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+        },
+        'auto-merge:skip-missing-head-sha'
+      );
+      return;
+    }
+
+    const key = `${repoInfo.owner}/${repoInfo.repo}:${normalizedHeadSha}:auto-merge-evaluation`.toLowerCase();
+
+    const existing = AUTO_MERGE_EVALUATION_INFLIGHT.get(key);
+    if (existing) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          headSha: normalizedHeadSha,
+        },
+        'auto-merge:evaluation deduped: already in flight'
+      );
+
+      await existing;
+      return;
+    }
+
+    if (isAutoMergeEvaluationRecentlyCompleted(key)) {
+      log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          headSha: normalizedHeadSha,
+        },
+        'auto-merge:evaluation skipped: recently completed'
+      );
+
+      return;
+    }
+
+    const pending = runAutoMergeEvaluation(context, repoInfo, normalizedHeadSha).finally(() => {
+      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
+      markAutoMergeEvaluationRecentlyCompleted(key);
+    });
+
+    AUTO_MERGE_EVALUATION_INFLIGHT.set(key, pending);
+    await pending;
   };
 
   const maybeHandleDefaultBranchCheckSuiteSuccess = async (

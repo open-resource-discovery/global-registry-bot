@@ -5315,7 +5315,7 @@ public
     );
   });
 
-  test('check_suite.success: neutral standalone direct PR posts handover and assigns request-type pool, not hook approvers', async () => {
+  test('check_suite.success: standalone direct PR unknown approval assigns hook manual approvers instead of request-type pool', async () => {
     const cfg = {
       requests: {
         product: {
@@ -5415,7 +5415,7 @@ public
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 161 }),
       expect.objectContaining({ number: 161 }),
-      ['poolA'],
+      ['hookApproverShouldNotBeAssigned'],
     ]);
 
     expect(addAssignees).toHaveBeenCalledWith(
@@ -5423,13 +5423,13 @@ public
         owner: 'o1',
         repo: 'r1',
         issue_number: 161,
-        assignees: ['poolA'],
+        assignees: ['hookApproverShouldNotBeAssigned'],
       })
     );
 
     expect(addAssignees).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        assignees: expect.arrayContaining(['hookApproverShouldNotBeAssigned']),
+        assignees: expect.arrayContaining(['poolA']),
       })
     );
 
@@ -5438,6 +5438,127 @@ public
         owner: 'o1',
         repo: 'r1',
         issue_number: 161,
+        labels: ['registry-bot', 'needs-review'],
+      })
+    );
+
+    const posted = postedBodies();
+
+    expect(posted).toContain('### ✅ No issues detected');
+    expect(posted).toContain('### ➡️ Routing to an approver for review');
+    expect(posted).toContain('<!-- nsreq:snapshot:');
+    expect(posted).toContain('<!-- nsreq:handover -->');
+    expect(posted).toContain('manual review required');
+    expect(posted).toContain('<summary>Decision details</summary>');
+  });
+
+  test('check_suite.success: standalone direct PR unknown approval without hook approvers falls back to request-type pool', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+        approversPool: ['globalPool'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-neutral-review-pool-fallback',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 261,
+            body: 'manual direct pr',
+            title: 'Direct',
+            user: { login: 'requester' },
+            base: { ref: 'main' },
+            head: { ref: 'feature/neutral-review-pool-fallback', sha: 'sha-neutral-review-pool-fallback' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-neutral-pool.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-neutral-pool\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    runApprovalHook.mockResolvedValueOnce({
+      status: 'unknown',
+      message: 'manual review required',
+    } as any);
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+
+    Object.assign(ctx.octokit.issues, {
+      addAssignees,
+    });
+
+    await handler(ctx);
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 261 }),
+      expect.objectContaining({ number: 261 }),
+      ['poolA'],
+    ]);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 261,
+        assignees: ['poolA'],
+      })
+    );
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 261,
         labels: ['registry-bot', 'needs-review'],
       })
     );
