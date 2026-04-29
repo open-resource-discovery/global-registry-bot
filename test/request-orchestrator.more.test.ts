@@ -6133,7 +6133,391 @@ public
     expect(posted).toContain('<!-- nsreq:snapshot:');
     expect(posted).toContain('<!-- nsreq:handover -->');
   });
+  test('issues.opened: onApproval unknown manual approvers override assignment pool only', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+        approversPool: ['globalPool'],
+      },
+    };
 
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 301,
+      title: 'Product Request',
+      body: '### Product ID\n\nproduct-manual-assignee',
+      labels: [],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    const ctx = mkIssuesContext({
+      action: 'opened',
+      issue,
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    Object.assign(ctx.octokit.issues, { addAssignees });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        ...issue,
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    parseForm.mockReturnValue({
+      'product-id': 'product-manual-assignee',
+    });
+
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'product-manual-assignee',
+      nsType: 'product',
+      formData: {
+        'product-id': 'product-manual-assignee',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'unknown',
+      message: 'manual review required',
+      approvers: ['hookManualApprover'],
+    } as any);
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(setStateLabel).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 301 }),
+      expect.objectContaining({ number: 301 }),
+      'review'
+    );
+
+    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+      ctx,
+      expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 301 }),
+      expect.objectContaining({ number: 301 }),
+      ['hookManualApprover'],
+    ]);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 301,
+        assignees: ['hookManualApprover'],
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['poolA']),
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['globalPool']),
+      })
+    );
+
+    const posted = postedBodies();
+
+    expect(posted).toContain('manual review required');
+    expect(posted).toContain('### ✅ No issues detected');
+    expect(posted).toContain('### ➡️ Routing to an approver for review');
+    expect(posted).toContain('<!-- nsreq:handover -->');
+    expect(posted).toContain('<summary>Decision details</summary>');
+  });
+
+  test('issues.opened: onApproval unknown without manual approvers falls back to request-type pool assignment', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+        approversPool: ['globalPool'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 302,
+      title: 'Product Request',
+      body: '### Product ID\n\nproduct-pool-fallback',
+      labels: [],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    const ctx = mkIssuesContext({
+      action: 'opened',
+      issue,
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    Object.assign(ctx.octokit.issues, { addAssignees });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        ...issue,
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    parseForm.mockReturnValue({
+      'product-id': 'product-pool-fallback',
+    });
+
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: 'product-pool-fallback',
+      nsType: 'product',
+      formData: {
+        'product-id': 'product-pool-fallback',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'unknown',
+      message: 'manual review required',
+    } as any);
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+      ctx,
+      expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 302 }),
+      expect.objectContaining({ number: 302 }),
+      ['poolB'],
+    ]);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 302,
+        assignees: ['poolB'],
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['globalPool']),
+      })
+    );
+
+    expect(postedBodies()).toContain('manual review required');
+    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+  });
+
+  test.each([
+    ['hook manual approver', 'hookManualApprover'],
+    ['request configured approver', 'configuredApprover'],
+    ['request approversPool member', 'poolApprover'],
+  ])(
+    'issue_comment.created: %s can approve request when onApproval returns hook manual approvers',
+    async (_caseName, commenter) => {
+      const cfg = {
+        requests: {
+          product: {
+            folderName: 'resources',
+            approvers: ['configuredApprover'],
+            approversPool: ['poolApprover'],
+          },
+        },
+        workflow: {
+          labels: {
+            approvalRequested: ['needs-review'],
+            approvalSuccessful: ['Approved'],
+          },
+          approvers: ['globalApprover'],
+          approversPool: ['globalPool'],
+        },
+      };
+
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const issue = {
+        number: 303,
+        title: 'Product Request',
+        body: '### Product ID\n\nproduct-approval-access',
+        labels: [{ name: 'needs-review' }],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const ctx = mkCommentContext({
+        event: 'issue_comment.created',
+        issue,
+        comment: {
+          body: 'Approved',
+          user: { login: commenter },
+        },
+        sender: {
+          login: commenter,
+          type: 'User',
+        },
+        withCachedConfig: true,
+        config: cfg,
+      });
+
+      ctx.octokit.issues.get.mockResolvedValue({
+        data: {
+          ...issue,
+          labels: [{ name: 'needs-review' }],
+          assignees: [],
+        },
+      });
+
+      parseForm.mockReturnValue({
+        'product-id': 'product-approval-access',
+      });
+
+      validateRequestIssue.mockResolvedValue({
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: 'product-approval-access',
+        nsType: 'product',
+        formData: {
+          'product-id': 'product-approval-access',
+        },
+      });
+
+      runApprovalHook.mockResolvedValue({
+        status: 'unknown',
+        message: 'manual review required',
+        approvers: ['hookManualApprover'],
+      } as any);
+
+      createRequestPr.mockResolvedValueOnce({ number: 1303 });
+
+      await handlers['issue_comment.created'][0](ctx);
+
+      expect(createRequestPr).toHaveBeenCalled();
+
+      expect(
+        postOnce.mock.calls.some((call) =>
+          String(call[2] ?? '').includes(`Approved by @${commenter}. Opened PR: #1303`)
+        )
+      ).toBe(true);
+
+      expect(postedBodies()).not.toContain(`commenter ${commenter} is not an allowed approver`);
+    }
+  );
+
+  test('issue_comment.created: unrelated user cannot approve request when onApproval returns hook manual approvers', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['configuredApprover'],
+          approversPool: ['poolApprover'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+        approversPool: ['globalPool'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const issue = {
+      number: 304,
+      title: 'Product Request',
+      body: '### Product ID\n\nproduct-denied-approval',
+      labels: [{ name: 'needs-review' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: {
+        body: 'Approved',
+        user: { login: 'intruder' },
+      },
+      sender: {
+        login: 'intruder',
+        type: 'User',
+      },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        ...issue,
+        labels: [{ name: 'needs-review' }],
+        assignees: [],
+      },
+    });
+
+    parseForm.mockReturnValue({
+      'product-id': 'product-denied-approval',
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'unknown',
+      message: 'manual review required',
+      approvers: ['hookManualApprover'],
+    } as any);
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(createRequestPr).not.toHaveBeenCalled();
+
+    expect(postedBodies()).toContain(
+      'Approval ignored: commenter intruder is not an allowed approver for this request type.'
+    );
+  });
   test('issue_comment.created: standalone direct PR approval is ignored before review handover', async () => {
     const cfg = {
       requests: {
