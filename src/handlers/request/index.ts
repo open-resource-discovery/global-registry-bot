@@ -5738,11 +5738,7 @@ async function handleDirectPrApprovalComment(
     return;
   }
 
-  const manualApproversOverride = getUnknownManualApprovers(approvalDecision);
-
-  const allowedApprovers = manualApproversOverride.length
-    ? manualApproversOverride
-    : uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
 
   const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
 
@@ -6671,22 +6667,10 @@ async function handleApprovalComment(
     return;
   }
 
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    requestType
-  );
-
-  let allowedApprovers = manualApproversOverride.length
-    ? manualApproversOverride
-    : uniqLogins([...(configuredApprovers || [])]);
-
+  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
   let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
 
-  if (!manualApproversOverride.length && !okApprover) {
+  if (!okApprover) {
     const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
       context,
       params,
