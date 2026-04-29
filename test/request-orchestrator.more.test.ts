@@ -6348,6 +6348,267 @@ public
     expect(postedBodies()).toContain('<!-- nsreq:handover -->');
   });
 
+  test('issues.opened: request-type approversPool is sorted and selected deterministically by issue number', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApproverShouldNotBeAssigned'],
+        approversPool: ['globalPoolShouldNotBeAssigned'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    parseForm.mockImplementation((body?: unknown) => {
+      const rawBody = String(body ?? '');
+
+      return {
+        'product-id': rawBody.includes('product-303') ? 'product-303' : 'product-302',
+      };
+    });
+
+    validateRequestIssue.mockImplementation(async (_ctx?: unknown, params?: any) => {
+      const issueNumber = Number(params?.issue_number ?? 0);
+      const productId = issueNumber === 303 ? 'product-303' : 'product-302';
+
+      return {
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: productId,
+        nsType: 'product',
+        formData: {
+          'product-id': productId,
+        },
+      };
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'unknown',
+      message: 'manual review required',
+    } as any);
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+
+    const mkPoolCtx = (issueNumber: number, productId: string): any => {
+      const issue = {
+        number: issueNumber,
+        title: 'Product Request',
+        body: `### Product ID\n\n${productId}`,
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const ctx = mkIssuesContext({
+        action: 'opened',
+        issue,
+        withCachedConfig: true,
+        config: cfg,
+      });
+
+      Object.assign(ctx.octokit.issues, { addAssignees });
+
+      ctx.octokit.issues.get.mockResolvedValue({
+        data: {
+          ...issue,
+          labels: [],
+          assignees: [],
+        },
+      });
+
+      return ctx;
+    };
+
+    const ctx302 = mkPoolCtx(302, 'product-302');
+    const ctx303 = mkPoolCtx(303, 'product-303');
+
+    await handlers['issues.opened'][0](ctx302);
+    await handlers['issues.opened'][0](ctx303);
+
+    const assigneeCall302 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+      (call: any[]) => call[1]?.issue_number === 302
+    );
+    const assigneeCall303 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+      (call: any[]) => call[1]?.issue_number === 303
+    );
+
+    // Pool is sorted internally: ['poolA', 'poolB'].
+    // #302 => (302 - 1) % 2 = 1 => poolB
+    // #303 => (303 - 1) % 2 = 0 => poolA
+    expect(assigneeCall302?.[3]).toEqual(['poolB']);
+    expect(assigneeCall303?.[3]).toEqual(['poolA']);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 302,
+        assignees: ['poolB'],
+      })
+    );
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 303,
+        assignees: ['poolA'],
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['globalPoolShouldNotBeAssigned']),
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['globalApproverShouldNotBeAssigned']),
+      })
+    );
+  });
+
+  test('issues.opened: global approversPool fallback is sorted and selected deterministically by issue number', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApproverShouldNotBeAssignedWhenPoolExists'],
+        approversPool: ['globalPoolB', 'globalPoolA'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    parseForm.mockImplementation((body?: unknown) => {
+      const rawBody = String(body ?? '');
+
+      return {
+        'product-id': rawBody.includes('product-305') ? 'product-305' : 'product-304',
+      };
+    });
+
+    validateRequestIssue.mockImplementation(async (_ctx?: unknown, params?: any) => {
+      const issueNumber = Number(params?.issue_number ?? 0);
+      const productId = issueNumber === 305 ? 'product-305' : 'product-304';
+
+      return {
+        errors: [],
+        errorsGrouped: {},
+        errorsFormatted: '',
+        errorsFormattedSingle: '',
+        namespace: productId,
+        nsType: 'product',
+        formData: {
+          'product-id': productId,
+        },
+      };
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'unknown',
+      message: 'manual review required',
+    } as any);
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+
+    const mkPoolCtx = (issueNumber: number, productId: string): any => {
+      const issue = {
+        number: issueNumber,
+        title: 'Product Request',
+        body: `### Product ID\n\n${productId}`,
+        labels: [],
+        user: { login: 'requester' },
+        state: 'open',
+      };
+
+      const ctx = mkIssuesContext({
+        action: 'opened',
+        issue,
+        withCachedConfig: true,
+        config: cfg,
+      });
+
+      Object.assign(ctx.octokit.issues, { addAssignees });
+
+      ctx.octokit.issues.get.mockResolvedValue({
+        data: {
+          ...issue,
+          labels: [],
+          assignees: [],
+        },
+      });
+
+      return ctx;
+    };
+
+    const ctx304 = mkPoolCtx(304, 'product-304');
+    const ctx305 = mkPoolCtx(305, 'product-305');
+
+    await handlers['issues.opened'][0](ctx304);
+    await handlers['issues.opened'][0](ctx305);
+
+    const assigneeCall304 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+      (call: any[]) => call[1]?.issue_number === 304
+    );
+    const assigneeCall305 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+      (call: any[]) => call[1]?.issue_number === 305
+    );
+
+    // Global pool is sorted internally: ['globalPoolA', 'globalPoolB'].
+    // #304 => (304 - 1) % 2 = 1 => globalPoolB
+    // #305 => (305 - 1) % 2 = 0 => globalPoolA
+    expect(assigneeCall304?.[3]).toEqual(['globalPoolB']);
+    expect(assigneeCall305?.[3]).toEqual(['globalPoolA']);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 304,
+        assignees: ['globalPoolB'],
+      })
+    );
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 305,
+        assignees: ['globalPoolA'],
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['globalApproverShouldNotBeAssignedWhenPoolExists']),
+      })
+    );
+  });
+
   test.each([
     ['hook manual approver', 'hookManualApprover'],
     ['request configured approver', 'configuredApprover'],
