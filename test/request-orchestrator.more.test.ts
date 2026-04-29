@@ -6484,6 +6484,320 @@ public
     );
   });
 
+  test('issue_comment.created: standalone direct PR approval by hook manual approver creates review and tries merge', async () => {
+    const prevJestWorkerId = process.env.JEST_WORKER_ID;
+    delete process.env.JEST_WORKER_ID;
+
+    try {
+      const cfg = {
+        requests: {
+          product: {
+            folderName: 'resources',
+            approvers: ['configuredApprover'],
+          },
+        },
+        workflow: {
+          labels: {
+            approvalRequested: ['needs-review'],
+            approvalSuccessful: ['Approved'],
+          },
+          approvers: ['globalApprover'],
+        },
+      };
+
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const handler = handlers['issue_comment.created'][0];
+
+      const ctx: any = {
+        name: 'issue_comment.created',
+        payload: {
+          issue: {
+            number: 207,
+            body: 'manual direct pr',
+            title: 'Direct PR',
+            user: { login: 'requester' },
+            pull_request: {},
+            labels: [{ name: 'needs-review' }],
+          },
+          comment: {
+            body: 'Approved',
+            user: { login: 'hookManualApprover' },
+          },
+          sender: {
+            login: 'hookManualApprover',
+            type: 'User',
+          },
+        },
+        issue: () => ({ owner: 'o1', repo: 'r1', issue_number: 207 }),
+        octokit: mkCheckSuiteContext({
+          event: 'check_suite.completed',
+          conclusion: 'success',
+          sha: 'sha-unused',
+          ownerLogin: 'o1',
+          repoName: 'r1',
+          withCachedConfig: true,
+          config: cfg,
+        }).octokit,
+        log: {
+          info: jest.fn(),
+          warn: jest.fn(),
+          error: jest.fn(),
+          debug: jest.fn(),
+        },
+        resourceBotConfig: cfg,
+        resourceBotHooks: {},
+        resourceBotHooksSource: 'test',
+      };
+
+      ctx.octokit.pulls.get
+        .mockResolvedValueOnce({
+          data: {
+            number: 207,
+            state: 'open',
+            body: 'manual direct pr',
+            title: 'Direct PR',
+            user: { login: 'requester' },
+            head: { ref: 'feature/direct-pr', sha: 'sha-hook-manual-approval' },
+            base: { ref: 'main' },
+            mergeable: true,
+            mergeable_state: 'clean',
+          },
+        })
+        .mockResolvedValue({
+          data: {
+            number: 207,
+            state: 'open',
+            body: 'manual direct pr',
+            title: 'Direct PR',
+            user: { login: 'requester' },
+            head: { ref: 'feature/direct-pr', sha: 'sha-hook-manual-approval' },
+            base: { ref: 'main' },
+            mergeable: true,
+            mergeable_state: 'clean',
+          },
+        });
+
+      ctx.octokit.issues.get.mockResolvedValue({
+        data: {
+          labels: [{ name: 'needs-review' }],
+          assignees: [],
+        },
+      });
+
+      ctx.octokit.pulls.listFiles.mockResolvedValue({
+        data: [{ filename: 'resources/product-hook-manual.yaml', status: 'modified' }],
+      });
+
+      ctx.octokit.repos.getContent.mockResolvedValue({
+        data: {
+          content: Buffer.from('type: product\nname: product-hook-manual\n', 'utf8').toString('base64'),
+          encoding: 'base64',
+        },
+      });
+
+      ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+        data: [{ author: { login: 'requester' } }],
+      });
+
+      ctx.octokit.pulls.listReviews.mockResolvedValue({
+        data: [],
+      });
+
+      runApprovalHook.mockResolvedValueOnce({
+        status: 'unknown',
+        message: 'manual review required',
+        approvers: ['hookManualApprover'],
+      } as any);
+
+      await handler(ctx);
+
+      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'o1',
+          repo: 'r1',
+          pull_number: 207,
+          event: 'APPROVE',
+          body: expect.stringContaining('Approved by @hookManualApprover'),
+        })
+      );
+
+      expect(tryMergeIfGreen).toHaveBeenCalledWith(
+        ctx,
+        expect.objectContaining({
+          owner: 'o1',
+          repo: 'r1',
+          prNumber: 207,
+          mergeMethod: 'squash',
+        })
+      );
+    } finally {
+      if (prevJestWorkerId === undefined) {
+        delete process.env.JEST_WORKER_ID;
+      } else {
+        process.env.JEST_WORKER_ID = prevJestWorkerId;
+      }
+    }
+  });
+
+  test('issue_comment.created: configured approver can approve standalone direct PR even when onApproval returns hook manual approvers', async () => {
+    const prevJestWorkerId = process.env.JEST_WORKER_ID;
+    delete process.env.JEST_WORKER_ID;
+
+    try {
+      const cfg = {
+        requests: {
+          product: {
+            folderName: 'resources',
+            approvers: ['configuredApprover'],
+          },
+        },
+        workflow: {
+          labels: {
+            approvalRequested: ['needs-review'],
+            approvalSuccessful: ['Approved'],
+          },
+          approvers: ['globalApprover'],
+        },
+      };
+
+      const { app, handlers } = mkApp();
+      requestHandler(app);
+
+      const handler = handlers['issue_comment.created'][0];
+
+      const ctx: any = {
+        name: 'issue_comment.created',
+        payload: {
+          issue: {
+            number: 208,
+            body: 'manual direct pr',
+            title: 'Direct PR',
+            user: { login: 'requester' },
+            pull_request: {},
+            labels: [{ name: 'needs-review' }],
+          },
+          comment: {
+            body: 'Approved',
+            user: { login: 'configuredApprover' },
+          },
+          sender: {
+            login: 'configuredApprover',
+            type: 'User',
+          },
+        },
+        issue: () => ({ owner: 'o1', repo: 'r1', issue_number: 208 }),
+        octokit: mkCheckSuiteContext({
+          event: 'check_suite.completed',
+          conclusion: 'success',
+          sha: 'sha-unused',
+          ownerLogin: 'o1',
+          repoName: 'r1',
+          withCachedConfig: true,
+          config: cfg,
+        }).octokit,
+        log: {
+          info: jest.fn(),
+          warn: jest.fn(),
+          error: jest.fn(),
+          debug: jest.fn(),
+        },
+        resourceBotConfig: cfg,
+        resourceBotHooks: {},
+        resourceBotHooksSource: 'test',
+      };
+
+      ctx.octokit.pulls.get
+        .mockResolvedValueOnce({
+          data: {
+            number: 208,
+            state: 'open',
+            body: 'manual direct pr',
+            title: 'Direct PR',
+            user: { login: 'requester' },
+            head: { ref: 'feature/direct-pr', sha: 'sha-config-approval-with-hook-manual' },
+            base: { ref: 'main' },
+            mergeable: true,
+            mergeable_state: 'clean',
+          },
+        })
+        .mockResolvedValue({
+          data: {
+            number: 208,
+            state: 'open',
+            body: 'manual direct pr',
+            title: 'Direct PR',
+            user: { login: 'requester' },
+            head: { ref: 'feature/direct-pr', sha: 'sha-config-approval-with-hook-manual' },
+            base: { ref: 'main' },
+            mergeable: true,
+            mergeable_state: 'clean',
+          },
+        });
+
+      ctx.octokit.issues.get.mockResolvedValue({
+        data: {
+          labels: [{ name: 'needs-review' }],
+          assignees: [],
+        },
+      });
+
+      ctx.octokit.pulls.listFiles.mockResolvedValue({
+        data: [{ filename: 'resources/product-config-approver.yaml', status: 'modified' }],
+      });
+
+      ctx.octokit.repos.getContent.mockResolvedValue({
+        data: {
+          content: Buffer.from('type: product\nname: product-config-approver\n', 'utf8').toString('base64'),
+          encoding: 'base64',
+        },
+      });
+
+      ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+        data: [{ author: { login: 'requester' } }],
+      });
+
+      ctx.octokit.pulls.listReviews.mockResolvedValue({
+        data: [],
+      });
+
+      runApprovalHook.mockResolvedValueOnce({
+        status: 'unknown',
+        message: 'manual review required',
+        approvers: ['hookManualApprover'],
+      } as any);
+
+      await handler(ctx);
+
+      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'o1',
+          repo: 'r1',
+          pull_number: 208,
+          event: 'APPROVE',
+          body: expect.stringContaining('Approved by @configuredApprover'),
+        })
+      );
+
+      expect(tryMergeIfGreen).toHaveBeenCalledWith(
+        ctx,
+        expect.objectContaining({
+          owner: 'o1',
+          repo: 'r1',
+          prNumber: 208,
+          mergeMethod: 'squash',
+        })
+      );
+    } finally {
+      if (prevJestWorkerId === undefined) {
+        delete process.env.JEST_WORKER_ID;
+      } else {
+        process.env.JEST_WORKER_ID = prevJestWorkerId;
+      }
+    }
+  });
+
   test('check_suite.failure: registry validate annotations are grouped and posted to matching PR', async () => {
     const { app, handlers } = mkApp();
     requestHandler(app);
