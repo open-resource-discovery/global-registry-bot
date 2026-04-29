@@ -7443,6 +7443,617 @@ public
     }
   });
 
+  test('check_suite.success: standalone direct PR onApproval no-match routes to review and assigns deterministic request-type pool member', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['configuredApprover'],
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          global: ['registry-bot'],
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+        approversPool: ['globalPool'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['check_suite.completed'][0];
+    const ctx = mkCheckSuiteContext({
+      event: 'check_suite.completed',
+      conclusion: 'success',
+      sha: 'sha-direct-no-match-review',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.list
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 421,
+            body: 'manual direct pr',
+            title: 'Direct fallback PR',
+            user: { login: 'requester' },
+            base: { ref: 'main' },
+            head: { ref: 'feature/direct-no-match', sha: 'sha-direct-no-match-review' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-no-match.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-no-match\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [],
+        assignees: [],
+      },
+    });
+
+    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    Object.assign(ctx.octokit.issues, { addAssignees });
+
+    // onApproval did not match this registry doc.
+    runApprovalHook.mockResolvedValueOnce({} as any);
+
+    await handler(ctx);
+
+    expect(runApprovalHook).toHaveBeenCalledWith(
+      ctx,
+      { owner: 'o1', repo: 'r1' },
+      expect.objectContaining({
+        requestType: 'product',
+        namespace: 'product-no-match',
+        resourceName: 'product-no-match',
+        requestAuthorId: 'requester',
+      })
+    );
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    expect(setStateLabel).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 421 }),
+      expect.objectContaining({ number: 421 }),
+      'review'
+    );
+
+    // pool is sorted to ['poolA', 'poolB']; issue/PR #421 => (421 - 1) % 2 = 0 => poolA
+    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+      ctx,
+      expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 421 }),
+      expect.objectContaining({ number: 421 }),
+      ['poolA'],
+    ]);
+
+    expect(addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 421,
+        assignees: ['poolA'],
+      })
+    );
+
+    expect(addAssignees).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignees: expect.arrayContaining(['poolB', 'configuredApprover', 'globalApprover', 'globalPool']),
+      })
+    );
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        issue_number: 421,
+        labels: ['registry-bot', 'needs-review'],
+      })
+    );
+
+    const posted = postedBodies();
+
+    expect(posted).toContain('Manual review required because onApproval did not approve all changed registry files.');
+    expect(posted).toContain('### ✅ No issues detected');
+    expect(posted).toContain('### ➡️ Routing to an approver for review');
+    expect(posted).toContain('Once reviewed, please comment `Approved` to approve this PR for merge.');
+    expect(posted).toContain('<!-- nsreq:handover -->');
+  });
+
+  test('issue_comment.created: standalone direct PR fallback allows any request-type pool approver, not only assigned one', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['configuredApprover'],
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+        approvers: ['globalApprover'],
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 421,
+      title: 'Direct fallback PR',
+      body: 'manual direct pr',
+      labels: [{ name: 'needs-review' }],
+      user: { login: 'requester' },
+      pull_request: {},
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'poolB' } },
+      sender: { type: 'User', login: 'poolB' },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.get
+      .mockResolvedValueOnce({
+        data: {
+          number: 421,
+          state: 'open',
+          body: 'manual direct pr',
+          title: 'Direct fallback PR',
+          user: { login: 'requester' },
+          base: { ref: 'main' },
+          head: { ref: 'feature/direct-no-match', sha: 'sha-direct-no-match-approved' },
+          mergeable: true,
+          mergeable_state: 'clean',
+        },
+      })
+      .mockResolvedValue({
+        data: {
+          number: 421,
+          state: 'open',
+          body: 'manual direct pr',
+          title: 'Direct fallback PR',
+          user: { login: 'requester' },
+          base: { ref: 'main' },
+          head: { ref: 'feature/direct-no-match', sha: 'sha-direct-no-match-approved' },
+          mergeable: true,
+          mergeable_state: 'clean',
+        },
+      });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [{ name: 'needs-review' }],
+        assignees: [{ login: 'poolA' }],
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-no-match.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-no-match\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    ctx.octokit.pulls.listReviews.mockResolvedValue({
+      data: [],
+    });
+
+    ctx.octokit.checks.listForRef.mockResolvedValue({
+      data: {
+        check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
+      },
+    });
+
+    // no hook match; fallback approval path must be used
+    runApprovalHook.mockResolvedValue({} as any);
+    tryMergeIfGreen.mockResolvedValueOnce(true as never);
+
+    await runIssueCommentWithoutJestWorker(handler, ctx);
+
+    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        pull_number: 421,
+        event: 'APPROVE',
+        body: expect.stringContaining('Approved by @poolB'),
+      })
+    );
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        prNumber: 421,
+        mergeMethod: 'squash',
+      })
+    );
+
+    expect(
+      postOnce.mock.calls.some((call) => String(call[2] ?? '').includes('not an allowed approver for this direct PR'))
+    ).toBe(false);
+  });
+
+  test('issue_comment.created: standalone direct PR fallback rejects requester self-approval when requester is not configured approver', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['configuredApprover'],
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const handler = handlers['issue_comment.created'][0];
+
+    const issue = {
+      number: 422,
+      title: 'Direct fallback PR',
+      body: 'manual direct pr',
+      labels: [{ name: 'needs-review' }],
+      user: { login: 'requester' },
+      pull_request: {},
+    };
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'Approved', user: { login: 'requester' } },
+      sender: { type: 'User', login: 'requester' },
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.octokit.pulls.get.mockResolvedValue({
+      data: {
+        number: 422,
+        state: 'open',
+        body: 'manual direct pr',
+        title: 'Direct fallback PR',
+        user: { login: 'requester' },
+        base: { ref: 'main' },
+        head: { ref: 'feature/direct-no-match-self-approval', sha: 'sha-direct-no-match-self-approval' },
+        mergeable: true,
+        mergeable_state: 'clean',
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [{ name: 'needs-review' }],
+        assignees: [{ login: 'poolB' }],
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-no-match-self.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-no-match-self\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      data: [{ author: { login: 'requester' } }],
+    });
+
+    runApprovalHook.mockResolvedValue({} as any);
+
+    await runIssueCommentWithoutJestWorker(handler, ctx);
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(tryMergeIfGreen).not.toHaveBeenCalled();
+
+    expect(postOnce).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 422 }),
+      expect.stringContaining('Approval ignored: commenter requester is not an allowed approver for this direct PR.'),
+      expect.objectContaining({ minimizeTag: 'nsreq:approval-info' })
+    );
+  });
+
+  test('check_run.success: standalone direct PR with existing current-head manual approval merges without fallback re-handover', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['configuredApprover'],
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'success',
+      sha: 'sha-direct-current-head-approved',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.payload = {
+      action: 'completed',
+      repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'success',
+        status: 'completed',
+        head_sha: 'sha-direct-current-head-approved',
+        pull_requests: [{ number: 423 }],
+      },
+    };
+
+    const pr = {
+      number: 423,
+      state: 'open',
+      body: 'manual direct pr',
+      title: 'Direct fallback PR',
+      user: { login: 'requester' },
+      base: { ref: 'main' },
+      head: { ref: 'feature/direct-current-head-approved', sha: 'sha-direct-current-head-approved' },
+      mergeable: true,
+      mergeable_state: 'clean',
+    };
+
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+
+    ctx.octokit.pulls.get.mockResolvedValue({
+      data: pr,
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-current-head-approved.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-current-head-approved\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [{ name: 'Approved' }, { name: 'needs-review' }],
+        assignees: [{ login: 'poolA' }],
+      },
+    });
+
+    ctx.octokit.pulls.listReviews.mockResolvedValue({
+      data: [
+        {
+          id: 1,
+          state: 'APPROVED',
+          submitted_at: '2026-04-29T09:46:00Z',
+          commit_id: 'sha-direct-current-head-approved',
+          user: { login: 'poolB' },
+        },
+      ],
+    });
+
+    ctx.octokit.checks.listForRef.mockResolvedValue({
+      data: {
+        check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
+      },
+    });
+
+    // Even if onApproval would not match anymore, current-head manual approval must win.
+    runApprovalHook.mockResolvedValue({} as any);
+    tryMergeIfGreen.mockResolvedValueOnce(true as never);
+
+    await handlers['check_run.completed'][0](ctx);
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 423,
+        mergeMethod: 'squash',
+      })
+    );
+
+    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+
+    expect(
+      postOnce.mock.calls.some((call) =>
+        String(call[2] ?? '').includes(
+          'Manual review required because onApproval did not approve all changed registry files.'
+        )
+      )
+    ).toBe(false);
+
+    expect(
+      postOnce.mock.calls.some((call) => String(call[2] ?? '').includes('Routing to an approver for review'))
+    ).toBe(false);
+  });
+
+  test('check_run.success: standalone direct PR fallback merges after bot-created approval review from allowed pool approver', async () => {
+    const cfg = {
+      requests: {
+        product: {
+          folderName: 'resources',
+          approvers: ['configuredApprover'],
+          approversPool: ['poolB', 'poolA'],
+        },
+      },
+      workflow: {
+        labels: {
+          approvalRequested: ['needs-review'],
+          approvalSuccessful: ['Approved'],
+        },
+      },
+    };
+
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkCheckSuiteContext({
+      event: 'check_run.completed',
+      conclusion: 'success',
+      sha: 'sha-direct-current-head-approved',
+      ownerLogin: 'o1',
+      repoName: 'r1',
+      withCachedConfig: true,
+      config: cfg,
+    });
+
+    ctx.payload = {
+      action: 'completed',
+      repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
+      check_run: {
+        conclusion: 'success',
+        status: 'completed',
+        head_sha: 'sha-direct-current-head-approved',
+        pull_requests: [{ number: 424 }],
+      },
+    };
+
+    const pr = {
+      number: 424,
+      state: 'open',
+      body: 'manual direct pr',
+      title: 'Direct fallback PR',
+      user: { login: 'requester' },
+      base: { ref: 'main' },
+      head: { ref: 'feature/direct-current-head-approved', sha: 'sha-direct-current-head-approved' },
+      mergeable: true,
+      mergeable_state: 'clean',
+    };
+
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'resources/product-current-head-approved.yaml', status: 'modified' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: product\nname: product-current-head-approved\n', 'utf8').toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        labels: [{ name: 'Approved' }, { name: 'needs-review' }],
+        assignees: [{ login: 'poolA' }],
+      },
+    });
+
+    ctx.octokit.pulls.listReviews.mockResolvedValue({
+      data: [
+        {
+          id: 1,
+          state: 'APPROVED',
+          submitted_at: '2026-04-29T09:46:00Z',
+          commit_id: 'sha-direct-current-head-approved',
+          user: { login: 'my-registry-bot[bot]' },
+          body: 'Approved by @poolB\n\n<!-- nsreq:auto-approval:sha-direct-current-head-approved -->',
+        },
+      ],
+    });
+
+    ctx.octokit.checks.listForRef.mockResolvedValue({
+      data: {
+        check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({} as any);
+    tryMergeIfGreen.mockResolvedValueOnce(true as never);
+
+    await handlers['check_run.completed'][0](ctx);
+
+    expect(tryMergeIfGreen).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({
+        owner: 'o1',
+        repo: 'r1',
+        prNumber: 424,
+        mergeMethod: 'squash',
+      })
+    );
+
+    expect(
+      postOnce.mock.calls.some((call) =>
+        String(call[2] ?? '').includes(
+          'Manual review required because onApproval did not approve all changed registry files.'
+        )
+      )
+    ).toBe(false);
+
+    expect(
+      postOnce.mock.calls.some((call) => String(call[2] ?? '').includes('Routing to an approver for review'))
+    ).toBe(false);
+  });
+
   test('check_suite.failure: registry validate annotations are grouped and posted to matching PR', async () => {
     const { app, handlers } = mkApp();
     requestHandler(app);

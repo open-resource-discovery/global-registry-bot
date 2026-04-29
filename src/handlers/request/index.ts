@@ -140,6 +140,7 @@ type PullRequestReviewLike = {
   body?: string | null;
   submitted_at?: string | null;
   user?: UserLike | null;
+  commit_id?: string | null;
 };
 
 type RefCheckRunLike = {
@@ -5636,6 +5637,168 @@ async function resolveDirectPrRequestTypes(
   return Array.from(new Set(requestTypes));
 }
 
+function reviewTargetsCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
+  const normalizedHeadSha = toStringTrim(headSha);
+  if (!normalizedHeadSha) return false;
+
+  const reviewCommitId = toStringTrim(review?.commit_id);
+  if (reviewCommitId && reviewCommitId === normalizedHeadSha) return true;
+
+  const body = toStringTrim(review?.body);
+  if (!body) return false;
+
+  return body.includes(buildAutoApprovalReviewMarker(normalizedHeadSha));
+}
+
+function extractApprovedByLoginFromReviewBody(body: unknown): string {
+  const raw = toStringTrim(body);
+  if (!raw) return '';
+
+  const match = /\bApproved by\s+@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\b/i.exec(raw);
+  return normalizeLogin(match?.[1]);
+}
+
+function resolveEffectiveReviewApproverLogin(review: PullRequestReviewLike): string {
+  // Manual fallback approvals created by the bot have:
+  // "Approved by @realApprover"
+  // in the review body, while the GitHub review author is the bot.
+  const approvedByFromBody = extractApprovedByLoginFromReviewBody(review?.body);
+  if (approvedByFromBody) return approvedByFromBody;
+
+  return normalizeLogin(review?.user?.login);
+}
+
+async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  decision: ApprovalDecision,
+  options: DirectPrApprovalOptions = {}
+): Promise<boolean> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const hookManualApprovers = uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean));
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
+
+  let requesterLogin = normalizeLogin(pr.user?.login);
+
+  try {
+    requesterLogin = (await resolvePullRequestRequestAuthorId(context, repoInfo, pr)) || requesterLogin;
+  } catch {
+    // keep PR author fallback
+  }
+
+  let reviews: PullRequestReviewLike[] = [];
+  try {
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const currentHeadReviews = reviews
+    .filter((review) => reviewTargetsCurrentHead(review, headSha))
+    .filter((review) => ACTIONABLE_REVIEW_STATES.has(toStringTrim(review?.state).toUpperCase()));
+
+  if (!currentHeadReviews.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+        allowedApprovers,
+      },
+      'direct-pr:current-head-manual-approval:not-found'
+    );
+
+    return false;
+  }
+
+  const latestByEffectiveApprover = new Map<string, PullRequestReviewLike>();
+
+  for (const review of sortPullRequestReviewsChronologically(currentHeadReviews)) {
+    const approver = resolveEffectiveReviewApproverLogin(review).toLowerCase();
+    if (!approver) continue;
+
+    latestByEffectiveApprover.set(approver, review);
+  }
+
+  const latestCurrentHeadReviews = Array.from(latestByEffectiveApprover.values());
+
+  const hasBlockingChangesRequested = latestCurrentHeadReviews.some(
+    (review) => toStringTrim(review?.state).toUpperCase() === 'CHANGES_REQUESTED'
+  );
+
+  if (hasBlockingChangesRequested) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+      },
+      'direct-pr:current-head-manual-approval:blocking-changes-requested'
+    );
+
+    return false;
+  }
+
+  const approvingReview = latestCurrentHeadReviews.find((review) => {
+    const state = toStringTrim(review?.state).toUpperCase();
+    if (state !== 'APPROVED') return false;
+
+    const approver = resolveEffectiveReviewApproverLogin(review);
+    return isAuthorizedApprover(approver, requesterLogin || pr.user?.login, allowedApprovers);
+  });
+
+  if (!approvingReview) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+        requesterLogin,
+        allowedApprovers,
+        currentHeadReviewApprovers: latestCurrentHeadReviews.map((review) => ({
+          state: toStringTrim(review?.state).toUpperCase(),
+          user: normalizeLogin(review?.user?.login),
+          approvedBy: extractApprovedByLoginFromReviewBody(review?.body),
+          commitId: toStringTrim(review?.commit_id),
+        })),
+      },
+      'direct-pr:current-head-manual-approval:no-authorized-approval'
+    );
+
+    return false;
+  }
+
+  const approver = resolveEffectiveReviewApproverLogin(approvingReview);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha,
+      requestTypes,
+      requesterLogin,
+      approver,
+      allowedApprovers,
+    },
+    'direct-pr:current-head-manual-approval:accepted'
+  );
+
+  return true;
+}
+
 async function handoverStandaloneDirectPrToReview(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5811,6 +5974,22 @@ async function maybeHandleStandaloneDirectPrApproval(
   }
 
   if (decision.status === 'unknown') {
+    const hasCurrentHeadManualApproval = await hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
+      context,
+      repoInfo,
+      pr,
+      decision,
+      options
+    );
+
+    if (hasCurrentHeadManualApproval) {
+      await addApprovedLabelToPr(context, repoInfo, pr.number, {
+        skipStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
+      });
+
+      return 'approved';
+    }
+
     await handoverStandaloneDirectPrToReview(context, repoInfo, pr, decision, options);
     return 'continue';
   }
