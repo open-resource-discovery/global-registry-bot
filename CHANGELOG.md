@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.6](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.6)] - 2026-04-29
+
 ## Enhance approval flow with subcontext direct PR, system contact gate and full parent chain validation
 
 ### Changed
