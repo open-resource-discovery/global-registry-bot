@@ -11,6 +11,25 @@ import {
   findOpenIssuePrs as findOpenIssuePRsRaw,
 } from './pr/snapshot.js';
 import { createRequestPr as createRequestPRRaw } from './pr/create.js';
+import {
+  buildDetectedIssuesBody,
+  buildMachineReadableMetadataBlock,
+  normalizeMachineReadableIssues,
+  singleMachineReadableIssue,
+  type MachineReadableIssue,
+} from './domain/machine-readable.js';
+import {
+  isBlockingCheckConclusion,
+  isGreenCheckConclusion,
+  summarizeHeadGreenRun,
+  type HeadGreenRunSummary,
+} from './domain/check-conclusions.js';
+import {
+  buildFormDataFromRegistryDoc,
+  matchRequestTypesForFile as matchRequestTypesForFilePure,
+  pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
+  resolveRegistryDocResourceName,
+} from './domain/direct-pr-resource-mapping.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -188,13 +207,6 @@ type AutomatedApprovalReviewOptions = {
   skipApprovedLabelStateCleanup?: boolean;
 };
 
-type HeadGreenRunSummary = {
-  id?: number;
-  name: string;
-  status: string;
-  conclusion: string;
-};
-
 type HeadGreenEvaluation = {
   green: boolean;
   reason: string;
@@ -226,12 +238,6 @@ type EffectiveConstants = {
   approverPoolUsernames: string[];
 };
 
-type MachineReadableIssue = Readonly<{
-  field: string;
-  message: string;
-  filePath?: string;
-}>;
-
 type RegistryValidationMachineReadableSource = Readonly<{
   filePath: string;
   message: string;
@@ -239,71 +245,6 @@ type RegistryValidationMachineReadableSource = Readonly<{
 }>;
 
 type SchemaFieldAliasLookup = Map<string, string>;
-
-function normalizeMachineReadableIssues(value: unknown): MachineReadableIssue[] {
-  const items = Array.isArray(value) ? value : [];
-  const out: MachineReadableIssue[] = [];
-  const seen = new Set<string>();
-
-  for (const item of items) {
-    if (!isPlainObject(item)) continue;
-
-    const message = toStringTrim(item['message']);
-    const field = toStringTrim(item['field'] ?? item['path']) || 'details';
-    const filePath = toStringTrim(item['filePath']);
-
-    if (!message) continue;
-
-    const key = `${field}\u0000${filePath}\u0000${message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    out.push({
-      field,
-      message,
-      ...(filePath ? { filePath } : {}),
-    });
-  }
-
-  return out;
-}
-
-function buildMachineReadableMetadataBlock(issues: MachineReadableIssue[]): string {
-  const normalized = normalizeMachineReadableIssues(issues);
-  if (!normalized.length) return '';
-
-  return `
-##
-<details>
-<summary>Show as JSON (Robots Friendly)</summary>
-
-\`\`\`json
-${JSON.stringify(normalized, null, 2)}
-\`\`\`
-</details>`;
-}
-
-function buildDetectedIssuesBody(message: string, issues: MachineReadableIssue[] = []): string {
-  return `## Detected issues
-
-${message}${buildMachineReadableMetadataBlock(issues)}`;
-}
-
-function singleMachineReadableIssue(field: string, message: string, filePath = ''): MachineReadableIssue[] {
-  const normalizedMessage = toStringTrim(message);
-  const normalizedField = toStringTrim(field) || 'details';
-  const normalizedFilePath = toStringTrim(filePath);
-
-  return normalizedMessage
-    ? [
-        {
-          field: normalizedField,
-          message: normalizedMessage,
-          ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
-        },
-      ]
-    : [];
-}
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
 const MERGE_INFLIGHT = new Map<string, Promise<void>>();
@@ -2652,34 +2593,6 @@ async function hasAutoApprovalReviewForHead(
   }
 }
 
-function isGreenCheckConclusion(conclusion: string): boolean {
-  const value = toStringTrim(conclusion).toLowerCase();
-  return value === 'success' || value === 'neutral' || value === 'skipped';
-}
-
-function isBlockingCheckConclusion(conclusion: string): boolean {
-  const value = toStringTrim(conclusion).toLowerCase();
-  return (
-    value === 'failure' ||
-    value === 'cancelled' ||
-    value === 'timed_out' ||
-    value === 'action_required' ||
-    value === 'startup_failure' ||
-    value === 'stale'
-  );
-}
-
-function summarizeHeadGreenRun(run: RefCheckRunLike): HeadGreenRunSummary {
-  const id = typeof run?.id === 'number' && Number.isFinite(run.id) ? run.id : undefined;
-
-  return {
-    ...(id !== undefined ? { id } : {}),
-    name: toStringTrim(run?.name) || '__unnamed__',
-    status: toStringTrim(run?.status).toLowerCase(),
-    conclusion: toStringTrim(run?.conclusion).toLowerCase(),
-  };
-}
-
 async function evaluateHeadGreenForApprovalReevaluation(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -4108,36 +4021,8 @@ function normalizeTypeToken(value: unknown): string {
     .toLowerCase();
 }
 
-function mapRegistryDocTypeToRequestType(value: unknown): string {
-  const type = normalizeTypeToken(value);
-
-  if (type === 'system') return 'systemNamespace';
-  if (type === 'authority') return 'authorityNamespace';
-  if (type === 'subcontext') return 'subContextNamespace';
-  if (type === 'product') return 'product';
-  if (type === 'vendor') return 'vendor';
-
-  return '';
-}
-
 function matchRequestTypesForFile(context: BotContext<RequestEvents>, filePath: string): string[] {
-  const fp = normalizeRepoPath(filePath);
-  const cfg = context.resourceBotConfig ?? DEFAULT_CONFIG;
-  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
-  const matches: string[] = [];
-
-  for (const [requestType, entry] of Object.entries(reqs)) {
-    if (!isPlainObject(entry)) continue;
-
-    const folder = normalizeRepoPath(entry['folderName']);
-    if (!folder) continue;
-
-    if (fp === folder || fp.startsWith(`${folder}/`)) {
-      matches.push(requestType);
-    }
-  }
-
-  return matches;
+  return matchRequestTypesForFilePure(context.resourceBotConfig ?? DEFAULT_CONFIG, filePath);
 }
 
 function pickRequestTypeForChangedResource(
@@ -4145,82 +4030,7 @@ function pickRequestTypeForChangedResource(
   filePath: string,
   doc: Record<string, unknown>
 ): string {
-  const candidates = matchRequestTypesForFile(context, filePath);
-  if (candidates.length === 0) return '';
-  if (candidates.length === 1) return candidates[0];
-
-  const byDocType = mapRegistryDocTypeToRequestType(doc['type']);
-  if (byDocType && candidates.includes(byDocType)) return byDocType;
-
-  return '';
-}
-
-function resolveRegistryDocResourceName(doc: Record<string, unknown>): string {
-  const directKeys = ['identifier', 'namespace', 'product-id', 'productId', 'id', 'name', 'vendor'];
-
-  for (const key of directKeys) {
-    const value = toStringTrim(doc[key]).replaceAll('\u00a0', ' ').trim();
-    if (value) return value;
-  }
-
-  return '';
-}
-
-function stringifyRegistryDocFormValue(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-
-  if (Array.isArray(value)) {
-    const scalarItems = value
-      .map((item) =>
-        typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean' ? String(item) : ''
-      )
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    if (scalarItems.length === value.length) return scalarItems.join('\n');
-  }
-
-  return YAML.stringify(value).trim();
-}
-
-function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
-  const out: FormData = {};
-
-  for (const [key, value] of Object.entries(doc)) {
-    const serialized = stringifyRegistryDocFormValue(value);
-    if (serialized) out[key] = serialized;
-  }
-
-  const resourceName = resolveRegistryDocResourceName(doc);
-  if (resourceName) {
-    out.identifier = out.identifier || resourceName;
-    out.namespace = out.namespace || resourceName;
-  }
-
-  const name = toStringTrim(doc['name']);
-  if (name && !out.name) out.name = name;
-
-  const description = toStringTrim(doc['description']);
-  if (description && !out.description) out.description = description;
-
-  const title = toStringTrim(doc['title']);
-  if (title && !out.title) out.title = title;
-
-  const vendor = toStringTrim(doc['vendor']);
-  if (vendor && !out.vendor) out.vendor = vendor;
-
-  const contacts = Array.isArray(doc['contact'])
-    ? doc['contact']
-        .map((v: unknown) => toStringTrim(v))
-        .filter(Boolean)
-        .join('\n')
-    : toStringTrim(doc['contact']);
-
-  if (contacts && !out.contact) out.contact = contacts;
-
-  return out;
+  return pickRequestTypeForChangedResourcePure(context.resourceBotConfig ?? DEFAULT_CONFIG, filePath, doc);
 }
 
 function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: string): boolean {
