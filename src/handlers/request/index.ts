@@ -41,6 +41,11 @@ import {
   resolveEffectiveReviewApproverLogin,
   reviewTargetsCurrentHead,
 } from './domain/current-head-approval.js';
+import {
+  buildRoutingLockBody,
+  readRoutingLockExpected,
+  stripRoutingLockFromBody,
+} from './domain/routing-lock-marker.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -7030,9 +7035,6 @@ async function tryLoadTemplateForLabels(
   }
 }
 
-const ROUTING_LOCK_READ_RE = /<!--\s*nsreq:routing-lock\s*=\s*({[\s\S]*?})\s*-->/i;
-const ROUTING_LOCK_STRIP_RE = /<!--\s*nsreq:routing-lock\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
 const PARENT_APPROVAL_READ_RE = /<!--\s*nsreq:parent-approval\s*=\s*({[\s\S]*?})\s*-->/i;
 const PARENT_APPROVAL_STRIP_RE = /<!--\s*nsreq:parent-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
 
@@ -7697,25 +7699,6 @@ async function isRoutingLabelName(
   }
 }
 
-type RoutingLockMeta = { v: 1; expected: string };
-
-function readRoutingLockExpected(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  const m = body.match(ROUTING_LOCK_READ_RE);
-  if (!m) return '';
-  try {
-    const meta = JSON.parse(String(m[1] || ''));
-    return toStringTrim((meta as Record<string, unknown>)?.['expected']);
-  } catch {
-    return '';
-  }
-}
-
-function stripRoutingLockFromBody(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  return body.replace(ROUTING_LOCK_STRIP_RE, '').trimEnd();
-}
-
 function readIssueBodyForProcessing(issueBody: unknown): string {
   return toStringTrim(stripContactApprovalFromBody(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody))));
 }
@@ -7783,10 +7766,7 @@ async function ensureRoutingLockMarker(
   const current = readRoutingLockExpected(issue.body);
   if (normalizeKey(current) === normalizeKey(expected)) return false;
 
-  const cleaned = stripRoutingLockFromBody(issue.body);
-  const meta: RoutingLockMeta = { v: 1, expected };
-  const metaStr = JSON.stringify(meta);
-  const nextBody = `${cleaned}\n\n<!-- nsreq:routing-lock = ${metaStr} -->\n`;
+  const nextBody = buildRoutingLockBody(issue.body, expected);
 
   try {
     await context.octokit.issues.update({ ...params, body: nextBody });
