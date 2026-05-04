@@ -41,21 +41,16 @@ import {
   resolveEffectiveReviewApproverLogin,
   reviewTargetsCurrentHead,
 } from './domain/current-head-approval.js';
-import {
-  buildRoutingLockBody,
-  readRoutingLockExpected,
-  stripRoutingLockFromBody,
-} from './domain/routing-lock-marker.js';
+import { buildRoutingLockBody, readRoutingLockExpected } from './domain/routing-lock-marker.js';
 import {
   buildContactApprovalBody,
   buildParentApprovalBody,
   readContactApprovalMeta,
   readParentApprovalMeta,
-  stripContactApprovalFromBody,
-  stripParentApprovalFromBody,
   type ContactApprovalMeta,
   type ParentApprovalMeta,
 } from './domain/approval-markers.js';
+import { readIssueBodyForProcessing } from './domain/issue-body-processing.js';
 import {
   buildRegistryValidationAggregateBody,
   buildRegistryValidationCommentHeading,
@@ -7476,10 +7471,6 @@ async function isRoutingLabelName(
   } catch {
     return false;
   }
-}
-
-function readIssueBodyForProcessing(issueBody: unknown): string {
-  return toStringTrim(stripContactApprovalFromBody(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody))));
 }
 
 function buildCompatibleRequestSnapshotHashes(
