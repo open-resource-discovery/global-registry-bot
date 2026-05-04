@@ -30,6 +30,11 @@ import {
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
   resolveRegistryDocResourceName,
 } from './domain/direct-pr-resource-mapping.js';
+import {
+  normalizeApprovalDecision,
+  promoteUnknownApprovalDecisionForDirectPrRequester,
+  type ApprovalDecision,
+} from './domain/approval-decision.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -1392,19 +1397,6 @@ type ValidateRequestIssueFn = (
   options?: { template?: TemplateLike; formData?: FormData }
 ) => Promise<ValidateRequestIssueResult>;
 
-type ApprovalDecision = {
-  status?: 'approved' | 'rejected' | 'unknown';
-  path?: string;
-  reason?: string;
-  comment?: string;
-  message?: string;
-  approvers?: string[];
-  errors?: {
-    field?: string;
-    message?: string;
-  }[];
-};
-
 type ApprovalHandlingResult = 'approved' | 'rejected' | 'continue';
 
 type RunApprovalHookFn = (
@@ -1942,23 +1934,6 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
   return JSON.stringify(payload, null, 2);
 }
 
-function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
-  if (decision === true) return { status: 'approved' };
-  if (decision === false) return {};
-  if (!decision) return {};
-
-  const normalized = decision || {};
-  const approvers = uniqLogins(
-    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
-  );
-  const { approvers: _approvers, ...normalizedWithoutApprovers } = normalized;
-
-  return {
-    ...normalizedWithoutApprovers,
-    ...(approvers.length ? { approvers } : {}),
-  };
-}
-
 function getUnknownManualApprovers(decision: ApprovalDecision): string[] {
   const normalized = normalizeApprovalDecision(decision);
 
@@ -1989,35 +1964,6 @@ function buildAutoApprovalReviewBody(decision: ApprovalDecision, headSha: string
   const marker = buildAutoApprovalReviewMarker(headSha);
 
   return visible ? `${visible}\n\n${marker}` : marker;
-}
-
-function isApprovalDecisionAuthorizedByHookApprovers(
-  decision: ApprovalDecision,
-  requesterId: string | undefined | null
-): boolean {
-  const requester = normalizeLogin(requesterId).toLowerCase();
-  if (!requester) return false;
-
-  const approvers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
-  return approvers.some((approver) => normalizeLogin(approver).toLowerCase() === requester);
-}
-
-function promoteUnknownApprovalDecisionForDirectPrRequester(
-  decision: ApprovalDecision,
-  requesterId: string | undefined | null
-): ApprovalDecision {
-  const normalized = normalizeApprovalDecision(decision);
-
-  if (normalized.status !== 'unknown') return normalized;
-  if (!isApprovalDecisionAuthorizedByHookApprovers(normalized, requesterId)) return normalized;
-
-  return {
-    ...normalized,
-    status: 'approved',
-    comment: getVisibleApprovalText(normalized),
-    message: '',
-    reason: '',
-  };
 }
 
 function buildApprovalUnknownBody(decision: ApprovalDecision): string {
