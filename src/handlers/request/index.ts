@@ -36,6 +36,11 @@ import {
   type ApprovalDecision,
 } from './domain/approval-decision.js';
 import {
+  getUnknownManualApprovers,
+  getVisibleApprovalText,
+  isApprovalDecisionAuthorizedByHookApprovers,
+} from './domain/approval-policy.js';
+import {
   extractApprovedByLoginFromReviewBody,
   isApprovalReviewForCurrentHead,
   resolveEffectiveReviewApproverLogin,
@@ -1810,31 +1815,6 @@ function buildApprovalDecisionJson(decision: ApprovalDecision): string {
   if (Array.isArray(decision.approvers) && decision.approvers.length) payload.approvers = decision.approvers;
   if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
   return JSON.stringify(payload, null, 2);
-}
-
-function getUnknownManualApprovers(decision: ApprovalDecision): string[] {
-  const normalized = normalizeApprovalDecision(decision);
-
-  if (normalized.status !== 'unknown') return [];
-
-  return uniqLogins((normalized.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
-}
-
-function isManualApprovalRequiredText(value: unknown): boolean {
-  return /\bmanual approval required\b/i.test(toStringTrim(value));
-}
-
-function getVisibleApprovalText(decision: ApprovalDecision): string {
-  const comment = toStringTrim(decision.comment);
-  if (comment && !isManualApprovalRequiredText(comment)) return comment;
-
-  const message = toStringTrim(decision.message);
-  if (message && !isManualApprovalRequiredText(message)) return message;
-
-  const reason = toStringTrim(decision.reason);
-  if (reason && !isManualApprovalRequiredText(reason)) return reason;
-
-  return '';
 }
 
 function buildAutoApprovalReviewBody(decision: ApprovalDecision, headSha: string): string {
@@ -5306,20 +5286,14 @@ async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
 
   const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
   const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
-  const hookApprovers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
 
-  const allowedApprovers = new Set(
-    uniqLogins([...(configuredApprovers || []), ...hookApprovers]).map((login) => normalizeLogin(login).toLowerCase())
+  return isApprovalDecisionAuthorizedByHookApprovers(
+    decision,
+    configuredApprovers,
+    reviews
+      .filter((review) => isApprovalReviewForCurrentHead(review, headSha))
+      .map((review) => normalizeLogin(review?.user?.login))
   );
-
-  if (!allowedApprovers.size) return false;
-
-  return reviews.some((review) => {
-    if (!isApprovalReviewForCurrentHead(review, headSha)) return false;
-
-    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
-    return Boolean(reviewer && allowedApprovers.has(reviewer));
-  });
 }
 
 async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
