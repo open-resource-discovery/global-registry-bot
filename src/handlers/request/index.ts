@@ -46,6 +46,16 @@ import {
   readRoutingLockExpected,
   stripRoutingLockFromBody,
 } from './domain/routing-lock-marker.js';
+import {
+  buildContactApprovalBody,
+  buildParentApprovalBody,
+  readContactApprovalMeta,
+  readParentApprovalMeta,
+  stripContactApprovalFromBody,
+  stripParentApprovalFromBody,
+  type ContactApprovalMeta,
+  type ParentApprovalMeta,
+} from './domain/approval-markers.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -7035,29 +7045,6 @@ async function tryLoadTemplateForLabels(
   }
 }
 
-const PARENT_APPROVAL_READ_RE = /<!--\s*nsreq:parent-approval\s*=\s*({[\s\S]*?})\s*-->/i;
-const PARENT_APPROVAL_STRIP_RE = /<!--\s*nsreq:parent-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
-type ParentApprovalMeta = {
-  v: 1;
-  parent: string;
-  target: string;
-  owners: string[];
-  approvedBy?: string;
-  approvedAt?: string;
-};
-
-type ContactApprovalMeta = {
-  v: 1;
-  target: string;
-  owners: string[];
-  approvedBy?: string;
-  approvedAt?: string;
-};
-
-const CONTACT_APPROVAL_READ_RE = /<!--\s*nsreq:contact-approval\s*=\s*({[\s\S]*?})\s*-->/i;
-const CONTACT_APPROVAL_STRIP_RE = /<!--\s*nsreq:contact-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
 function sameNormalizedLoginSet(a: string[], b: string[]): boolean {
   const normalizedA = uniqLogins(a)
     .map((login) => normalizeLogin(login))
@@ -7087,38 +7074,6 @@ function getApprovedParentOwnerLogin(issueBody: unknown, target: string): string
   return normalizeKey(meta.target) === normalizeKey(target) ? approvedBy : '';
 }
 
-function stripContactApprovalFromBody(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  return body.replace(CONTACT_APPROVAL_STRIP_RE, '').trimEnd();
-}
-
-function readContactApprovalMeta(issueBody: unknown): ContactApprovalMeta | null {
-  const body = String(issueBody || '');
-  const m = body.match(CONTACT_APPROVAL_READ_RE);
-  if (!m) return null;
-
-  try {
-    const raw = JSON.parse(String(m[1] || ''));
-    if (!isPlainObject(raw)) return null;
-    if (raw['v'] !== 1) return null;
-
-    const target = toStringTrim(raw['target']);
-    const ownersRaw = raw['owners'];
-    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
-    const approvedBy = normalizeLogin(raw['approvedBy']);
-    const approvedAt = toStringTrim(raw['approvedAt']);
-
-    if (!target || !owners.length) return null;
-
-    const out: ContactApprovalMeta = { v: 1, target, owners };
-    if (approvedBy) out.approvedBy = approvedBy;
-    if (approvedAt) out.approvedAt = approvedAt;
-    return out;
-  } catch {
-    return null;
-  }
-}
-
 async function ensureContactApprovalMarker(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -7126,13 +7081,12 @@ async function ensureContactApprovalMarker(
   meta: ContactApprovalMeta | null
 ): Promise<boolean> {
   const current = readContactApprovalMeta(issue.body);
-  const cleaned = stripContactApprovalFromBody(issue.body);
 
   if (!meta) {
     if (!current) return false;
 
     try {
-      const nextBody = `${cleaned}\n`;
+      const nextBody = buildContactApprovalBody(issue.body, null);
       await context.octokit.issues.update({ ...params, body: nextBody });
       issue.body = nextBody;
       return true;
@@ -7164,8 +7118,7 @@ async function ensureContactApprovalMarker(
 
   if (same) return false;
 
-  const metaStr = JSON.stringify(next);
-  const nextBody = `${cleaned}\n\n<!-- nsreq:contact-approval = ${metaStr} -->\n`;
+  const nextBody = buildContactApprovalBody(issue.body, next);
 
   try {
     await context.octokit.issues.update({ ...params, body: nextBody });
@@ -7363,40 +7316,6 @@ ${mentions}`,
   return true;
 }
 
-function stripParentApprovalFromBody(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  return body.replace(PARENT_APPROVAL_STRIP_RE, '').trimEnd();
-}
-
-function readParentApprovalMeta(issueBody: unknown): ParentApprovalMeta | null {
-  const body = String(issueBody || '');
-  const m = body.match(PARENT_APPROVAL_READ_RE);
-  if (!m) return null;
-
-  try {
-    const raw = JSON.parse(String(m[1] || ''));
-    if (!isPlainObject(raw)) return null;
-    if (raw['v'] !== 1) return null;
-
-    const parent = toStringTrim(raw['parent']);
-    const target = toStringTrim(raw['target']);
-    const ownersRaw = raw['owners'];
-    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
-
-    const approvedBy = normalizeLogin(raw['approvedBy']);
-    const approvedAt = toStringTrim(raw['approvedAt']);
-
-    if (!parent || !target) return null;
-
-    const out: ParentApprovalMeta = { v: 1, parent, target, owners };
-    if (approvedBy) out.approvedBy = approvedBy;
-    if (approvedAt) out.approvedAt = approvedAt;
-    return out;
-  } catch {
-    return null;
-  }
-}
-
 async function ensureParentApprovalMarker(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -7404,12 +7323,11 @@ async function ensureParentApprovalMarker(
   meta: ParentApprovalMeta | null
 ): Promise<boolean> {
   const current = readParentApprovalMeta(issue.body);
-  const cleaned = stripParentApprovalFromBody(issue.body);
 
   if (!meta) {
     if (!current) return false;
     try {
-      const nextBody = `${cleaned}\n`;
+      const nextBody = buildParentApprovalBody(issue.body, null);
       await context.octokit.issues.update({ ...params, body: nextBody });
       issue.body = nextBody;
       return true;
@@ -7442,8 +7360,7 @@ async function ensureParentApprovalMarker(
 
   if (same) return false;
 
-  const metaStr = JSON.stringify(next);
-  const nextBody = `${cleaned}\n\n<!-- nsreq:parent-approval = ${metaStr} -->\n`;
+  const nextBody = buildParentApprovalBody(issue.body, next);
 
   try {
     await context.octokit.issues.update({ ...params, body: nextBody });
