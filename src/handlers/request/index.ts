@@ -68,6 +68,7 @@ import {
   toSectionTitle,
   type RegistryValidationMachineReadableSource,
 } from './domain/registry-validation-annotations.js';
+import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -1001,12 +1002,6 @@ const toLabelNames = (labels: unknown): string[] =>
     .map((s) => toStringTrim(s))
     .filter(Boolean);
 
-const stripQuoteAndCode = (text: unknown): string =>
-  toStringTrim(text)
-    .replaceAll(/```[\s\S]*?```/g, '')
-    .replaceAll(/^>.*$/gm, '')
-    .trim();
-
 const ISSUE_FORM_FIELD_HEADING_RE = /^###\s+\S+/m;
 
 function hasIssueFormInputs(issue: IssueLike | null | undefined): boolean {
@@ -1018,36 +1013,6 @@ const isBotSender = (sender: SenderLike | undefined | null): boolean =>
   sender?.type === 'Bot' || /(\[bot\]|-bot)$/i.test(sender?.login || '');
 
 const head = (s: unknown): string => toStringTrim(s).split(':')[0].trim();
-
-function normalizeApprovalCommandToken(value: unknown): string {
-  let s = toStringTrim(value).replace(/^\/+/, '').trim().toLowerCase();
-
-  const leadingTrimChars = new Set(['"', "'", '`', '(', '[', '{', '<']);
-  const trailingTrimChars = new Set(['"', "'", '`', ')', ']', '}', '>', '.', ',', '!', '?', ';', ':']);
-
-  while (s && leadingTrimChars.has(s[0])) s = s.slice(1).trim();
-  while (s && trailingTrimChars.has(s.at(-1) || '')) s = s.slice(0, -1).trim();
-
-  return s;
-}
-
-function isExplicitApprovalCommand(text: unknown, configuredKeyword?: string): boolean {
-  const lines = toStringTrim(text)
-    .split(/\r?\n/)
-    .map((line) => toStringTrim(line))
-    .filter(Boolean);
-
-  if (!lines.length) return false;
-
-  const allowed = new Set<string>(['approved', 'approve', 'lgtm']);
-  const cfg = normalizeApprovalCommandToken(configuredKeyword);
-  if (cfg) allowed.add(cfg);
-
-  return lines.some((line) => {
-    const normalized = normalizeApprovalCommandToken(line);
-    return Boolean(normalized) && allowed.has(normalized);
-  });
-}
 
 const resolveEffectiveConstants = (context: BotContext<RequestEvents>): EffectiveConstants => {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
@@ -7849,7 +7814,7 @@ export default function requestHandler(app: Probot): void {
   };
 
   // normalizeIssueTitle moved to outer scope
-  const isApprovalComment = (context: BotContext<RequestEvents>, strippedText: string): boolean => {
+  const isApprovalCommentForContext = (context: BotContext<RequestEvents>, strippedText: string): boolean => {
     const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
     const wf = cfg?.workflow ?? {};
     let labelsCfg: Record<string, unknown> = {};
@@ -7865,7 +7830,7 @@ export default function requestHandler(app: Probot): void {
       approvalKeyword = toStringTrim(approvalSuccessful);
     }
 
-    return isExplicitApprovalCommand(strippedText, approvalKeyword);
+    return isApprovalComment(strippedText, approvalKeyword);
   };
 
   // moved to outer scope
@@ -8239,7 +8204,7 @@ export default function requestHandler(app: Probot): void {
       const repoInfo: RepoInfo = { owner, repo };
 
       const stripped = stripQuoteAndCode(comment.body || '');
-      const isApproval = isApprovalComment(context, stripped);
+      const isApproval = isApprovalCommentForContext(context, stripped);
 
       if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
         const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
@@ -8306,7 +8271,7 @@ export default function requestHandler(app: Probot): void {
       }
 
       if (comment.user.login === issue.user?.login) {
-        const saysUpdated = /\b(updated|update|fixed|fix(ed)?|addressed|done)\b/i.test(toStringTrim(comment.body));
+        const saysUpdated = isAuthorUpdateComment(comment.body);
         if (!saysUpdated) return;
         await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData);
       }
