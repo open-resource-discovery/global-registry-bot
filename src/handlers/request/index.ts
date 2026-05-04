@@ -56,6 +56,18 @@ import {
   type ContactApprovalMeta,
   type ParentApprovalMeta,
 } from './domain/approval-markers.js';
+import {
+  buildRegistryValidationAggregateBody,
+  buildRegistryValidationCommentHeading,
+  collectRegistryValidationArtifacts,
+  extractFieldFromMsg,
+  filterMachineReadableSourcesForFile,
+  filterRegistryValidationEntries,
+  isRegistryValidateAnnotation,
+  normalizeMsg,
+  toSectionTitle,
+  type RegistryValidationMachineReadableSource,
+} from './domain/registry-validation-annotations.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -263,12 +275,6 @@ type EffectiveConstants = {
   approverUsernames: string[];
   approverPoolUsernames: string[];
 };
-
-type RegistryValidationMachineReadableSource = Readonly<{
-  filePath: string;
-  message: string;
-  schemaPath?: string;
-}>;
 
 type SchemaFieldAliasLookup = Map<string, string>;
 
@@ -915,115 +921,10 @@ async function listAllCheckRunAnnotations(
   return all;
 }
 
-function isRegistryValidateAnnotation(a: CheckRunAnnotationLike): boolean {
-  const t = toStringTrim(a?.title).toLowerCase();
-  return t.startsWith('registry-validate');
-}
-
-function stripRegistrySuffix(msg: string): string {
-  const i = msg.indexOf(' [file=');
-  return (i >= 0 ? msg.slice(0, i) : msg).trim();
-}
-
 const normalizeKey = (s: unknown): string => {
   const base = toStringTrim(s).toLowerCase();
   return base.replaceAll(/[^\w]+/g, '-').replaceAll(/(?:^-+|-+$)/g, '');
 };
-
-function toSectionTitle(field: string): string {
-  const raw = toStringTrim(field);
-  if (!raw) return 'Details';
-
-  const lc = raw.toLowerCase();
-  if (lc === 'contact' || lc === 'contacts') return 'Contacts';
-
-  // Humanize
-  const spaced = raw
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .trim();
-
-  if (!spaced) return 'Details';
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function normalizeMsg(m: string): string {
-  const s = toStringTrim(m);
-
-  // Strip leading "/path" token if present
-  const firstSpace = s.indexOf(' ');
-  const maybePath = firstSpace > 0 ? s.slice(0, firstSpace) : '';
-  const rest = firstSpace > 0 ? s.slice(firstSpace + 1).trim() : s;
-
-  const msgOnly = maybePath.startsWith('/') ? rest : s;
-
-  // Normalize "must" -> "MUST"
-  return msgOnly.replace(/\bmust\b/gi, 'MUST');
-}
-
-function extractFieldFromMsg(m: string): string {
-  const s = toStringTrim(m);
-  if (!s) return '';
-
-  const ptr = /^\/([^/\s]+)(?:\/|\s|$)/.exec(s);
-  if (ptr?.[1]) return ptr[1];
-
-  const reqProp = /\b(?:required property|Property)\s*['"]([^'"]+)['"]/.exec(s);
-  if (reqProp?.[1]) return reqProp[1];
-
-  const addProp = /\badditional property\s*['"]([^'"]+)['"]/.exec(s);
-  if (addProp?.[1]) return addProp[1];
-
-  const labelReq = /^(.+?)\s+is\s+required\.\s*$/i.exec(s);
-  if (labelReq?.[1]) return normalizeKey(labelReq[1]);
-
-  const leadingField = /^([a-z][a-zA-Z0-9_-]*)\s+(?:must|MUST)\b/.exec(s);
-  if (leadingField?.[1]) return leadingField[1];
-
-  const dotted = /^([a-z][a-zA-Z0-9_-]*)(?:\[[^\]]*\])?\.[a-zA-Z0-9_-]+\s+is\s+required\./i.exec(s);
-  if (dotted?.[1]) return dotted[1];
-
-  return '';
-}
-
-function groupRegistryValidationMessages(messages: string[]): Map<string, string[]> {
-  const grouped = new Map<string, string[]>();
-
-  for (const raw of messages) {
-    const field = extractFieldFromMsg(raw) || 'details';
-    const msg = normalizeMsg(raw);
-    if (!msg) continue;
-
-    const arr = grouped.get(field) ?? [];
-    if (!arr.includes(msg)) arr.push(msg);
-    grouped.set(field, arr);
-  }
-
-  return grouped;
-}
-
-function sortRegistryValidationGroupKeys(grouped: Map<string, string[]>): string[] {
-  return Array.from(grouped.keys()).sort((a, b) => {
-    if (a === 'details') return 1;
-    if (b === 'details') return -1;
-    return a.localeCompare(b);
-  });
-}
-
-function appendRegistryValidationSections(lines: string[], grouped: Map<string, string[]>, headingLevel: string): void {
-  for (const key of sortRegistryValidationGroupKeys(grouped)) {
-    lines.push(`${headingLevel} ${toSectionTitle(key)}`);
-    for (const msg of grouped.get(key) ?? []) {
-      lines.push(`- ${msg}`);
-    }
-    lines.push('');
-  }
-}
-
-function appendRegistryValidationFileSection(lines: string[], filePath: string, messages: string[]): void {
-  lines.push(`### File: \`${filePath}\``, '');
-  appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '####');
-}
 
 async function buildRegistryValidationPrCommentBody(
   context: BotContext<RequestEvents>,
@@ -1032,9 +933,11 @@ async function buildRegistryValidationPrCommentBody(
   messages: string[],
   machineReadableSources: RegistryValidationMachineReadableSource[]
 ): Promise<string> {
-  const lines: string[] = ['## Detected issues', '', `### File: \`${filePath}\``, ''];
-
-  appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '###');
+  const lines: string[] = [
+    '## Detected issues',
+    '',
+    ...buildRegistryValidationCommentHeading(filePath, messages, '###'),
+  ];
 
   const body = lines.join('\n').trimEnd();
   const machineReadable = await buildRegistryValidationMachineReadableIssues(context, repoInfo, machineReadableSources);
@@ -1050,9 +953,7 @@ async function buildRegistryValidationAggregatePrCommentBody(
   byFile: Map<string, string[]>,
   machineReadableSources: RegistryValidationMachineReadableSource[]
 ): Promise<string> {
-  const entries = Array.from(byFile.entries())
-    .filter(([, messages]) => Array.isArray(messages) && messages.length > 0)
-    .sort(([a], [b]) => a.localeCompare(b));
+  const entries = filterRegistryValidationEntries(byFile);
 
   if (!entries.length) return '';
   if (entries.length === 1) {
@@ -1062,19 +963,15 @@ async function buildRegistryValidationAggregatePrCommentBody(
       repoInfo,
       filePath,
       messages,
-      machineReadableSources.filter((item) => toStringTrim(item.filePath) === toStringTrim(filePath))
+      filterMachineReadableSourcesForFile(machineReadableSources, filePath)
     );
   }
 
-  const lines: string[] = ['## Detected issues', ''];
-
-  for (const [filePath, messages] of entries) {
-    appendRegistryValidationFileSection(lines, filePath, messages);
-  }
+  const body = buildRegistryValidationAggregateBody(byFile);
 
   const machineReadable = await buildRegistryValidationMachineReadableIssues(context, repoInfo, machineReadableSources);
 
-  return `${lines.join('\n').trimEnd()}
+  return `${body}
 
 ${buildMachineReadableMetadataBlock(machineReadable)}`;
 }
@@ -8946,24 +8843,7 @@ export default function requestHandler(app: Probot): void {
         }
         if (!relevant.length) continue;
 
-        const byFile = new Map<string, string[]>();
-        const machineReadableSources: RegistryValidationMachineReadableSource[] = [];
-        for (const a of relevant) {
-          const file = toStringTrim(a.path) || 'unknown file';
-          const rawMsg = toStringTrim(a.message) || toStringTrim(a.raw_details);
-          const msg = stripRegistrySuffix(rawMsg);
-          if (!msg) continue;
-          const schemaMeta = /\bschema=([^\s\]]+)/.exec(rawMsg) ?? /\[schema=([^\]]+)\]/.exec(rawMsg);
-          const arr = byFile.get(file) ?? [];
-          arr.push(msg);
-          byFile.set(file, arr);
-
-          machineReadableSources.push({
-            filePath: file,
-            message: msg,
-            schemaPath: schemaMeta?.[1] ? toStringTrim(schemaMeta[1]) : '',
-          });
-        }
+        const { byFile, machineReadableSources } = collectRegistryValidationArtifacts(relevant);
 
         const currentCiTags = ['nsreq:ci-validation'];
 
