@@ -35,6 +35,12 @@ import {
   promoteUnknownApprovalDecisionForDirectPrRequester,
   type ApprovalDecision,
 } from './domain/approval-decision.js';
+import {
+  extractApprovedByLoginFromReviewBody,
+  isApprovalReviewForCurrentHead,
+  resolveEffectiveReviewApproverLogin,
+  reviewTargetsCurrentHead,
+} from './domain/current-head-approval.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
@@ -5391,20 +5397,6 @@ async function resolveDirectPrRequestTypes(
   return Array.from(new Set(requestTypes));
 }
 
-function isApprovalReviewForCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
-  const normalizedHeadSha = toStringTrim(headSha);
-  if (!normalizedHeadSha) return false;
-
-  const state = toStringTrim(review?.state).toUpperCase();
-  if (state !== 'APPROVED') return false;
-
-  const commitId = toStringTrim(review?.commit_id);
-  if (commitId && commitId === normalizedHeadSha) return true;
-
-  const marker = buildAutoApprovalReviewMarker(normalizedHeadSha);
-  return Boolean(marker && toStringTrim(review?.body).includes(marker));
-}
-
 async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5456,37 +5448,6 @@ async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
     const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
     return Boolean(reviewer && allowedApprovers.has(reviewer));
   });
-}
-
-function reviewTargetsCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
-  const normalizedHeadSha = toStringTrim(headSha);
-  if (!normalizedHeadSha) return false;
-
-  const reviewCommitId = toStringTrim(review?.commit_id);
-  if (reviewCommitId && reviewCommitId === normalizedHeadSha) return true;
-
-  const body = toStringTrim(review?.body);
-  if (!body) return false;
-
-  return body.includes(buildAutoApprovalReviewMarker(normalizedHeadSha));
-}
-
-function extractApprovedByLoginFromReviewBody(body: unknown): string {
-  const raw = toStringTrim(body);
-  if (!raw) return '';
-
-  const match = /\bApproved by\s+@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\b/i.exec(raw);
-  return normalizeLogin(match?.[1]);
-}
-
-function resolveEffectiveReviewApproverLogin(review: PullRequestReviewLike): string {
-  // Manual fallback approvals created by the bot have:
-  // "Approved by @realApprover"
-  // in the review body, while the GitHub review author is the bot.
-  const approvedByFromBody = extractApprovedByLoginFromReviewBody(review?.body);
-  if (approvedByFromBody) return approvedByFromBody;
-
-  return normalizeLogin(review?.user?.login);
 }
 
 async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
