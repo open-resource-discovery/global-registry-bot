@@ -1279,4 +1279,107 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     expect(octokit.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
+
+  test('issues.labeled: malformed routing lock in refreshed issue disables lock handling', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const cfg: StaticConfig = {
+      workflow: { labels: { approvalSuccessful: ['Approved'] } },
+      requests: {},
+    };
+
+    const octokit = mkOctokit();
+    octokit.issues.get.mockResolvedValueOnce({
+      data: {
+        number: 13,
+        title: 'T',
+        body: 'B\n\n<!-- nsreq:routing-lock = not-json -->',
+        labels: [{ name: 'route-1' }, { name: 'route-2' }],
+        user: { login: 'alice' },
+      },
+    });
+
+    loadTemplate.mockImplementation(async (_ctx: unknown, args: LoadTemplateArgs) => {
+      const lbls = Array.isArray(args.issueLabels) ? args.issueLabels.map(String) : [];
+      if (lbls.length === 1 && (lbls[0] === 'route-1' || lbls[0] === 'route-2')) return DEFAULT_TEMPLATE;
+      if (lbls.length > 1) throw new Error('Cannot resolve template: multiple routing label');
+      throw new Error('no routing label found');
+    });
+
+    const ctx = mkCtx({
+      eventName: 'issues.labeled',
+      action: 'labeled',
+      issue: {
+        number: 13,
+        title: 'T',
+        body: 'B\n\n<!-- nsreq:routing-lock = not-json -->',
+        state: 'open',
+        labels: [{ name: 'route-1' }, { name: 'route-2' }],
+        user: { login: 'alice' },
+      },
+      sender: { type: 'User', login: 'bob' },
+      labelName: 'route-2',
+      config: cfg,
+      octokit,
+    });
+
+    await handlers['issues.labeled']?.[0]?.(ctx);
+
+    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  });
+
+  test('issues.labeled: refreshed routing label template lookup failure is treated as non-routing', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app as unknown as Probot);
+
+    const cfg: StaticConfig = {
+      workflow: { labels: { approvalSuccessful: ['Approved'] } },
+      requests: {},
+    };
+
+    const octokit = mkOctokit();
+    octokit.issues.get.mockResolvedValueOnce({
+      data: {
+        number: 14,
+        title: 'T',
+        body: 'B\n\n<!-- nsreq:routing-lock = {"v":1,"expected":"route-1"} -->',
+        labels: [{ name: 'route-1' }, { name: 'route-bad' }],
+        user: { login: 'alice' },
+      },
+    });
+
+    loadTemplate.mockImplementation(async (_ctx: unknown, args: LoadTemplateArgs) => {
+      const lbls = Array.isArray(args.issueLabels) ? args.issueLabels.map(String) : [];
+      if (lbls.length === 1 && lbls[0] === 'route-1') return DEFAULT_TEMPLATE;
+      if (lbls.length === 1 && lbls[0] === 'route-bad') throw new Error('template lookup failed');
+      if (lbls.length > 1) throw new Error('Cannot resolve template: multiple routing label');
+      throw new Error('no routing label found');
+    });
+
+    const ctx = mkCtx({
+      eventName: 'issues.labeled',
+      action: 'labeled',
+      issue: {
+        number: 14,
+        title: 'T',
+        body: 'B\n\n<!-- nsreq:routing-lock = {"v":1,"expected":"route-1"} -->',
+        state: 'open',
+        labels: [{ name: 'route-1' }, { name: 'route-bad' }],
+        user: { login: 'alice' },
+      },
+      sender: { type: 'User', login: 'bob' },
+      labelName: 'route-bad',
+      config: cfg,
+      octokit,
+    });
+
+    await handlers['issues.labeled']?.[0]?.(ctx);
+
+    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(postOnce).not.toHaveBeenCalled();
+  });
 });
