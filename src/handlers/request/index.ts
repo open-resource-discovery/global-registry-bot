@@ -19,6 +19,11 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import {
+  buildApprovalRejectedBody,
+  buildApprovalUnknownBody,
+  buildAutoApprovalReviewBody,
+} from './domain/approval-comment-rendering.js';
+import {
   isBlockingCheckConclusion,
   isGreenCheckConclusion,
   summarizeHeadGreenRun,
@@ -65,7 +70,6 @@ import {
   filterRegistryValidationEntries,
   isRegistryValidateAnnotation,
   normalizeMsg,
-  toSectionTitle,
   type RegistryValidationMachineReadableSource,
 } from './domain/registry-validation-annotations.js';
 import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
@@ -439,54 +443,6 @@ async function buildRegistryValidationMachineReadableIssues(
   }
 
   return normalizeMachineReadableIssues(out);
-}
-
-function normalizeApprovalHookErrorsForComment(decision: ApprovalDecision): MachineReadableIssue[] {
-  const raw = Array.isArray(decision.errors) ? decision.errors : [];
-  const mapped = raw.map((entry) => ({
-    field: toStringTrim(entry?.field) || 'details',
-    message: toStringTrim(entry?.message),
-  }));
-
-  const normalized = normalizeMachineReadableIssues(mapped);
-  if (normalized.length) return normalized;
-
-  const fallbackMessage =
-    toStringTrim(decision.message) || toStringTrim(decision.reason) || toStringTrim(decision.comment);
-  const fallbackField = toStringTrim(decision.path) || 'details';
-
-  return fallbackMessage ? [{ field: fallbackField, message: fallbackMessage }] : [];
-}
-
-function buildApprovalHookIssueList(issues: MachineReadableIssue[]): string {
-  const normalized = normalizeMachineReadableIssues(issues);
-  if (!normalized.length) return '';
-
-  const grouped = new Map<string, string[]>();
-
-  for (const issue of normalized) {
-    const key = toStringTrim(issue.field) || 'details';
-    const arr = grouped.get(key) ?? [];
-    if (!arr.includes(issue.message)) arr.push(issue.message);
-    grouped.set(key, arr);
-  }
-
-  const keys = Array.from(grouped.keys()).sort((a, b) => {
-    if (a === 'details') return 1;
-    if (b === 'details') return -1;
-    return a.localeCompare(b);
-  });
-
-  const lines: string[] = [];
-  for (const key of keys) {
-    lines.push(`### ${toSectionTitle(key)}`);
-    for (const msg of grouped.get(key) ?? []) {
-      lines.push(`- ${msg}`);
-    }
-    lines.push('');
-  }
-
-  return lines.join('\n').trim();
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1803,54 +1759,6 @@ function isAuthorizedApprover(
 
   const issueAuthorLc = String(issueAuthor || '').toLowerCase();
   return Boolean(commenterLc && commenterLc !== issueAuthorLc);
-}
-
-function buildApprovalDecisionJson(decision: ApprovalDecision): string {
-  const payload: Record<string, unknown> = {};
-  if (decision.status) payload.status = decision.status;
-  if (decision.path) payload.path = decision.path;
-  if (decision.reason) payload.reason = decision.reason;
-  if (decision.comment) payload.comment = decision.comment;
-  if (decision.message) payload.message = decision.message;
-  if (Array.isArray(decision.approvers) && decision.approvers.length) payload.approvers = decision.approvers;
-  if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
-  return JSON.stringify(payload, null, 2);
-}
-
-function buildAutoApprovalReviewBody(decision: ApprovalDecision, headSha: string): string {
-  const visible = getVisibleApprovalText(decision);
-  const marker = buildAutoApprovalReviewMarker(headSha);
-
-  return visible ? `${visible}\n\n${marker}` : marker;
-}
-
-function buildApprovalUnknownBody(decision: ApprovalDecision): string {
-  const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
-  const leadBlock = lead ? `${lead}\n\n` : '';
-
-  return `${leadBlock}<details>
-<summary>Decision details</summary>
-
-\`\`\`json
-${buildApprovalDecisionJson({ status: 'unknown', ...decision })}
-\`\`\`
-</details>
-
-Continuing with the standard review flow.`;
-}
-
-function buildApprovalRejectedBody(decision: ApprovalDecision): string {
-  const issues = normalizeApprovalHookErrorsForComment(decision);
-  const groupedIssues = buildApprovalHookIssueList(issues);
-  const detectedIssuesBlock = groupedIssues ? buildDetectedIssuesBody(groupedIssues, issues) : '';
-
-  const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
-  const leadBlock = lead && !detectedIssuesBlock ? `${lead}\n\n` : '';
-  const issuesBlock = detectedIssuesBlock ? `${detectedIssuesBlock}\n\n` : '';
-
-  return `## onApproval rejected this request
-
-${leadBlock}${issuesBlock}Closing this request automatically.`;
 }
 
 async function applyApprovedRequestState(
