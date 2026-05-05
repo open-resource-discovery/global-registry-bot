@@ -1,19 +1,19 @@
 import { postOnce } from '../comments.js';
-import { buildApprovalUnknownBody } from '../domain/approval-comment-rendering.js';
+import { buildApprovalRejectedBody, buildApprovalUnknownBody } from '../domain/approval-comment-rendering.js';
 import { type ApprovalDecision } from '../domain/approval-decision.js';
 
-type PostApprovalUnknownContext = Parameters<typeof postOnce>[0];
-type PostApprovalUnknownParams = Parameters<typeof postOnce>[1];
+type ApprovalOutcomePostingContext = Parameters<typeof postOnce>[0];
+type ApprovalOutcomePostingParams = Parameters<typeof postOnce>[1];
 
 const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
 
-function issueScopedKey(params: PostApprovalUnknownParams, suffix: string): string {
+function issueScopedKey(params: ApprovalOutcomePostingParams, suffix: string): string {
   return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
 }
 
 export async function postApprovalUnknownOnce(
-  context: PostApprovalUnknownContext,
-  params: PostApprovalUnknownParams,
+  context: ApprovalOutcomePostingContext,
+  params: ApprovalOutcomePostingParams,
   decision: ApprovalDecision
 ): Promise<void> {
   const key = issueScopedKey(params, 'on-approval-unknown');
@@ -33,4 +33,14 @@ export async function postApprovalUnknownOnce(
 
   ON_APPROVAL_UNKNOWN_POST_INFLIGHT.set(key, pending);
   await pending;
+}
+
+export async function postApprovalRejectedOnce(
+  context: ApprovalOutcomePostingContext,
+  params: ApprovalOutcomePostingParams,
+  decision: ApprovalDecision
+): Promise<void> {
+  await postOnce(context, params, buildApprovalRejectedBody(decision), {
+    minimizeTag: 'nsreq:on-approval:rejected',
+  });
 }

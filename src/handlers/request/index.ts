@@ -19,7 +19,7 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildApprovalRejectedBody, buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
-import { postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
+import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import {
   isBlockingCheckConclusion,
   isGreenCheckConclusion,
@@ -5403,9 +5403,7 @@ async function handleDirectPrApprovalComment(
   });
 
   if (approvalDecision.status === 'rejected') {
-    await postOnce(context, params, buildApprovalRejectedBody(approvalDecision), {
-      minimizeTag: 'nsreq:on-approval:rejected',
-    });
+    await postApprovalRejectedOnce(context, params, approvalDecision);
     return;
   }
 
@@ -5479,11 +5477,10 @@ async function maybeHandleStandaloneDirectPrApproval(
   }
 
   if (decision.status === 'rejected') {
-    await postOnce(
+    await postApprovalRejectedOnce(
       context,
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalRejectedBody(decision),
-      { minimizeTag: 'nsreq:on-approval:rejected' }
+      decision
     );
 
     try {
@@ -5768,11 +5765,10 @@ async function maybeHandleDirectPrApprovalForMerge(
   }
 
   if (decision.status === 'rejected') {
-    await postOnce(
+    await postApprovalRejectedOnce(
       context,
       { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalRejectedBody(decision),
-      { minimizeTag: 'nsreq:on-approval:rejected' }
+      decision
     );
 
     try {
