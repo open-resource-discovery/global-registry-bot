@@ -18,11 +18,8 @@ import {
   singleMachineReadableIssue,
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
-import {
-  buildApprovalRejectedBody,
-  buildApprovalUnknownBody,
-  buildAutoApprovalReviewBody,
-} from './domain/approval-comment-rendering.js';
+import { buildApprovalRejectedBody, buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
+import { postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import {
   isBlockingCheckConclusion,
   isGreenCheckConclusion,
@@ -1356,7 +1353,6 @@ async function fetchIssueLabels(
 }
 
 const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
-const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
 
 function isAutoMergeEvaluationRecentlyCompleted(key: string): boolean {
   const until = AUTO_MERGE_EVALUATION_RECENT_UNTIL.get(key);
@@ -1436,30 +1432,6 @@ async function ensureLabelsPresentOnce(
   });
 
   ENSURE_LABELS_INFLIGHT.set(key, pending);
-  await pending;
-}
-
-async function postApprovalUnknownOnce(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  decision: ApprovalDecision
-): Promise<void> {
-  const key = issueScopedKey(params, 'on-approval-unknown');
-  const existing = ON_APPROVAL_UNKNOWN_POST_INFLIGHT.get(key);
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const pending = (async (): Promise<void> => {
-    await postOnce(context, params, buildApprovalUnknownBody(decision), {
-      minimizeTag: 'nsreq:on-approval:unknown',
-    });
-  })().finally(() => {
-    ON_APPROVAL_UNKNOWN_POST_INFLIGHT.delete(key);
-  });
-
-  ON_APPROVAL_UNKNOWN_POST_INFLIGHT.set(key, pending);
   await pending;
 }
 
