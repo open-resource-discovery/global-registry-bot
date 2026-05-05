@@ -128,6 +128,7 @@ type CustomValidateArgs = Readonly<{
   candidate: Record<string, unknown>;
   form: FormData;
   api: unknown;
+  config: Readonly<Record<string, string>>;
   log?: LoggerLike | undefined;
 }>;
 
@@ -2539,6 +2540,7 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: null,
+            config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
             log: undefined,
           };
 
@@ -2612,6 +2614,7 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: hookApi,
+            config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
             log: getHookLogger(context.log),
           });
 
@@ -2933,6 +2936,7 @@ export async function runCustomValidateForRegistryCandidate(
           secrets: coreSecrets.HOOK_SECRETS || {},
           allowedHosts,
         }),
+        config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
         log: getHookLogger(context.log),
       });
 
@@ -2952,6 +2956,7 @@ export async function runCustomValidateForRegistryCandidate(
       candidate: args.candidate,
       form,
       api: null,
+      config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
       log: undefined,
     };
 
