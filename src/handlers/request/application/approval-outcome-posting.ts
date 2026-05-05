@@ -38,9 +38,10 @@ export async function postApprovalUnknownOnce(
 export async function postApprovalRejectedOnce(
   context: ApprovalOutcomePostingContext,
   params: ApprovalOutcomePostingParams,
-  decision: ApprovalDecision
+  decision: ApprovalDecision,
+  options: { bodySuffix?: string } = {}
 ): Promise<void> {
-  await postOnce(context, params, buildApprovalRejectedBody(decision), {
+  await postOnce(context, params, `${buildApprovalRejectedBody(decision)}${options.bodySuffix || ''}`, {
     minimizeTag: 'nsreq:on-approval:rejected',
   });
 }

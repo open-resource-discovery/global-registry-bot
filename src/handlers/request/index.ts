@@ -18,7 +18,7 @@ import {
   singleMachineReadableIssue,
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
-import { buildApprovalRejectedBody, buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
+import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import {
   isBlockingCheckConclusion,
@@ -5579,8 +5579,8 @@ async function rejectRequestFromApprovalHook(
   const closedPrRefs = closedPrs.map((n) => `#${n}`).join(', ');
   const closedPrSection = closedPrs.length ? `\n\nClosed linked PR(s): ${closedPrRefs}.` : '';
 
-  await postOnce(context, params, `${buildApprovalRejectedBody(decision)}${closedPrSection}`, {
-    minimizeTag: options.minimizeTag || 'nsreq:on-approval:rejected',
+  await postApprovalRejectedOnce(context, params, decision, {
+    bodySuffix: closedPrSection,
   });
 
   try {
