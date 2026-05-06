@@ -19,6 +19,7 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
+import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
@@ -1506,64 +1507,35 @@ ${instruction}${docsSection}${snapshotMarker}
 <!-- nsreq:handover -->`;
 }
 
-async function handoverToCpa(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  _nsType: string,
-  _namespace: string,
-  _links: string[] = [],
-  options: {
-    snapshotHash?: string;
-    requestType?: string;
-    extraApprovers?: string[];
-    manualApproversOverride?: string[];
-  } = {}
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-
-  await setStateLabel(context, params, issue, 'review');
-
-  const approverRouting = resolveApproverRoutingForRequestType(
-    context,
-    options.requestType,
-    eff.approverUsernames,
-    eff.approverPoolUsernames
-  );
-
-  const assigneesForType = approverRouting.autoAssigneePoolUsernames.length
-    ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
-    : approverRouting.approvalUsernames;
-
-  const manualApproversOverride = uniqLogins(
-    (options.manualApproversOverride || []).map((value) => toStringTrim(value)).filter(Boolean)
-  );
-
-  const mergedAssignees = manualApproversOverride.length
-    ? manualApproversOverride
-    : uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
-
-  await ensureAssigneesOnce(context, params, issue, mergedAssignees);
-  await ensureAssigneesPresent(context, params, mergedAssignees);
-
-  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
-
-  await ensureLabelsPresentOnce(context, params, labelsToAdd);
-
-  if (eff.labelOnApproved) {
-    try {
-      await context.octokit.issues.removeLabel({
-        ...params,
-        name: eff.labelOnApproved,
-      });
-    } catch {
-      /* empty */
-    }
-  }
-
-  const handoverMsg = buildReviewHandoverBody(context, options.snapshotHash);
-
-  await postOnce(context, params, handoverMsg, { minimizeTag: 'nsreq:handover' });
+function buildReviewHandoverOptions(): {
+  resolveEffectiveConstants: (context: BotContext<RequestEvents>) => EffectiveConstants;
+  resolveApproverRoutingForRequestType: (
+    context: BotContext<RequestEvents>,
+    requestType: string | undefined,
+    approverUsernames: string[],
+    approverPoolUsernames: string[]
+  ) => ReturnType<typeof resolveApproverRoutingForRequestType>;
+  pickAutoAssigneeFromPool: (issue: IssueLike, pool: string[]) => string[];
+  uniqLogins: (logins: string[]) => string[];
+  toStringTrim: (value: unknown) => string;
+  ensureAssigneesPresent: (
+    context: BotContext<RequestEvents>,
+    params: IssueParams,
+    assignees: string[]
+  ) => Promise<void>;
+  ensureLabelsPresentOnce: (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]) => Promise<void>;
+  buildReviewHandoverBody: (context: BotContext<RequestEvents>, snapshotHash?: string) => string;
+} {
+  return {
+    resolveEffectiveConstants,
+    resolveApproverRoutingForRequestType,
+    pickAutoAssigneeFromPool,
+    uniqLogins,
+    toStringTrim,
+    ensureAssigneesPresent,
+    ensureLabelsPresentOnce,
+    buildReviewHandoverBody,
+  };
 }
 
 async function ensureReviewLabelsPresentOnIssue(
@@ -6231,6 +6203,7 @@ async function processIssueEvent(
     requestType: effectiveRequestType,
     extraApprovers: hookApprovers,
     manualApproversOverride,
+    ...buildReviewHandoverOptions(),
   });
 }
 
@@ -6568,6 +6541,7 @@ async function handleAuthorUpdateComment(
         requestType: effectiveRequestType,
         extraApprovers: hookApprovers,
         manualApproversOverride,
+        ...buildReviewHandoverOptions(),
       });
       return;
     }
@@ -6985,6 +6959,7 @@ ${mentions}`,
     requestType: effRt,
     extraApprovers: hookApprovers,
     manualApproversOverride,
+    ...buildReviewHandoverOptions(),
   });
 
   return true;
@@ -7239,6 +7214,7 @@ ${mentions}`,
     requestType: effRt,
     extraApprovers: hookApprovers,
     manualApproversOverride,
+    ...buildReviewHandoverOptions(),
   });
 
   return true;
