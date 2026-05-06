@@ -25,6 +25,11 @@ import {
   type AutomatedApprovalReviewOptions,
 } from './application/automated-approval-review.js';
 import {
+  autoApprovedPrHeadKey as autoApprovedPrHeadKeyApplication,
+  hasAutoApprovedPrHead as hasAutoApprovedPrHeadApplication,
+  markAutoApprovedPrHead as markAutoApprovedPrHeadApplication,
+} from './application/auto-approved-head-tracking.js';
+import {
   hasAutoApprovalReviewForHead as hasAutoApprovalReviewForHeadApplication,
   type AutoApprovalReviewDetectionCallbacks,
 } from './application/auto-approval-review-detection.js';
@@ -291,7 +296,6 @@ type SchemaFieldAliasLookup = Map<string, string>;
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
 const MERGE_INFLIGHT = new Map<string, Promise<void>>();
-const AUTO_APPROVED_PR_HEADS = new Set<string>();
 const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
@@ -2124,7 +2128,7 @@ async function isPullRequestApprovedForBranchMaintenance(
     return true;
   }
 
-  if (headSha && AUTO_APPROVED_PR_HEADS.has(autoApprovedPrHeadKey(repoInfo, pr.number, headSha))) {
+  if (headSha && hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
     return true;
   }
 
@@ -2319,17 +2323,15 @@ function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
 }
 
 function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}:${toStringTrim(headSha)}`.toLowerCase();
+  return autoApprovedPrHeadKeyApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
 function markAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): void {
-  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
-  if (key) AUTO_APPROVED_PR_HEADS.add(key);
+  markAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
 function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): boolean {
-  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
-  return Boolean(key && AUTO_APPROVED_PR_HEADS.has(key));
+  return hasAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
 class CooldownUntilMap extends Map<string, number> {
