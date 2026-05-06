@@ -129,6 +129,20 @@ type CustomValidateArgs = Readonly<{
   form: FormData;
   api: unknown;
   config: Readonly<Record<string, string>>;
+  requestAuthor: Readonly<{
+    id: string;
+    email?: string;
+  }>;
+  issue: Readonly<{
+    number: number;
+    title: string;
+    body: string;
+    state: string;
+    author: string;
+    labels: string[];
+  }>;
+  parentResourceName?: string;
+  parentCandidate?: Readonly<Record<string, unknown>> | null;
   log?: LoggerLike | undefined;
 }>;
 
@@ -520,6 +534,130 @@ function approvalIssueLabelName(value: unknown): string {
 function toApprovalIssueLabelNames(labels: IssueLike['labels']): string[] {
   const items = Array.isArray(labels) ? labels : [];
   return items.map((label) => approvalIssueLabelName(label)).filter(Boolean);
+}
+
+function buildValidationHookIssue(issue: IssueLike): CustomValidateArgs['issue'] {
+  const author = toStringSafe(issue?.user?.login);
+
+  return {
+    number: typeof issue?.number === 'number' ? issue.number : 0,
+    title: toStringSafe(issue?.title),
+    body: toStringSafe(issue?.body),
+    state: toStringSafe(issue?.state),
+    author,
+    labels: toApprovalIssueLabelNames(issue?.labels),
+  };
+}
+
+function buildValidationHookRequestAuthor(issue: IssueLike): CustomValidateArgs['requestAuthor'] {
+  return {
+    id: toStringSafe(issue?.user?.login),
+  };
+}
+
+function resolveUpperNamespaceName(resourceName: unknown): string {
+  const parts = toStringSafe(resourceName)
+    .split('.')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 2) return '';
+
+  return parts.slice(0, -1).join('.');
+}
+
+async function parseYamlObject(raw: string): Promise<Record<string, unknown> | null> {
+  try {
+    const yamlMod = (await import('yaml')) as unknown as {
+      parse?: (src: string) => unknown;
+      default?: { parse?: (src: string) => unknown };
+    };
+
+    const parse = yamlMod.parse || yamlMod.default?.parse;
+    if (typeof parse !== 'function') return null;
+
+    const parsed = parse(raw);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readRepoYamlObject(
+  context: ValidationContext,
+  owner: string,
+  repo: string,
+  basePath: string
+): Promise<Record<string, unknown> | null> {
+  for (const ext of ['yaml', 'yml']) {
+    try {
+      const res = await context.octokit.repos.getContent({
+        owner,
+        repo,
+        path: `${basePath}.${ext}`,
+      });
+
+      const data = res.data;
+      if (Array.isArray(data) || !isRepoContentFile(data)) continue;
+
+      const text = Buffer.from(data.content, (data.encoding || 'base64') as BufferEncoding).toString('utf8');
+      const parsed = await parseYamlObject(text);
+      if (parsed) return parsed;
+    } catch (e: unknown) {
+      if (getHttpStatus(e) === 404) continue;
+      throw e;
+    }
+  }
+
+  return null;
+}
+
+async function resolveParentCandidateForValidationHook(
+  context: ValidationContext,
+  owner: string,
+  repo: string,
+  template: TemplateLike,
+  requestCfg: RequestConfigEntry,
+  resourceName: string
+): Promise<{ parentResourceName: string; parentCandidate: Record<string, unknown> | null }> {
+  const parentResourceName = resolveUpperNamespaceName(resourceName);
+  if (!parentResourceName) {
+    return { parentResourceName: '', parentCandidate: null };
+  }
+
+  const root = resolveRegistryRootForTemplate(context, template, requestCfg);
+  const parentCandidate = await readRepoYamlObject(context, owner, repo, `${root}/${parentResourceName}`);
+
+  return {
+    parentResourceName,
+    parentCandidate,
+  };
+}
+
+async function buildCustomValidateContextArgs(
+  context: ValidationContext,
+  owner: string,
+  repo: string,
+  issue: IssueLike,
+  template: TemplateLike,
+  requestCfg: RequestConfigEntry,
+  resourceName: string
+): Promise<Pick<CustomValidateArgs, 'requestAuthor' | 'issue' | 'parentResourceName' | 'parentCandidate'>> {
+  const parent = await resolveParentCandidateForValidationHook(
+    context,
+    owner,
+    repo,
+    template,
+    requestCfg,
+    resourceName
+  );
+
+  return {
+    requestAuthor: buildValidationHookRequestAuthor(issue),
+    issue: buildValidationHookIssue(issue),
+    parentResourceName: parent.parentResourceName,
+    parentCandidate: parent.parentCandidate,
+  };
 }
 
 function normalizeApprovalHookErrors(value: unknown): readonly {
@@ -2531,6 +2669,16 @@ export async function validateRequestIssue(
       const runCustomValidate = async (): Promise<void> => {
         if (!hooks) return;
 
+        const customValidateContextArgs = await buildCustomValidateContextArgs(
+          context,
+          owner,
+          repo,
+          issue,
+          template,
+          requestCfg,
+          rawIdOrNs
+        );
+
         // Worker path: hooks is just a descriptor (raw code + hash)
         if (isHookDescriptor(hooks)) {
           const nameVal = candidate['name'];
@@ -2542,6 +2690,7 @@ export async function validateRequestIssue(
             form: normalizedFormData,
             api: null,
             config: hookPublicConfig,
+            ...customValidateContextArgs,
             log: undefined,
           };
 
@@ -2616,6 +2765,7 @@ export async function validateRequestIssue(
             form: normalizedFormData,
             api: hookApi,
             config: hookPublicConfig,
+            ...customValidateContextArgs,
             log: getHookLogger(context.log),
           });
 
@@ -2942,6 +3092,17 @@ export async function runCustomValidateForRegistryCandidate(
           allowedHosts,
         }),
         config: hookPublicConfig,
+        requestAuthor: { id: '' },
+        issue: {
+          number: 0,
+          title: '',
+          body: '',
+          state: '',
+          author: '',
+          labels: [],
+        },
+        parentResourceName: '',
+        parentCandidate: null,
         log: getHookLogger(context.log),
       });
 
@@ -2962,6 +3123,17 @@ export async function runCustomValidateForRegistryCandidate(
       form,
       api: null,
       config: hookPublicConfig,
+      requestAuthor: { id: '' },
+      issue: {
+        number: 0,
+        title: '',
+        body: '',
+        state: '',
+        author: '',
+        labels: [],
+      },
+      parentResourceName: '',
+      parentCandidate: null,
       log: undefined,
     };
 
