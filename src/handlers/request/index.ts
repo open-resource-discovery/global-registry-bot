@@ -19,6 +19,7 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
+import { closeLinkedIssuePrs } from './application/linked-pr-closure.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import {
   isBlockingCheckConclusion,
@@ -5521,43 +5522,6 @@ async function maybeHandleStandaloneDirectPrApproval(
   return 'continue';
 }
 
-async function closeLinkedIssuePrs(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  issueNumber: number
-): Promise<number[]> {
-  let prs: PullRequestLike[] = [];
-
-  try {
-    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
-  } catch {
-    prs = [];
-  }
-
-  if (prs.length === 0) {
-    prs = (await listOpenPullRequests(context, repoInfo)).filter(
-      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
-    );
-  }
-  const closed: number[] = [];
-
-  for (const pr of prs) {
-    try {
-      await context.octokit.pulls.update({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        state: 'closed',
-      });
-      closed.push(pr.number);
-    } catch {
-      // ignore
-    }
-  }
-
-  return closed;
-}
-
 async function rejectRequestFromApprovalHook(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -5570,7 +5534,10 @@ async function rejectRequestFromApprovalHook(
   let closedPrs: number[] = [];
   if (options.closeLinkedPrs) {
     try {
-      closedPrs = await closeLinkedIssuePrs(context, repoInfo, issue.number);
+      closedPrs = await closeLinkedIssuePrs(context, repoInfo, issue.number, {
+        listOpenPullRequests,
+        parseLinkedIssueNumberFromPr,
+      });
     } catch {
       // ignore
     }
