@@ -69,7 +69,7 @@ async function createAutomatedApprovalReview<
   repoInfo: RepoInfoType,
   pr: PullRequestType,
   decision: ApprovalDecision,
-  callbacks: AutomatedApprovalReviewCallbacks<ContextType, RepoInfoType, PullRequestType>
+  callbacks: AutomatedApprovalReviewCallbacks<ContextType, RepoInfoType>
 ): Promise<boolean> {
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   const reviewBody = buildAutoApprovalReviewBody(decision, headSha);
@@ -87,9 +87,9 @@ async function createAutomatedApprovalReview<
     callbacks.logCreated(context, pr.number, headSha);
     return true;
   } catch (e: unknown) {
-    const errObj = callbacks.isPlainObject(e) ? e : {};
+    const errObj: Record<string, unknown> = callbacks.isPlainObject(e) ? e : {};
     const status = typeof errObj['status'] === 'number' ? errObj['status'] : undefined;
-    const response = callbacks.isPlainObject(errObj['response']) ? errObj['response'] : {};
+    const response: Record<string, unknown> = callbacks.isPlainObject(errObj['response']) ? errObj['response'] : {};
     const responseData = response['data'];
     const message = e instanceof Error ? e.message : String(e);
 
@@ -123,7 +123,7 @@ async function runEnsureAutomatedApprovalReviewForCurrentHead<
   decision: ApprovalDecision,
   headSha: string,
   options: AutomatedApprovalReviewOptions,
-  callbacks: AutomatedApprovalReviewCallbacks<ContextType, RepoInfoType, PullRequestType>
+  callbacks: AutomatedApprovalReviewCallbacks<ContextType, RepoInfoType>
 ): Promise<boolean> {
   if (callbacks.hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
     return true;
@@ -156,7 +156,7 @@ export async function ensureAutomatedApprovalReviewForCurrentHead<
   pr: PullRequestType,
   decision: ApprovalDecision,
   options: AutomatedApprovalReviewOptions = {},
-  callbacks: AutomatedApprovalReviewCallbacks<ContextType, RepoInfoType, PullRequestType>
+  callbacks: AutomatedApprovalReviewCallbacks<ContextType, RepoInfoType>
 ): Promise<boolean> {
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   if (!headSha) return false;

@@ -1921,8 +1921,7 @@ function buildAutoApprovalReviewMarker(headSha: string): string {
 
 function buildAutomatedApprovalReviewCallbacks(): AutomatedApprovalReviewCallbacks<
   BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike
+  RepoInfo
 > {
   return {
     toStringTrim,
