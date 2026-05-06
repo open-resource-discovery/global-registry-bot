@@ -24,6 +24,10 @@ import {
   type AutomatedApprovalReviewCallbacks,
   type AutomatedApprovalReviewOptions,
 } from './application/automated-approval-review.js';
+import {
+  hasAutoApprovalReviewForHead as hasAutoApprovalReviewForHeadApplication,
+  type AutoApprovalReviewDetectionCallbacks,
+} from './application/auto-approval-review-detection.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
@@ -2138,18 +2142,21 @@ async function hasAutoApprovalReviewForHead(
   prNumber: number,
   headSha: string
 ): Promise<boolean> {
-  const marker = buildAutoApprovalReviewMarker(headSha);
+  return await hasAutoApprovalReviewForHeadApplication(
+    context,
+    repoInfo,
+    prNumber,
+    headSha,
+    buildAutoApprovalReviewDetectionCallbacks()
+  );
+}
 
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-
-    return reviews.some(
-      (review) =>
-        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
-    );
-  } catch {
-    return false;
-  }
+function buildAutoApprovalReviewDetectionCallbacks(): AutoApprovalReviewDetectionCallbacks<BotContext<RequestEvents>> {
+  return {
+    buildAutoApprovalReviewMarker,
+    listPullRequestReviews,
+    toStringTrim,
+  };
 }
 
 async function evaluateHeadGreenForApprovalReevaluation(
