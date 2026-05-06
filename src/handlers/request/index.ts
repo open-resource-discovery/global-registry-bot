@@ -19,7 +19,7 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
-import { closeLinkedIssuePrs } from './application/linked-pr-closure.js';
+import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import {
   isBlockingCheckConclusion,
@@ -5522,42 +5522,6 @@ async function maybeHandleStandaloneDirectPrApproval(
   return 'continue';
 }
 
-async function rejectRequestFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  decision: ApprovalDecision,
-  options: { closeLinkedPrs?: boolean; minimizeTag?: string } = {}
-): Promise<void> {
-  const repoInfo = { owner: params.owner, repo: params.repo };
-
-  let closedPrs: number[] = [];
-  if (options.closeLinkedPrs) {
-    try {
-      closedPrs = await closeLinkedIssuePrs(context, repoInfo, issue.number, {
-        listOpenPullRequests,
-        parseLinkedIssueNumberFromPr,
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  const closedPrRefs = closedPrs.map((n) => `#${n}`).join(', ');
-  const closedPrSection = closedPrs.length ? `\n\nClosed linked PR(s): ${closedPrRefs}.` : '';
-
-  await postApprovalRejectedOnce(context, params, decision, {
-    bodySuffix: closedPrSection,
-  });
-
-  try {
-    await context.octokit.issues.update({ ...params, state: 'closed' });
-    issue.state = 'closed';
-  } catch {
-    // ignore
-  }
-}
-
 async function finalizeApprovedRequest(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -5682,6 +5646,9 @@ async function maybeHandleApprovalDecision(
   if (decision.status === 'rejected') {
     await rejectRequestFromApprovalHook(context, params, issue, decision, {
       closeLinkedPrs: true,
+      minimizeTag: undefined,
+      listOpenPullRequests,
+      parseLinkedIssueNumberFromPr,
     });
     return 'rejected';
   }
@@ -5752,6 +5719,8 @@ async function maybeHandleDirectPrApprovalForMerge(
     await rejectRequestFromApprovalHook(context, issueParams, issue, decision, {
       closeLinkedPrs: true,
       minimizeTag: 'nsreq:on-approval:issue-rejected',
+      listOpenPullRequests,
+      parseLinkedIssueNumberFromPr,
     });
 
     return 'rejected';
