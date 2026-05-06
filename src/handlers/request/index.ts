@@ -19,6 +19,7 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
+import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import {
@@ -5611,53 +5612,78 @@ async function finalizeApprovedRequest(
   }
 }
 
-async function maybeHandleApprovalDecision(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType: string,
-  namespace: string
-): Promise<ApprovalHandlingResult> {
-  const decision = normalizeApprovalDecision(
-    await runApprovalHook(
-      context,
-      { owner: params.owner, repo: params.repo },
-      {
-        requestType,
-        namespace,
-        resourceName: extractResourceNameFromForm(parsedFormData, template),
-        formData: parsedFormData,
-        issue,
-      }
-    )
-  );
-
-  if (decision.status === 'approved') {
-    await finalizeApprovedRequest(context, params, issue, template, parsedFormData, {
-      approvalPrefix: '',
-      approvalComment: decision.comment,
-      autoApproved: true,
-    });
-    return 'approved';
-  }
-
-  if (decision.status === 'rejected') {
-    await rejectRequestFromApprovalHook(context, params, issue, decision, {
-      closeLinkedPrs: true,
-      minimizeTag: undefined,
-      listOpenPullRequests,
-      parseLinkedIssueNumberFromPr,
-    });
-    return 'rejected';
-  }
-
-  if (decision.status === 'unknown') {
-    await postApprovalUnknownOnce(context, params, decision);
-  }
-
-  return 'continue';
+function buildApprovalDecisionDispatchOptions(): {
+  resolveApprovalDecision: (
+    dispatchContext: BotContext<RequestEvents>,
+    dispatchParams: IssueParams,
+    dispatchIssue: IssueLike,
+    dispatchTemplate: TemplateLike,
+    dispatchFormData: FormData,
+    dispatchRequestType: string,
+    dispatchNamespace: string
+  ) => Promise<ApprovalDecision | boolean>;
+  handleApprovedDecision: (
+    dispatchContext: BotContext<RequestEvents>,
+    dispatchParams: IssueParams,
+    dispatchIssue: IssueLike,
+    dispatchTemplate: TemplateLike,
+    dispatchFormData: FormData,
+    decision: ApprovalDecision
+  ) => Promise<void>;
+  handleRejectedDecision: (
+    dispatchContext: BotContext<RequestEvents>,
+    dispatchParams: IssueParams,
+    dispatchIssue: IssueLike,
+    decision: ApprovalDecision
+  ) => Promise<void>;
+} {
+  return {
+    resolveApprovalDecision: (
+      dispatchContext: BotContext<RequestEvents>,
+      dispatchParams: IssueParams,
+      dispatchIssue: IssueLike,
+      dispatchTemplate: TemplateLike,
+      dispatchFormData: FormData,
+      dispatchRequestType: string,
+      dispatchNamespace: string
+    ): Promise<ApprovalDecision | boolean> =>
+      runApprovalHook(
+        dispatchContext,
+        { owner: dispatchParams.owner, repo: dispatchParams.repo },
+        {
+          requestType: dispatchRequestType,
+          namespace: dispatchNamespace,
+          resourceName: extractResourceNameFromForm(dispatchFormData, dispatchTemplate),
+          formData: dispatchFormData,
+          issue: dispatchIssue,
+        }
+      ),
+    handleApprovedDecision: (
+      dispatchContext: BotContext<RequestEvents>,
+      dispatchParams: IssueParams,
+      dispatchIssue: IssueLike,
+      dispatchTemplate: TemplateLike,
+      dispatchFormData: FormData,
+      decision: ApprovalDecision
+    ): Promise<void> =>
+      finalizeApprovedRequest(dispatchContext, dispatchParams, dispatchIssue, dispatchTemplate, dispatchFormData, {
+        approvalPrefix: '',
+        approvalComment: decision.comment,
+        autoApproved: true,
+      }),
+    handleRejectedDecision: (
+      dispatchContext: BotContext<RequestEvents>,
+      dispatchParams: IssueParams,
+      dispatchIssue: IssueLike,
+      decision: ApprovalDecision
+    ): Promise<void> =>
+      rejectRequestFromApprovalHook(dispatchContext, dispatchParams, dispatchIssue, decision, {
+        closeLinkedPrs: true,
+        minimizeTag: undefined,
+        listOpenPullRequests,
+        parseLinkedIssueNumberFromPr,
+      }),
+  };
 }
 
 async function maybeHandleDirectPrApprovalForMerge(
@@ -6155,7 +6181,8 @@ async function processIssueEvent(
       result.template || template,
       parsedFormData,
       effectiveRequestType,
-      validatedNamespace
+      validatedNamespace,
+      buildApprovalDecisionDispatchOptions()
     );
 
     if (approvalOutcome !== 'continue') return;
@@ -6173,7 +6200,8 @@ async function processIssueEvent(
     result.template || template,
     parsedFormData,
     effectiveRequestType,
-    validatedNamespace
+    validatedNamespace,
+    buildApprovalDecisionDispatchOptions()
   );
 
   if (approvalOutcome !== 'continue') return;
@@ -6490,7 +6518,8 @@ async function handleAuthorUpdateComment(
           tpl,
           parsedAfterUpdate,
           effectiveRequestType,
-          namespace
+          namespace,
+          buildApprovalDecisionDispatchOptions()
         );
 
         if (approvalOutcome !== 'continue') return;
@@ -6508,7 +6537,8 @@ async function handleAuthorUpdateComment(
         tpl,
         parsedAfterUpdate,
         effectiveRequestType,
-        namespace
+        namespace,
+        buildApprovalDecisionDispatchOptions()
       );
 
       if (approvalOutcome !== 'continue') return;
@@ -6927,7 +6957,8 @@ ${mentions}`,
     tpl,
     parsedNow,
     effRt,
-    reval.namespace
+    reval.namespace,
+    buildApprovalDecisionDispatchOptions()
   );
 
   if (approvalOutcome !== 'continue') return true;
@@ -7173,7 +7204,8 @@ ${mentions}`,
     tpl,
     parsedNow,
     effRt,
-    reval.namespace
+    reval.namespace,
+    buildApprovalDecisionDispatchOptions()
   );
 
   if (approvalOutcome !== 'continue') return true;
