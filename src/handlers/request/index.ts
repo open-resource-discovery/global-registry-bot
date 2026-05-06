@@ -19,6 +19,7 @@ import {
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
+import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
@@ -1487,24 +1488,7 @@ function buildReviewHandoverBody(
   options: { target?: 'issue' | 'pull_request' } = {}
 ): string {
   const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
-  const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
-  const snapshotMarker = snapshotHash ? `\n\n<!-- nsreq:snapshot:${snapshotHash} -->` : '';
-
-  const target = options.target || 'issue';
-  const instruction =
-    target === 'pull_request'
-      ? 'Once reviewed, please comment `Approved` to approve this PR for merge.'
-      : 'Once reviewed, please comment `Approved` to create an automatic Pull Request.';
-
-  return `### ✅ No issues detected
-
-### ➡️ Routing to an approver for review
-
----
-
-${instruction}${docsSection}${snapshotMarker}
-
-<!-- nsreq:handover -->`;
+  return buildReviewHandoverBodyPure(docsLinks, snapshotHash, options);
 }
 
 function buildReviewHandoverOptions(): {
