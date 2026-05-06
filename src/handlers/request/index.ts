@@ -1,4 +1,4 @@
-import { setStateLabel as setStateLabelRaw, ensureAssigneesOnce as ensureAssigneesOnceRaw } from './state.js';
+import { setStateLabel as setStateLabelRaw } from './state.js';
 import { postOnce as postOnceRaw, collapseBotCommentsByPrefix as collapseBotCommentsByPrefixRaw } from './comments.js';
 import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './template.js';
 import {
@@ -20,6 +20,7 @@ import {
 } from './domain/machine-readable.js';
 import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
 import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
+import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
@@ -1197,13 +1198,6 @@ type SetStateLabelFn = (
   state: 'author' | 'review'
 ) => Promise<void>;
 
-type EnsureAssigneesOnceFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  assignees: string[]
-) => Promise<void>;
-
 type PostOnceFn = (
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1282,7 +1276,6 @@ type TryMergeIfGreenFn = (
 ) => Promise<boolean | void>;
 
 const setStateLabel = setStateLabelRaw as unknown as SetStateLabelFn;
-const ensureAssigneesOnce = ensureAssigneesOnceRaw as unknown as EnsureAssigneesOnceFn;
 const postOnce = postOnceRaw as unknown as PostOnceFn;
 const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as CollapseBotCommentsByPrefixFn;
 const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
@@ -5265,68 +5258,78 @@ async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
   return true;
 }
 
-async function handoverStandaloneDirectPrToReview(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision,
-  options: DirectPrApprovalOptions = {}
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
-  const prIssue = prAsIssueLike(pr);
-
-  await setStateLabel(context, params, prIssue, 'review');
-
-  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
-  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
-
-  const manualApproversOverride = getUnknownManualApprovers(decision);
-
-  const assignees = manualApproversOverride.length
-    ? manualApproversOverride
-    : resolveReviewAssigneesForRequestTypes(context, prIssue, requestTypes);
-
-  if (assignees.length) {
-    await ensureAssigneesOnce(context, params, prIssue, assignees);
-    await ensureAssigneesPresent(context, params, assignees);
-  }
-
-  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
-  await ensureLabelsPresentOnce(context, params, labelsToAdd);
-
-  if (eff.labelOnApproved) {
-    try {
-      await context.octokit.issues.removeLabel({
-        ...params,
-        name: eff.labelOnApproved,
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  const snapshotHash = calcStandaloneDirectPrSnapshotHash(pr, changedFiles);
-
-  await postOnce(context, params, buildReviewHandoverBody(context, snapshotHash, { target: 'pull_request' }), {
-    minimizeTag: 'nsreq:handover',
-  });
-
-  await postApprovalUnknownOnce(context, params, decision);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      requestTypes,
-      changedFiles,
-      assignees,
-      snapshotHash,
-      decisionStatus: toStringTrim(decision.status) || 'none',
+function buildStandaloneDirectPrReviewHandoverOptions(): {
+  resolveEffectiveConstants: (context: BotContext<RequestEvents>) => EffectiveConstants;
+  prAsIssueLike: (pr: PullRequestLike) => IssueLike;
+  listChangedYamlFilesForPrWithFallback: (
+    context: BotContext<RequestEvents>,
+    repoInfo: RepoInfo,
+    pr: PullRequestLike,
+    baseBranch?: string
+  ) => Promise<string[]>;
+  resolveDirectPrRequestTypes: (
+    context: BotContext<RequestEvents>,
+    repoInfo: RepoInfo,
+    pr: PullRequestLike,
+    options?: DirectPrApprovalOptions
+  ) => Promise<string[]>;
+  getUnknownManualApprovers: (decision: ApprovalDecision) => string[];
+  resolveReviewAssigneesForRequestTypes: (
+    context: BotContext<RequestEvents>,
+    issue: IssueLike,
+    requestTypes: string[]
+  ) => string[];
+  ensureAssigneesPresent: (
+    context: BotContext<RequestEvents>,
+    params: IssueParams,
+    assignees: string[]
+  ) => Promise<void>;
+  ensureLabelsPresentOnce: (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]) => Promise<void>;
+  calcStandaloneDirectPrSnapshotHash: (pr: PullRequestLike, changedFiles: string[]) => string;
+  buildReviewHandoverBody: (
+    context: BotContext<RequestEvents>,
+    snapshotHash?: string,
+    options?: { target?: 'issue' | 'pull_request' }
+  ) => string;
+  toStringTrim: (value: unknown) => string;
+  logHandover: (args: {
+    context: BotContext<RequestEvents>;
+    prNumber: number;
+    requestTypes: string[];
+    changedFiles: string[];
+    assignees: string[];
+    snapshotHash: string;
+    decisionStatus: string;
+  }) => void;
+} {
+  return {
+    resolveEffectiveConstants,
+    prAsIssueLike,
+    listChangedYamlFilesForPrWithFallback,
+    resolveDirectPrRequestTypes,
+    getUnknownManualApprovers,
+    resolveReviewAssigneesForRequestTypes,
+    ensureAssigneesPresent,
+    ensureLabelsPresentOnce,
+    calcStandaloneDirectPrSnapshotHash,
+    buildReviewHandoverBody,
+    toStringTrim,
+    logHandover: ({ context, prNumber, requestTypes, changedFiles, assignees, snapshotHash, decisionStatus }): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber,
+          requestTypes,
+          changedFiles,
+          assignees,
+          snapshotHash,
+          decisionStatus,
+        },
+        'direct-pr:handover-to-review'
+      );
     },
-    'direct-pr:handover-to-review'
-  );
+  };
 }
 
 async function handleDirectPrApprovalComment(
@@ -5472,7 +5475,14 @@ async function maybeHandleStandaloneDirectPrApproval(
       return 'approved';
     }
 
-    await handoverStandaloneDirectPrToReview(context, repoInfo, pr, decision, options);
+    await handoverStandaloneDirectPrToReview(
+      context,
+      repoInfo,
+      pr,
+      decision,
+      options,
+      buildStandaloneDirectPrReviewHandoverOptions()
+    );
     return 'continue';
   }
 
