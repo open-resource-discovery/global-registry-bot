@@ -18,8 +18,12 @@ import {
   singleMachineReadableIssue,
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
-import { buildAutoApprovalReviewBody } from './domain/approval-comment-rendering.js';
 import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
+import {
+  ensureAutomatedApprovalReviewForCurrentHead as ensureAutomatedApprovalReviewForCurrentHeadApplication,
+  type AutomatedApprovalReviewCallbacks,
+  type AutomatedApprovalReviewOptions,
+} from './application/automated-approval-review.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
@@ -248,10 +252,6 @@ type DirectPrApprovalOptions = {
   baseBranch?: string;
 };
 
-type AutomatedApprovalReviewOptions = {
-  skipApprovedLabelStateCleanup?: boolean;
-};
-
 type HeadGreenEvaluation = {
   green: boolean;
   reason: string;
@@ -288,8 +288,6 @@ type SchemaFieldAliasLookup = Map<string, string>;
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
 const MERGE_INFLIGHT = new Map<string, Promise<void>>();
 const AUTO_APPROVED_PR_HEADS = new Set<string>();
-
-const AUTO_APPROVAL_REVIEW_INFLIGHT = new Map<string, Promise<boolean>>();
 const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
@@ -1787,84 +1785,6 @@ function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: s
   return createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
-async function createAutomatedApprovalReview(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision
-): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  const reviewBody = buildAutoApprovalReviewBody(decision, headSha);
-  const failureText = getVisibleApprovalText(decision) || 'The onApproval hook matched this PR.';
-
-  try {
-    await (
-      context.octokit.pulls as unknown as {
-        createReview: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          event: 'APPROVE';
-          body: string;
-        }) => Promise<unknown>;
-      }
-    ).createReview({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: pr.number,
-      event: 'APPROVE',
-      body: reviewBody,
-    });
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-      },
-      'automated PR approval review created'
-    );
-
-    return true;
-  } catch (e: unknown) {
-    const errObj = isPlainObject(e) ? e : {};
-    const status = typeof errObj['status'] === 'number' ? errObj['status'] : undefined;
-
-    const response = isPlainObject(errObj['response']) ? errObj['response'] : {};
-    const responseData = response['data'];
-
-    const message = e instanceof Error ? e.message : String(e);
-
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        status,
-        message,
-        responseData,
-      },
-      'failed to create automated PR approval review'
-    );
-
-    await postOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      `## onApproval matched, but automatic PR approval failed
-
-${failureText}
-
-Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
-
-The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
-      { minimizeTag: 'nsreq:on-approval:approve-failed' }
-    );
-
-    return false;
-  }
-}
-
 async function resolvePullRequestRequestAuthorId(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -1995,33 +1915,62 @@ function buildAutoApprovalReviewMarker(headSha: string): string {
   return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
-async function runEnsureAutomatedApprovalReviewForCurrentHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision,
-  headSha: string,
-  options: AutomatedApprovalReviewOptions = {}
-): Promise<boolean> {
-  if (hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
-    return true;
-  }
-
-  if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
-    markAutoApprovedPrHead(repoInfo, pr.number, headSha);
-    return true;
-  }
-
-  const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-  if (!approved) return false;
-
-  markAutoApprovedPrHead(repoInfo, pr.number, headSha);
-
-  await addApprovedLabelToPr(context, repoInfo, pr.number, {
-    skipStateCleanup: options.skipApprovedLabelStateCleanup === true,
-  });
-
-  return true;
+function buildAutomatedApprovalReviewCallbacks(): AutomatedApprovalReviewCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike
+> {
+  return {
+    toStringTrim,
+    isPlainObject,
+    getVisibleApprovalText,
+    hasAutoApprovedPrHead,
+    hasAutoApprovalReviewForHead,
+    markAutoApprovedPrHead,
+    addApprovedLabelToPr,
+    autoApprovedPrHeadKey,
+    logCreated: (context: BotContext<RequestEvents>, prNumber: number, headSha: string): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber,
+          headSha,
+        },
+        'automated PR approval review created'
+      );
+    },
+    logCreateFailed: (
+      context: BotContext<RequestEvents>,
+      prNumber: number,
+      status: number | undefined,
+      message: string,
+      responseData: unknown
+    ): void => {
+      log(
+        context,
+        'warn',
+        {
+          prNumber,
+          status,
+          message,
+          responseData,
+        },
+        'failed to create automated PR approval review'
+      );
+    },
+    logDedupedInFlight: (context: BotContext<RequestEvents>, prNumber: number, headSha: string): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber,
+          headSha,
+        },
+        'automated PR approval review deduped: already in flight'
+      );
+    },
+  };
 }
 
 async function ensureAutomatedApprovalReviewForCurrentHead(
@@ -2031,39 +1980,14 @@ async function ensureAutomatedApprovalReviewForCurrentHead(
   decision: ApprovalDecision,
   options: AutomatedApprovalReviewOptions = {}
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  const key = autoApprovedPrHeadKey(repoInfo, pr.number, headSha);
-
-  const existing = AUTO_APPROVAL_REVIEW_INFLIGHT.get(key);
-  if (existing) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-      },
-      'automated PR approval review deduped: already in flight'
-    );
-
-    return await existing;
-  }
-
-  const pending = runEnsureAutomatedApprovalReviewForCurrentHead(
+  return await ensureAutomatedApprovalReviewForCurrentHeadApplication(
     context,
     repoInfo,
     pr,
     decision,
-    headSha,
-    options
-  ).finally(() => {
-    AUTO_APPROVAL_REVIEW_INFLIGHT.delete(key);
-  });
-
-  AUTO_APPROVAL_REVIEW_INFLIGHT.set(key, pending);
-  return await pending;
+    options,
+    buildAutomatedApprovalReviewCallbacks()
+  );
 }
 
 async function listPullRequestReviews(
