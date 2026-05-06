@@ -2318,6 +2318,7 @@ export async function validateRequestIssue(
   const allowedHosts = Array.isArray(ah) ? ah : [];
 
   const workerSecrets = pickHookSecretsForWorker(coreSecrets.HOOK_SECRETS || {});
+  const hookPublicConfig = pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {});
 
   const hookApi = createHookApi(context, {
     secrets: coreSecrets.HOOK_SECRETS || {},
@@ -2344,7 +2345,7 @@ export async function validateRequestIssue(
         requestType,
         form: formData,
         api: null,
-        config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+        config: hookPublicConfig,
         log: undefined,
       };
       const res = await runHookInWorker(
@@ -2403,7 +2404,7 @@ export async function validateRequestIssue(
           requestType,
           form: formData,
           api: hookApi,
-          config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+          config: hookPublicConfig,
           log: getHookLogger(context.log),
         });
       } catch (err: unknown) {
@@ -2540,7 +2541,7 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: null,
-            config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+            config: hookPublicConfig,
             log: undefined,
           };
 
@@ -2614,7 +2615,7 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: hookApi,
-            config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+            config: hookPublicConfig,
             log: getHookLogger(context.log),
           });
 
@@ -2893,6 +2894,8 @@ export async function runCustomValidateForRegistryCandidate(
     formData?: FormData | null;
   }
 ): Promise<string[]> {
+  await ensureStaticConfigLoaded(context);
+
   const hooks = getResourceBotHooks(context);
 
   if (!hooks) return [];
@@ -2900,6 +2903,8 @@ export async function runCustomValidateForRegistryCandidate(
   const allowedHosts = Array.isArray(context.resourceBotConfig?.hooks?.allowedHosts)
     ? context.resourceBotConfig.hooks.allowedHosts
     : [];
+
+  const hookPublicConfig = pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {});
 
   const form =
     args.formData && isPlainObject(args.formData)
@@ -2936,7 +2941,7 @@ export async function runCustomValidateForRegistryCandidate(
           secrets: coreSecrets.HOOK_SECRETS || {},
           allowedHosts,
         }),
-        config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+        config: hookPublicConfig,
         log: getHookLogger(context.log),
       });
 
@@ -2956,7 +2961,7 @@ export async function runCustomValidateForRegistryCandidate(
       candidate: args.candidate,
       form,
       api: null,
-      config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+      config: hookPublicConfig,
       log: undefined,
     };
 
