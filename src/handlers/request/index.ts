@@ -46,6 +46,7 @@ import {
   resolveAllowedApproversForRequestTypes as resolveAllowedApproversForRequestTypesApplication,
   type DirectPrApproverResolutionCallbacks,
 } from './application/direct-pr-approver-resolution.js';
+import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
@@ -1935,39 +1936,7 @@ async function listPullRequestReviews(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<PullRequestReviewLike[]> {
-  const out: PullRequestReviewLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        listReviews: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          per_page?: number;
-          page?: number;
-        }) => Promise<{ data?: PullRequestReviewLike[] }>;
-      }
-    ).listReviews({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: prNumber,
-      per_page: 100,
-      page,
-    });
-
-    const reviews = Array.isArray(res?.data) ? res.data : [];
-    if (!reviews.length) break;
-
-    out.push(...reviews);
-
-    if (reviews.length < 100) break;
-    page += 1;
-    if (page > 20) break;
-  }
-
-  return out;
+  return await listPullRequestReviewsApplication(context, repoInfo, prNumber);
 }
 
 async function hasApprovedLabelOnPr(
