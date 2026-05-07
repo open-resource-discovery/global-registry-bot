@@ -18,6 +18,7 @@ import {
   type PullRequestAuthorResolutionContext,
   type PullRequestAuthorResolutionCallbacks,
 } from './pull-request-author-resolution.js';
+import { listPullRequestReviews, type PullRequestReviewReadingContext } from './pull-request-review-reading.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -40,13 +41,7 @@ type PullRequestReviewLike = {
   user?: { login?: string | null } | null;
 };
 
-export type DirectPrReviewApprovalCallbacks<
-  ContextType,
-  ReviewType extends PullRequestReviewLike,
-  DecisionType,
-  PullRequestType extends PullRequestLike,
-> = {
-  listPullRequestReviews: (context: ContextType, repoInfo: RepoInfo, prNumber: number) => Promise<ReviewType[]>;
+export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType extends PullRequestLike> = {
   resolveDirectPrRequestTypes: (
     context: ContextType,
     repoInfo: RepoInfo,
@@ -74,7 +69,7 @@ export type DirectPrReviewApprovalCallbacks<
 };
 
 export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
-  ContextType extends PullRequestAuthorResolutionContext,
+  ContextType extends PullRequestAuthorResolutionContext & PullRequestReviewReadingContext,
   ReviewType extends PullRequestReviewLike,
   DecisionType,
   PullRequestType extends PullRequestLike,
@@ -92,7 +87,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   let reviews: ReviewType[] = [];
 
   try {
-    reviews = await callbacks.listPullRequestReviews(context, repoInfo, pr.number);
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
   } catch {
     return false;
   }
@@ -129,7 +124,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
 }
 
 export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
-  ContextType extends PullRequestAuthorResolutionContext,
+  ContextType extends PullRequestAuthorResolutionContext & PullRequestReviewReadingContext,
   ReviewType extends PullRequestReviewLike,
   DecisionType,
   PullRequestType extends PullRequestLike,
@@ -170,7 +165,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
 
   let reviews: ReviewType[] = [];
   try {
-    reviews = await callbacks.listPullRequestReviews(context, repoInfo, pr.number);
+    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
   } catch {
     reviews = [];
   }

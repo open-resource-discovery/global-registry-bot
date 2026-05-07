@@ -4925,7 +4925,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
   PullRequestLike
 > {
   return {
-    listPullRequestReviews,
     resolveDirectPrRequestTypes,
     directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
     isApprovalDecisionAuthorizedByHookApprovers,
