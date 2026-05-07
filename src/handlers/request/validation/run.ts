@@ -143,6 +143,7 @@ type CustomValidateArgs = Readonly<{
   }>;
   parentResourceName?: string;
   parentCandidate?: Readonly<Record<string, unknown>> | null;
+  parentOwners?: readonly string[];
   log?: LoggerLike | undefined;
 }>;
 
@@ -634,6 +635,62 @@ async function resolveParentCandidateForValidationHook(
   };
 }
 
+function addNormalizedOwnerReference(out: Set<string>, value: unknown): void {
+  const raw = toStringSafe(value);
+  if (!raw) return;
+
+  const githubUrlMatch = /(?:github\.com|github\.tools\.sap)\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/i.exec(
+    raw
+  );
+
+  if (githubUrlMatch?.[1]) {
+    out.add(normalizeLoginValue(githubUrlMatch[1]).toLowerCase());
+  }
+
+  for (const part of raw.split(/[,\s;]+/)) {
+    const cleaned = toStringSafe(part).replace(/^@+/, '').toLowerCase();
+    if (!cleaned) continue;
+
+    if (cleaned.includes('@')) {
+      out.add(cleaned);
+      continue;
+    }
+
+    if (/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(cleaned)) {
+      out.add(cleaned);
+    }
+  }
+}
+
+function collectNormalizedOwnerReferences(out: Set<string>, value: unknown): void {
+  if (value === null || value === undefined) return;
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectNormalizedOwnerReferences(out, item);
+    return;
+  }
+
+  if (isPlainObject(value)) {
+    for (const item of Object.values(value)) collectNormalizedOwnerReferences(out, item);
+    return;
+  }
+
+  addNormalizedOwnerReference(out, value);
+}
+
+function resolveParentOwnersForValidationHook(parentCandidate: Record<string, unknown> | null): string[] {
+  if (!parentCandidate) return [];
+
+  const out = new Set<string>();
+
+  collectNormalizedOwnerReferences(
+    out,
+    parentCandidate['contacts'] ?? parentCandidate['contact'] ?? parentCandidate['owners'] ?? parentCandidate['owner']
+  );
+
+  return Array.from(out).filter(Boolean).sort();
+}
+
 async function buildCustomValidateContextArgs(
   context: ValidationContext,
   owner: string,
@@ -642,7 +699,9 @@ async function buildCustomValidateContextArgs(
   template: TemplateLike,
   requestCfg: RequestConfigEntry,
   resourceName: string
-): Promise<Pick<CustomValidateArgs, 'requestAuthor' | 'issue' | 'parentResourceName' | 'parentCandidate'>> {
+): Promise<
+  Pick<CustomValidateArgs, 'requestAuthor' | 'issue' | 'parentResourceName' | 'parentCandidate' | 'parentOwners'>
+> {
   const parent = await resolveParentCandidateForValidationHook(
     context,
     owner,
@@ -657,6 +716,7 @@ async function buildCustomValidateContextArgs(
     issue: buildValidationHookIssue(issue),
     parentResourceName: parent.parentResourceName,
     parentCandidate: parent.parentCandidate,
+    parentOwners: resolveParentOwnersForValidationHook(parent.parentCandidate),
   };
 }
 
@@ -3103,6 +3163,7 @@ export async function runCustomValidateForRegistryCandidate(
         },
         parentResourceName: '',
         parentCandidate: null,
+        parentOwners: [],
         log: getHookLogger(context.log),
       });
 
@@ -3134,6 +3195,7 @@ export async function runCustomValidateForRegistryCandidate(
       },
       parentResourceName: '',
       parentCandidate: null,
+      parentOwners: [],
       log: undefined,
     };
 
