@@ -24,7 +24,9 @@ export function isActionableReviewState(state: string): boolean {
   return new Set<string>(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']).has(state);
 }
 
-export function sortPullRequestReviewsChronologically(reviews: PullRequestReviewLike[]): PullRequestReviewLike[] {
+export function sortPullRequestReviewsChronologically<ReviewType extends PullRequestReviewLike>(
+  reviews: ReviewType[]
+): ReviewType[] {
   return reviews.slice().sort((a, b) => {
     const at = Date.parse(toStringTrim(a.submitted_at));
     const bt = Date.parse(toStringTrim(b.submitted_at));
@@ -37,7 +39,9 @@ export function sortPullRequestReviewsChronologically(reviews: PullRequestReview
   });
 }
 
-export function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<string, string> {
+export function getLatestActionableReviewStates<ReviewType extends PullRequestReviewLike>(
+  reviews: ReviewType[]
+): Map<string, string> {
   const latestByReviewer = new Map<string, string>();
 
   for (const review of sortPullRequestReviewsChronologically(reviews)) {

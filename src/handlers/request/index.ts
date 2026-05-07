@@ -60,11 +60,7 @@ import {
   promoteUnknownApprovalDecisionForDirectPrRequester,
   type ApprovalDecision,
 } from './domain/approval-decision.js';
-import {
-  getLatestActionableReviewStates,
-  isActionableReviewState,
-  sortPullRequestReviewsChronologically,
-} from './domain/pull-request-review-state.js';
+import { getLatestActionableReviewStates } from './domain/pull-request-review-state.js';
 import {
   getUnknownManualApprovers,
   getVisibleApprovalText,
@@ -5028,7 +5024,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
 > {
   return {
     listPullRequestReviews,
-    getLatestActionableReviewStates,
     resolveDirectPrRequestTypes,
     resolveAllowedApproversForRequestTypes,
     isApprovalDecisionAuthorizedByHookApprovers,
@@ -5037,8 +5032,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
     normalizeLogin,
     uniqLogins,
     resolvePullRequestRequestAuthorId,
-    actionableReviewStatesHas: isActionableReviewState,
-    sortPullRequestReviewsChronologically,
     resolveHookManualApprovers: (decision: ApprovalDecision): string[] =>
       uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean)),
     isAuthorizedApprover,

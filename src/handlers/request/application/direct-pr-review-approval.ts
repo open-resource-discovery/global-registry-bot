@@ -4,6 +4,11 @@ import {
   resolveEffectiveReviewApproverLogin,
   reviewTargetsCurrentHead,
 } from '../domain/current-head-approval.js';
+import {
+  getLatestActionableReviewStates,
+  isActionableReviewState,
+  sortPullRequestReviewsChronologically,
+} from '../domain/pull-request-review-state.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -33,7 +38,6 @@ export type DirectPrReviewApprovalCallbacks<
   PullRequestType extends PullRequestLike,
 > = {
   listPullRequestReviews: (context: ContextType, repoInfo: RepoInfo, prNumber: number) => Promise<ReviewType[]>;
-  getLatestActionableReviewStates: (reviews: ReviewType[]) => Map<string, string>;
   resolveDirectPrRequestTypes: (
     context: ContextType,
     repoInfo: RepoInfo,
@@ -51,8 +55,6 @@ export type DirectPrReviewApprovalCallbacks<
   normalizeLogin: (value: unknown) => string;
   uniqLogins: (values: string[]) => string[];
   resolvePullRequestRequestAuthorId: (context: ContextType, repoInfo: RepoInfo, pr: PullRequestType) => Promise<string>;
-  actionableReviewStatesHas: (state: string) => boolean;
-  sortPullRequestReviewsChronologically: (reviews: ReviewType[]) => ReviewType[];
   resolveHookManualApprovers: (decision: DecisionType) => string[];
   isAuthorizedApprover: (
     approver: string,
@@ -86,7 +88,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
     return false;
   }
 
-  const latestStates = callbacks.getLatestActionableReviewStates(reviews);
+  const latestStates = getLatestActionableReviewStates(reviews);
   if (new Set(latestStates.values()).has('CHANGES_REQUESTED')) {
     return false;
   }
@@ -152,7 +154,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
 
   const currentHeadReviews = reviews
     .filter((review) => reviewTargetsCurrentHead(review, headSha))
-    .filter((review) => callbacks.actionableReviewStatesHas(callbacks.toStringTrim(review?.state).toUpperCase()));
+    .filter((review) => isActionableReviewState(callbacks.toStringTrim(review?.state).toUpperCase()));
 
   if (!currentHeadReviews.length) {
     callbacks.log(
@@ -172,7 +174,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
 
   const latestByEffectiveApprover = new Map<string, ReviewType>();
 
-  for (const review of callbacks.sortPullRequestReviewsChronologically(currentHeadReviews)) {
+  for (const review of sortPullRequestReviewsChronologically(currentHeadReviews)) {
     const approver = resolveEffectiveReviewApproverLogin(review).toLowerCase();
     if (!approver) continue;
 
