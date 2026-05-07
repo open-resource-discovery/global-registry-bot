@@ -42,6 +42,10 @@ import {
   resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
   type PullRequestAuthorResolutionCallbacks,
 } from './application/pull-request-author-resolution.js';
+import {
+  resolveAllowedApproversForRequestTypes as resolveAllowedApproversForRequestTypesApplication,
+  type DirectPrApproverResolutionCallbacks,
+} from './application/direct-pr-approver-resolution.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
@@ -1759,21 +1763,20 @@ function resolveReviewAssigneesForRequestTypes(
 }
 
 function resolveAllowedApproversForRequestTypes(context: BotContext<RequestEvents>, requestTypes: string[]): string[] {
-  const eff = resolveEffectiveConstants(context);
-  const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
-
-  if (!types.length) {
-    return resolveApproverRoutingForRequestType(context, '', eff.approverUsernames, eff.approverPoolUsernames)
-      .approvalUsernames;
-  }
-
-  return uniqLogins(
-    types.flatMap(
-      (requestType) =>
-        resolveApproverRoutingForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
-          .approvalUsernames
-    )
+  return resolveAllowedApproversForRequestTypesApplication(
+    context,
+    requestTypes,
+    buildDirectPrApproverResolutionCallbacks()
   );
+}
+
+function buildDirectPrApproverResolutionCallbacks(): DirectPrApproverResolutionCallbacks<BotContext<RequestEvents>> {
+  return {
+    resolveEffectiveConstants,
+    resolveApproverRoutingForRequestType,
+    uniqLogins,
+    toStringTrim,
+  };
 }
 
 function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: string[]): string {
