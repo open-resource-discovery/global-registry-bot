@@ -1,0 +1,251 @@
+import {
+  extractApprovedByLoginFromReviewBody,
+  isApprovalReviewForCurrentHead,
+  resolveEffectiveReviewApproverLogin,
+  reviewTargetsCurrentHead,
+} from '../domain/current-head-approval.js';
+
+type RepoInfo = { owner: string; repo: string };
+
+type DirectPrApprovalOptions = {
+  baseBranch?: string;
+};
+
+type PullRequestLike = {
+  number: number;
+  head?: { sha?: string | null } | null;
+  user?: { login?: string | null } | null;
+};
+
+type PullRequestReviewLike = {
+  id?: number | null;
+  state?: string | null;
+  body?: string | null;
+  commit_id?: string | null;
+  submitted_at?: string | null;
+  user?: { login?: string | null } | null;
+};
+
+export type DirectPrReviewApprovalCallbacks<
+  ContextType,
+  ReviewType extends PullRequestReviewLike,
+  DecisionType,
+  PullRequestType extends PullRequestLike,
+> = {
+  listPullRequestReviews: (context: ContextType, repoInfo: RepoInfo, prNumber: number) => Promise<ReviewType[]>;
+  getLatestActionableReviewStates: (reviews: ReviewType[]) => Map<string, string>;
+  resolveDirectPrRequestTypes: (
+    context: ContextType,
+    repoInfo: RepoInfo,
+    pr: PullRequestType,
+    options?: DirectPrApprovalOptions
+  ) => Promise<string[]>;
+  resolveAllowedApproversForRequestTypes: (context: ContextType, requestTypes: string[]) => string[];
+  isApprovalDecisionAuthorizedByHookApprovers: (
+    decision: DecisionType,
+    configuredApprovers: string[],
+    currentHeadApprovers: string[]
+  ) => boolean;
+  buildAutoApprovalReviewMarker: (headSha: string) => string;
+  toStringTrim: (value: unknown) => string;
+  normalizeLogin: (value: unknown) => string;
+  uniqLogins: (values: string[]) => string[];
+  resolvePullRequestRequestAuthorId: (context: ContextType, repoInfo: RepoInfo, pr: PullRequestType) => Promise<string>;
+  actionableReviewStatesHas: (state: string) => boolean;
+  sortPullRequestReviewsChronologically: (reviews: ReviewType[]) => ReviewType[];
+  resolveHookManualApprovers: (decision: DecisionType) => string[];
+  isAuthorizedApprover: (
+    approver: string,
+    requesterLogin: string | null | undefined,
+    allowedApprovers: string[]
+  ) => boolean;
+  log: (context: ContextType, level: 'info', metadata: Record<string, unknown>, message: string) => void;
+};
+
+export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
+  ContextType,
+  ReviewType extends PullRequestReviewLike,
+  DecisionType,
+  PullRequestType extends PullRequestLike,
+>(
+  context: ContextType,
+  repoInfo: RepoInfo,
+  pr: PullRequestType,
+  decision: DecisionType,
+  options: DirectPrApprovalOptions = {},
+  callbacks: DirectPrReviewApprovalCallbacks<ContextType, ReviewType, DecisionType, PullRequestType>
+): Promise<boolean> {
+  const headSha = callbacks.toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  let reviews: ReviewType[] = [];
+
+  try {
+    reviews = await callbacks.listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    return false;
+  }
+
+  const latestStates = callbacks.getLatestActionableReviewStates(reviews);
+  if (new Set(latestStates.values()).has('CHANGES_REQUESTED')) {
+    return false;
+  }
+
+  if (
+    reviews.some(
+      (review) =>
+        isApprovalReviewForCurrentHead(review, headSha) &&
+        callbacks.toStringTrim(review.body).includes(callbacks.buildAutoApprovalReviewMarker(headSha))
+    )
+  ) {
+    return true;
+  }
+
+  const requestTypes = await callbacks.resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+  const configuredApprovers = callbacks.resolveAllowedApproversForRequestTypes(context, requestTypes);
+
+  return callbacks.isApprovalDecisionAuthorizedByHookApprovers(
+    decision,
+    configuredApprovers,
+    reviews
+      .filter((review) => isApprovalReviewForCurrentHead(review, headSha))
+      .map((review) => callbacks.normalizeLogin(review?.user?.login))
+  );
+}
+
+export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
+  ContextType,
+  ReviewType extends PullRequestReviewLike,
+  DecisionType,
+  PullRequestType extends PullRequestLike,
+>(
+  context: ContextType,
+  repoInfo: RepoInfo,
+  pr: PullRequestType,
+  decision: DecisionType,
+  options: DirectPrApprovalOptions = {},
+  callbacks: DirectPrReviewApprovalCallbacks<ContextType, ReviewType, DecisionType, PullRequestType>
+): Promise<boolean> {
+  const headSha = callbacks.toStringTrim(pr.head?.sha);
+  if (!headSha) return false;
+
+  const requestTypes = await callbacks.resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+
+  const configuredApprovers = callbacks.resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const hookManualApprovers = callbacks.resolveHookManualApprovers(decision);
+  const allowedApprovers = callbacks.uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
+
+  let requesterLogin = callbacks.normalizeLogin(pr.user?.login);
+
+  try {
+    requesterLogin = (await callbacks.resolvePullRequestRequestAuthorId(context, repoInfo, pr)) || requesterLogin;
+  } catch {
+    // keep PR author fallback
+  }
+
+  let reviews: ReviewType[] = [];
+  try {
+    reviews = await callbacks.listPullRequestReviews(context, repoInfo, pr.number);
+  } catch {
+    reviews = [];
+  }
+
+  const currentHeadReviews = reviews
+    .filter((review) => reviewTargetsCurrentHead(review, headSha))
+    .filter((review) => callbacks.actionableReviewStatesHas(callbacks.toStringTrim(review?.state).toUpperCase()));
+
+  if (!currentHeadReviews.length) {
+    callbacks.log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+        allowedApprovers,
+      },
+      'direct-pr:current-head-manual-approval:not-found'
+    );
+
+    return false;
+  }
+
+  const latestByEffectiveApprover = new Map<string, ReviewType>();
+
+  for (const review of callbacks.sortPullRequestReviewsChronologically(currentHeadReviews)) {
+    const approver = resolveEffectiveReviewApproverLogin(review).toLowerCase();
+    if (!approver) continue;
+
+    latestByEffectiveApprover.set(approver, review);
+  }
+
+  const latestCurrentHeadReviews = Array.from(latestByEffectiveApprover.values());
+
+  const hasBlockingChangesRequested = latestCurrentHeadReviews.some(
+    (review) => callbacks.toStringTrim(review?.state).toUpperCase() === 'CHANGES_REQUESTED'
+  );
+
+  if (hasBlockingChangesRequested) {
+    callbacks.log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+      },
+      'direct-pr:current-head-manual-approval:blocking-changes-requested'
+    );
+
+    return false;
+  }
+
+  const approvingReview = latestCurrentHeadReviews.find((review) => {
+    const state = callbacks.toStringTrim(review?.state).toUpperCase();
+    if (state !== 'APPROVED') return false;
+
+    const approver = resolveEffectiveReviewApproverLogin(review);
+    return callbacks.isAuthorizedApprover(approver, requesterLogin || pr.user?.login, allowedApprovers);
+  });
+
+  if (!approvingReview) {
+    callbacks.log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha,
+        requestTypes,
+        requesterLogin,
+        allowedApprovers,
+        currentHeadReviewApprovers: latestCurrentHeadReviews.map((review) => ({
+          state: callbacks.toStringTrim(review?.state).toUpperCase(),
+          user: callbacks.normalizeLogin(review?.user?.login),
+          approvedBy: extractApprovedByLoginFromReviewBody(review?.body),
+          commitId: callbacks.toStringTrim(review?.commit_id),
+        })),
+      },
+      'direct-pr:current-head-manual-approval:no-authorized-approval'
+    );
+
+    return false;
+  }
+
+  const approver = resolveEffectiveReviewApproverLogin(approvingReview);
+
+  callbacks.log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha,
+      requestTypes,
+      requesterLogin,
+      approver,
+      allowedApprovers,
+    },
+    'direct-pr:current-head-manual-approval:accepted'
+  );
+
+  return true;
+}
