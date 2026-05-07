@@ -629,6 +629,48 @@ test('issues.opened: onApproval hook match auto-approves and skips review handov
   expect(body).not.toContain('Routing to an approver for review');
 });
 
+test('issues.opened: onApproval boolean true auto-approves like an explicit approved decision', async () => {
+  const cfg = {
+    workflow: {
+      approvers: ['cpa-user'],
+      labels: {
+        approvalRequested: ['needs-review'],
+        approvalSuccessful: ['Approved'],
+      },
+    },
+  };
+
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const handler = handlers['issues.opened'][0];
+  const issue = {
+    number: 116,
+    title: 'Request',
+    body: 'Body',
+    labels: [],
+    user: { login: 'author' },
+  };
+
+  const ctx = mkIssueContext({
+    action: 'opened',
+    issue,
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  runApprovalHook.mockResolvedValueOnce(true as any);
+
+  await handler(ctx);
+
+  expect(createRequestPr).toHaveBeenCalled();
+  expect(ensureAssigneesOnce).not.toHaveBeenCalled();
+
+  const posted = postOnce.mock.calls.map((c: any[]) => String(c[2] ?? '')).join('\n');
+  expect(posted).toContain('Opened PR: #10');
+  expect(posted).not.toContain('Routing to an approver for review');
+});
+
 test('issues.opened: onApproval false keeps normal review handover unchanged', async () => {
   const cfg = {
     workflow: {
