@@ -13,6 +13,11 @@ import {
   resolveAllowedApproversForRequestTypes,
   type DirectPrApproverResolutionCallbacks,
 } from './direct-pr-approver-resolution.js';
+import {
+  resolvePullRequestRequestAuthorId,
+  type PullRequestAuthorResolutionContext,
+  type PullRequestAuthorResolutionCallbacks,
+} from './pull-request-author-resolution.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -58,7 +63,7 @@ export type DirectPrReviewApprovalCallbacks<
   toStringTrim: (value: unknown) => string;
   normalizeLogin: (value: unknown) => string;
   uniqLogins: (values: string[]) => string[];
-  resolvePullRequestRequestAuthorId: (context: ContextType, repoInfo: RepoInfo, pr: PullRequestType) => Promise<string>;
+  pullRequestAuthorResolutionCallbacks: PullRequestAuthorResolutionCallbacks;
   resolveHookManualApprovers: (decision: DecisionType) => string[];
   isAuthorizedApprover: (
     approver: string,
@@ -69,7 +74,7 @@ export type DirectPrReviewApprovalCallbacks<
 };
 
 export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
-  ContextType,
+  ContextType extends PullRequestAuthorResolutionContext,
   ReviewType extends PullRequestReviewLike,
   DecisionType,
   PullRequestType extends PullRequestLike,
@@ -124,7 +129,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
 }
 
 export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
-  ContextType,
+  ContextType extends PullRequestAuthorResolutionContext,
   ReviewType extends PullRequestReviewLike,
   DecisionType,
   PullRequestType extends PullRequestLike,
@@ -152,7 +157,13 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   let requesterLogin = callbacks.normalizeLogin(pr.user?.login);
 
   try {
-    requesterLogin = (await callbacks.resolvePullRequestRequestAuthorId(context, repoInfo, pr)) || requesterLogin;
+    requesterLogin =
+      (await resolvePullRequestRequestAuthorId(
+        context,
+        repoInfo,
+        pr,
+        callbacks.pullRequestAuthorResolutionCallbacks
+      )) || requesterLogin;
   } catch {
     // keep PR author fallback
   }

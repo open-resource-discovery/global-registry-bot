@@ -10,7 +10,7 @@ type PullRequestCommitLike = {
   committer?: { login?: string | null } | null;
 };
 
-type PullRequestAuthorResolutionContext = {
+export type PullRequestAuthorResolutionContext = {
   octokit: {
     pulls: {
       listCommits: (args: {

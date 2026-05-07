@@ -4964,7 +4964,7 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
     toStringTrim,
     normalizeLogin,
     uniqLogins,
-    resolvePullRequestRequestAuthorId,
+    pullRequestAuthorResolutionCallbacks: buildPullRequestAuthorResolutionCallbacks(),
     resolveHookManualApprovers: (decision: ApprovalDecision): string[] =>
       uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean)),
     isAuthorizedApprover,
