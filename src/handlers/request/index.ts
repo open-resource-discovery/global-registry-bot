@@ -60,6 +60,7 @@ import {
   promoteUnknownApprovalDecisionForDirectPrRequester,
   type ApprovalDecision,
 } from './domain/approval-decision.js';
+import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
 import { getLatestActionableReviewStates } from './domain/pull-request-review-state.js';
 import {
   getUnknownManualApprovers,
@@ -1679,15 +1680,7 @@ function isAuthorizedApprover(
   issueAuthor: string | undefined | null,
   allowedApprovers: string[]
 ): boolean {
-  const commenterLc = String(commenter || '').toLowerCase();
-  const hasConfiguredApprovers = Array.isArray(allowedApprovers) && allowedApprovers.length > 0;
-
-  if (hasConfiguredApprovers) {
-    return allowedApprovers.some((u) => String(u || '').toLowerCase() === commenterLc);
-  }
-
-  const issueAuthorLc = String(issueAuthor || '').toLowerCase();
-  return Boolean(commenterLc && commenterLc !== issueAuthorLc);
+  return isAuthorizedApproverPure(commenter, issueAuthor, allowedApprovers);
 }
 
 async function applyApprovedRequestState(
