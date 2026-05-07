@@ -4958,7 +4958,7 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
   return {
     listPullRequestReviews,
     resolveDirectPrRequestTypes,
-    resolveAllowedApproversForRequestTypes,
+    directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
     isApprovalDecisionAuthorizedByHookApprovers,
     buildAutoApprovalReviewMarker,
     toStringTrim,

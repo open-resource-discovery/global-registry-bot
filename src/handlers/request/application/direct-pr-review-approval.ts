@@ -9,6 +9,10 @@ import {
   isActionableReviewState,
   sortPullRequestReviewsChronologically,
 } from '../domain/pull-request-review-state.js';
+import {
+  resolveAllowedApproversForRequestTypes,
+  type DirectPrApproverResolutionCallbacks,
+} from './direct-pr-approver-resolution.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -44,7 +48,7 @@ export type DirectPrReviewApprovalCallbacks<
     pr: PullRequestType,
     options?: DirectPrApprovalOptions
   ) => Promise<string[]>;
-  resolveAllowedApproversForRequestTypes: (context: ContextType, requestTypes: string[]) => string[];
+  directPrApproverResolutionCallbacks: DirectPrApproverResolutionCallbacks<ContextType>;
   isApprovalDecisionAuthorizedByHookApprovers: (
     decision: DecisionType,
     configuredApprovers: string[],
@@ -104,7 +108,11 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   }
 
   const requestTypes = await callbacks.resolveDirectPrRequestTypes(context, repoInfo, pr, options);
-  const configuredApprovers = callbacks.resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(
+    context,
+    requestTypes,
+    callbacks.directPrApproverResolutionCallbacks
+  );
 
   return callbacks.isApprovalDecisionAuthorizedByHookApprovers(
     decision,
@@ -133,7 +141,11 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
 
   const requestTypes = await callbacks.resolveDirectPrRequestTypes(context, repoInfo, pr, options);
 
-  const configuredApprovers = callbacks.resolveAllowedApproversForRequestTypes(context, requestTypes);
+  const configuredApprovers = resolveAllowedApproversForRequestTypes(
+    context,
+    requestTypes,
+    callbacks.directPrApproverResolutionCallbacks
+  );
   const hookManualApprovers = callbacks.resolveHookManualApprovers(decision);
   const allowedApprovers = callbacks.uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
 
