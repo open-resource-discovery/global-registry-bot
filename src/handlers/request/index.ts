@@ -38,6 +38,10 @@ import {
   hasAllowedStandaloneDirectPrApprovalForCurrentHead as hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication,
   type DirectPrReviewApprovalCallbacks,
 } from './application/direct-pr-review-approval.js';
+import {
+  resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
+  type PullRequestAuthorResolutionCallbacks,
+} from './application/pull-request-author-resolution.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
@@ -205,11 +209,6 @@ type PullRequestLike = {
 type PullRequestFileLike = {
   filename?: string | null;
   status?: string | null;
-};
-
-type PullRequestCommitLike = {
-  author?: UserLike | null;
-  committer?: UserLike | null;
 };
 
 type PullRequestReviewLike = {
@@ -1791,80 +1790,18 @@ async function resolvePullRequestRequestAuthorId(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<string> {
-  let page = 1;
-
-  const blockedServiceUsers = new Set<string>([
-    'web-flow-serviceuser',
-    'global-registry-bot',
-    'global-registry-bot[bot]',
-    'my-registry-bot',
-    'my-registry-bot[bot]',
-    'github-actions[bot]',
-    'github-actions',
-  ]);
-
-  const isUsableRequesterLogin = (value: unknown): string => {
-    const login = normalizeLogin(value);
-    if (!login) return '';
-    if (blockedServiceUsers.has(login.toLowerCase())) return '';
-    return login;
-  };
-
-  let lastAuthorLogin = '';
-  let lastCommitterLogin = '';
-  let firstAuthorLogin = '';
-  let firstCommitterLogin = '';
-
-  try {
-    while (true) {
-      const res = await (
-        context.octokit.pulls as unknown as {
-          listCommits: (args: {
-            owner: string;
-            repo: string;
-            pull_number: number;
-            per_page?: number;
-            page?: number;
-          }) => Promise<{ data?: PullRequestCommitLike[] }>;
-        }
-      ).listCommits({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        per_page: 100,
-        page,
-      });
-
-      const commits = Array.isArray(res?.data) ? res.data : [];
-      if (!commits.length) break;
-
-      for (const commit of commits) {
-        const authorLogin = isUsableRequesterLogin(commit?.author?.login);
-        const committerLogin = isUsableRequesterLogin(commit?.committer?.login);
-
-        if (!firstAuthorLogin && authorLogin) firstAuthorLogin = authorLogin;
-        if (!firstCommitterLogin && committerLogin) firstCommitterLogin = committerLogin;
-
-        if (authorLogin) lastAuthorLogin = authorLogin;
-        if (committerLogin) lastCommitterLogin = committerLogin;
-      }
-
-      if (commits.length < 100) break;
-      page += 1;
-      if (page > 20) break;
-    }
-  } catch {
-    // Fall through to PR author fallback below
-  }
-
-  return (
-    lastAuthorLogin ||
-    lastCommitterLogin ||
-    firstAuthorLogin ||
-    firstCommitterLogin ||
-    isUsableRequesterLogin(pr.user?.login) ||
-    ''
+  return await resolvePullRequestRequestAuthorIdApplication(
+    context,
+    repoInfo,
+    pr,
+    buildPullRequestAuthorResolutionCallbacks()
   );
+}
+
+function buildPullRequestAuthorResolutionCallbacks(): PullRequestAuthorResolutionCallbacks {
+  return {
+    normalizeLogin,
+  };
 }
 
 async function addApprovedLabelToPr(
