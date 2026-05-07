@@ -61,6 +61,11 @@ import {
   type ApprovalDecision,
 } from './domain/approval-decision.js';
 import {
+  getLatestActionableReviewStates,
+  isActionableReviewState,
+  sortPullRequestReviewsChronologically,
+} from './domain/pull-request-review-state.js';
+import {
   getUnknownManualApprovers,
   getVisibleApprovalText,
   isApprovalDecisionAuthorizedByHookApprovers,
@@ -2034,36 +2039,6 @@ async function listPullRequestReviews(
   }
 
   return out;
-}
-
-const ACTIONABLE_REVIEW_STATES = new Set<string>(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
-
-function sortPullRequestReviewsChronologically(reviews: PullRequestReviewLike[]): PullRequestReviewLike[] {
-  return reviews.slice().sort((a, b) => {
-    const at = Date.parse(toStringTrim(a.submitted_at));
-    const bt = Date.parse(toStringTrim(b.submitted_at));
-
-    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
-
-    const aid = typeof a.id === 'number' ? a.id : 0;
-    const bid = typeof b.id === 'number' ? b.id : 0;
-    return aid - bid;
-  });
-}
-
-function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<string, string> {
-  const latestByReviewer = new Map<string, string>();
-
-  for (const review of sortPullRequestReviewsChronologically(reviews)) {
-    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
-    const state = toStringTrim(review?.state).toUpperCase();
-
-    if (!reviewer || !ACTIONABLE_REVIEW_STATES.has(state)) continue;
-
-    latestByReviewer.set(reviewer, state);
-  }
-
-  return latestByReviewer;
 }
 
 async function hasApprovedLabelOnPr(
@@ -5062,7 +5037,7 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
     normalizeLogin,
     uniqLogins,
     resolvePullRequestRequestAuthorId,
-    actionableReviewStatesHas: (state: string): boolean => ACTIONABLE_REVIEW_STATES.has(state),
+    actionableReviewStatesHas: isActionableReviewState,
     sortPullRequestReviewsChronologically,
     resolveHookManualApprovers: (decision: ApprovalDecision): string[] =>
       uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean)),
