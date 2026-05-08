@@ -1984,7 +1984,26 @@ describe('parent owner approval gating', () => {
     expect(posted).toContain('@barOwner');
     expect(posted).not.toContain('@topOwner');
 
-    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+    expect(setStateLabel).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 550,
+        labels: ['Parent Owner Action'],
+      })
+    );
+
+    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 550,
+        assignees: ['barOwner'],
+      })
+    );
+
     expect(ensureAssigneesOnce).not.toHaveBeenCalled();
   });
 
@@ -14856,7 +14875,13 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened', withCachedConfig: true, config: productCfg() });
-    ctx.octokit.issues.update.mockRejectedValueOnce(new Error('cannot add marker'));
+    ctx.octokit.issues.update.mockImplementation(async (args: any) => {
+      if (String(args?.body || '').includes('nsreq:parent-approval')) {
+        throw new Error('cannot add marker');
+      }
+
+      return {} as any;
+    });
     ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
@@ -14883,7 +14908,224 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     expect(postedBodies()).toContain('Parent owner approval required');
     expect(postedBodies()).toContain('@parentOwner');
-    expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), issue, 'author');
+    expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 913,
+        body: expect.stringContaining('nsreq:parent-approval'),
+      })
+    );
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 913,
+        labels: ['Parent Owner Action'],
+      })
+    );
+
+    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 913,
+        assignees: ['parentOwner'],
+      })
+    );
+
+    expect(setStateLabel).not.toHaveBeenCalledWith(ctx, expect.anything(), issue, 'author');
+    expect(issue.body).not.toContain('nsreq:parent-approval');
+  });
+
+  test('issues.opened: parent approval state replaces other workflow state labels', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar.foo';
+    const issue = {
+      number: 914,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [
+        { name: 'Requester Action' },
+        { name: 'Review Pending' },
+        { name: 'Approved' },
+        { name: 'Sub-Context Namespace' },
+      ],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    const tpl = {
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    const ctx = mkIssuesContext({
+      issue,
+      action: 'opened',
+      withCachedConfig: true,
+      config: {
+        workflow: {
+          labels: {
+            approvalRequested: ['Review Pending'],
+            approvalSuccessful: ['Approved'],
+            parentOwnerAction: 'Parent Owner Action',
+          },
+          approvers: [],
+        },
+        requests: {},
+      },
+    });
+
+    ctx.octokit.issues.get.mockResolvedValue({
+      data: {
+        ...issue,
+        labels: issue.labels,
+        assignees: [],
+      },
+    });
+
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return { data: { content: b64('contacts:\n  - "@topOwner"\n'), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.bar.yaml') {
+        return { data: { content: b64('contacts:\n  - "@parentOwner"\n'), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 914,
+        name: 'Requester Action',
+      })
+    );
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 914,
+        name: 'Review Pending',
+      })
+    );
+
+    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 914,
+        name: 'Approved',
+      })
+    );
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 914,
+        labels: ['Parent Owner Action'],
+      })
+    );
+
+    expect(setStateLabel).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
+  });
+
+  test('issues.opened: parent owner assignment failure still posts parent approval request', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar.foo';
+    const issue = {
+      number: 915,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { login: 'requester' },
+      state: 'open',
+    };
+
+    const tpl = {
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    const ctx = mkIssuesContext({ issue, action: 'opened' });
+
+    ctx.octokit.issues.addAssignees.mockRejectedValueOnce(new Error('Validation Failed'));
+
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return { data: { content: b64('contacts:\n  - "@topOwner"\n'), encoding: 'base64' } };
+      }
+      if (path === 'data/namespaces/sap.css.bar.yaml') {
+        return { data: { content: b64('contacts:\n  - "@parentOwner"\n'), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await handlers['issues.opened'][0](ctx);
+
+    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 915,
+        assignees: ['parentOwner'],
+      })
+    );
+
+    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 915,
+        labels: ['Parent Owner Action'],
+      })
+    );
+
+    expect(postedBodies()).toContain('Parent owner approval required');
+    expect(postedBodies()).toContain('@parentOwner');
   });
 
   test('issues.labeled: routing lock treats template lookup failure for changed label as non-routing', async () => {
