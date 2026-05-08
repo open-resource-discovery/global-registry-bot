@@ -21,6 +21,7 @@ export type WorkflowReadableConfig = {
     labels?: {
       authorAction?: unknown;
       approverAction?: unknown;
+      parentOwnerAction?: unknown;
       [k: string]: unknown;
     } | null;
     approvers?: unknown;
@@ -56,6 +57,7 @@ export interface WorkflowLabelsConfig {
 
   authorAction: string | null;
   approverAction: string | null;
+  parentOwnerAction: string | null;
 
   approvalRequested: string[] | null;
   approvalSuccessful: string[] | null;
@@ -145,6 +147,7 @@ export const DEFAULT_CONFIG: StaticRegistryBotConfig = {
       // state labels (author vs review)
       authorAction: null,
       approverAction: null,
+      parentOwnerAction: null,
 
       // request/approval flow
       approvalRequested: null,
@@ -375,6 +378,15 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
                 minLength: 'workflow.labels.approverAction must not be empty when provided.',
               },
             },
+            parentOwnerAction: {
+              type: ['string', 'null'],
+              minLength: 1,
+              description: 'Optional workflow state label used while waiting for parent owner approval.',
+              errorMessage: {
+                type: 'workflow.labels.parentOwnerAction must be a string.',
+                minLength: 'workflow.labels.parentOwnerAction must not be empty when provided.',
+              },
+            },
             approvalRequested: {
               type: ['array', 'null'],
               items: { type: 'string' },
@@ -421,7 +433,8 @@ export const STATIC_CONFIG_SCHEMA: Record<string, unknown> = {
               approvalRejected: 'workflow.labels.approvalRejected is required when workflow.labels is configured.',
               autoMergeCandidate: 'workflow.labels.autoMergeCandidate is required when workflow.labels is configured.',
             },
-            additionalProperties: 'Only known label keys are allowed inside workflow.labels.',
+            additionalProperties:
+              'Only known label keys are allowed inside workflow.labels, including parentOwnerAction.',
           },
         },
 
