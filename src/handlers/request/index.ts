@@ -46,6 +46,10 @@ import {
   resolveAllowedApproversForRequestTypes as resolveAllowedApproversForRequestTypesApplication,
   type DirectPrApproverResolutionCallbacks,
 } from './application/direct-pr-approver-resolution.js';
+import {
+  resolveDirectPrRequestTypes as resolveDirectPrRequestTypesApplication,
+  type DirectPrRequestTypeResolutionCallbacks,
+} from './application/direct-pr-request-type-resolution.js';
 import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
@@ -4868,20 +4872,24 @@ async function resolveDirectPrRequestTypes(
   pr: PullRequestLike,
   options: DirectPrApprovalOptions = {}
 ): Promise<string[]> {
-  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
-  const requestTypes: string[] = [];
+  return await resolveDirectPrRequestTypesApplication(
+    context,
+    repoInfo,
+    pr,
+    options,
+    buildDirectPrRequestTypeResolutionCallbacks()
+  );
+}
 
-  for (const filePath of changedFiles) {
-    const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
-    if (!parsed) continue;
-
-    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
-    if (!requestType) continue;
-
-    requestTypes.push(requestType);
-  }
-
-  return Array.from(new Set(requestTypes));
+function buildDirectPrRequestTypeResolutionCallbacks(): DirectPrRequestTypeResolutionCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    listChangedYamlFilesForPrWithFallback,
+    readRegistryDocForApproval,
+    pickRequestTypeForChangedResource,
+  };
 }
 
 async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
@@ -4920,7 +4928,6 @@ async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
 
 function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks<
   BotContext<RequestEvents>,
-  PullRequestReviewLike,
   ApprovalDecision,
   PullRequestLike
 > {

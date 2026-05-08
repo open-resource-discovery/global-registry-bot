@@ -79,7 +79,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   pr: PullRequestType,
   decision: DecisionType,
   options: DirectPrApprovalOptions = {},
-  callbacks: DirectPrReviewApprovalCallbacks<ContextType, ReviewType, DecisionType, PullRequestType>
+  callbacks: DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType>
 ): Promise<boolean> {
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   if (!headSha) return false;
@@ -134,7 +134,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   pr: PullRequestType,
   decision: DecisionType,
   options: DirectPrApprovalOptions = {},
-  callbacks: DirectPrReviewApprovalCallbacks<ContextType, ReviewType, DecisionType, PullRequestType>
+  callbacks: DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType>
 ): Promise<boolean> {
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   if (!headSha) return false;
