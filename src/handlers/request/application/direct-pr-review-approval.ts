@@ -19,6 +19,10 @@ import {
   type PullRequestAuthorResolutionCallbacks,
 } from './pull-request-author-resolution.js';
 import { listPullRequestReviews, type PullRequestReviewReadingContext } from './pull-request-review-reading.js';
+import {
+  resolveDirectPrRequestTypes,
+  type DirectPrRequestTypeResolutionCallbacks,
+} from './direct-pr-request-type-resolution.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -42,12 +46,7 @@ type PullRequestReviewLike = {
 };
 
 export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType extends PullRequestLike> = {
-  resolveDirectPrRequestTypes: (
-    context: ContextType,
-    repoInfo: RepoInfo,
-    pr: PullRequestType,
-    options?: DirectPrApprovalOptions
-  ) => Promise<string[]>;
+  directPrRequestTypeResolutionCallbacks: DirectPrRequestTypeResolutionCallbacks<ContextType, PullRequestType>;
   directPrApproverResolutionCallbacks: DirectPrApproverResolutionCallbacks<ContextType>;
   isApprovalDecisionAuthorizedByHookApprovers: (
     decision: DecisionType,
@@ -107,7 +106,13 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
     return true;
   }
 
-  const requestTypes = await callbacks.resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+  const requestTypes = await resolveDirectPrRequestTypes(
+    context,
+    repoInfo,
+    pr,
+    options,
+    callbacks.directPrRequestTypeResolutionCallbacks
+  );
   const configuredApprovers = resolveAllowedApproversForRequestTypes(
     context,
     requestTypes,
@@ -139,7 +144,13 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   if (!headSha) return false;
 
-  const requestTypes = await callbacks.resolveDirectPrRequestTypes(context, repoInfo, pr, options);
+  const requestTypes = await resolveDirectPrRequestTypes(
+    context,
+    repoInfo,
+    pr,
+    options,
+    callbacks.directPrRequestTypeResolutionCallbacks
+  );
 
   const configuredApprovers = resolveAllowedApproversForRequestTypes(
     context,

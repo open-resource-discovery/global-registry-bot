@@ -4932,7 +4932,7 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
   PullRequestLike
 > {
   return {
-    resolveDirectPrRequestTypes,
+    directPrRequestTypeResolutionCallbacks: buildDirectPrRequestTypeResolutionCallbacks(),
     directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
     isApprovalDecisionAuthorizedByHookApprovers,
     buildAutoApprovalReviewMarker,
