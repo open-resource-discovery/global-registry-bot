@@ -23,6 +23,7 @@ import {
   resolveDirectPrRequestTypes,
   type DirectPrRequestTypeResolutionCallbacks,
 } from './direct-pr-request-type-resolution.js';
+import { isAuthorizedApprover } from '../domain/approval-authorization.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -59,11 +60,6 @@ export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullReque
   uniqLogins: (values: string[]) => string[];
   pullRequestAuthorResolutionCallbacks: PullRequestAuthorResolutionCallbacks;
   resolveHookManualApprovers: (decision: DecisionType) => string[];
-  isAuthorizedApprover: (
-    approver: string,
-    requesterLogin: string | null | undefined,
-    allowedApprovers: string[]
-  ) => boolean;
   log: (context: ContextType, level: 'info', metadata: Record<string, unknown>, message: string) => void;
 };
 
@@ -236,7 +232,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
     if (state !== 'APPROVED') return false;
 
     const approver = resolveEffectiveReviewApproverLogin(review);
-    return callbacks.isAuthorizedApprover(approver, requesterLogin || pr.user?.login, allowedApprovers);
+    return isAuthorizedApprover(approver, requesterLogin || pr.user?.login, allowedApprovers);
   });
 
   if (!approvingReview) {

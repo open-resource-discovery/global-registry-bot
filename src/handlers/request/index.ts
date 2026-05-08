@@ -4942,7 +4942,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
     pullRequestAuthorResolutionCallbacks: buildPullRequestAuthorResolutionCallbacks(),
     resolveHookManualApprovers: (decision: ApprovalDecision): string[] =>
       uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean)),
-    isAuthorizedApprover,
     log: (
       context: BotContext<RequestEvents>,
       level: 'info',
