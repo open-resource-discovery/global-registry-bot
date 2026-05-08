@@ -1,13 +1,4 @@
-export type HookSecrets = Readonly<{
-  CLD_API_BASE_URL?: string;
-  CLD_API_KEY?: string;
-
-  STC_API_BASE_URL?: string;
-  STC_API_KEY?: string;
-
-  PPMS_API_BASE_URL?: string;
-  PPMS_API_KEY?: string;
-}>;
+export type HookSecrets = Readonly<Record<string, string | undefined>>;
 
 export type CoreSecrets = Readonly<{
   APP_ID?: string;
@@ -19,6 +10,24 @@ export type CoreSecrets = Readonly<{
 
 export const coreSecrets: CoreSecrets = Object.freeze(loadSecrets());
 
+function collectHookSecretsFromEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(env)) {
+    if (!key.startsWith('HOOK_SECRET_')) continue;
+    if (value === undefined || value === null) continue;
+
+    const secretName = key.slice('HOOK_SECRET_'.length).trim();
+    const secretValue = String(value).trim();
+
+    if (!secretName || !secretValue) continue;
+
+    out[secretName] = secretValue;
+  }
+
+  return out;
+}
+
 export function loadSecrets(env: NodeJS.ProcessEnv = process.env): CoreSecrets {
   const get = (key: string, fallback?: string): string | undefined => {
     const value = env[key];
@@ -27,16 +36,7 @@ export function loadSecrets(env: NodeJS.ProcessEnv = process.env): CoreSecrets {
 
   const privateKeyPem = normalizePem(get('PRIVATE_KEY')) ?? decodeB64(get('PRIVATE_KEY_B64'));
 
-  const hookSecrets: HookSecrets = Object.freeze({
-    CLD_API_BASE_URL: get('CLD_API_BASE_URL'),
-    CLD_API_KEY: get('CLD_API_KEY'),
-
-    STC_API_BASE_URL: get('STC_API_BASE_URL'),
-    STC_API_KEY: get('STC_API_KEY'),
-
-    PPMS_API_BASE_URL: get('PPMS_API_BASE_URL'),
-    PPMS_API_KEY: get('PPMS_API_KEY'),
-  });
+  const hookSecrets: HookSecrets = Object.freeze(collectHookSecretsFromEnv(env));
 
   return Object.freeze({
     APP_ID: get('APP_ID'),

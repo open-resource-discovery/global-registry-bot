@@ -18,18 +18,17 @@ const DBG = process.env.DEBUG_NS === '1';
 
 const CONFIG_BASE_DIR = '.github/registry-bot';
 
-type HookSecrets = Readonly<{
-  CLD_API_BASE_URL?: string;
-  CLD_API_KEY?: string;
+type HookSecrets = Readonly<Record<string, string | undefined>>;
 
-  STC_API_BASE_URL?: string;
-  STC_API_KEY?: string;
+type HookWorkerConfig = Readonly<Record<string, string>>;
 
-  PPMS_API_BASE_URL?: string;
-  PPMS_API_KEY?: string;
+type HookRuntimeConfig = Readonly<
+  Record<string, string | ((key: string) => string)> & {
+    getSecret: (key: string) => string;
+  }
+>;
 
-  [k: string]: string | undefined;
-}>;
+type HookConfig = HookWorkerConfig | HookRuntimeConfig;
 
 type CoreSecrets = Readonly<{
   APP_ID?: string;
@@ -118,7 +117,7 @@ type BeforeValidateArgs = Readonly<{
   requestType: string;
   form: FormData;
   api: unknown;
-  config: Readonly<Record<string, string>>;
+  config: HookConfig;
   log?: LoggerLike | undefined;
 }>;
 
@@ -128,7 +127,7 @@ type CustomValidateArgs = Readonly<{
   candidate: Record<string, unknown>;
   form: FormData;
   api: unknown;
-  config: Readonly<Record<string, string>>;
+  config: HookConfig;
   requestAuthor: Readonly<{
     id: string;
     email?: string;
@@ -372,13 +371,36 @@ function getHttpStatus(err: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
-function pickHookPublicConfig(secrets: HookSecrets): Readonly<Record<string, string>> {
+function normalizeHookSecretName(value: unknown): string {
+  return toStringSafe(value)
+    .replace(/^HOOK_SECRET_/i, '')
+    .trim();
+}
+
+function buildHookWorkerConfig(secrets: HookSecrets): HookWorkerConfig {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(secrets || {})) {
-    if (!v) continue;
-    if (/_API_BASE_URL$/i.test(k)) out[k] = String(v).trim();
+
+  for (const [key, value] of Object.entries(secrets || {})) {
+    if (typeof value !== 'string') continue;
+
+    const secretName = normalizeHookSecretName(key);
+    const secretValue = value.trim();
+
+    if (!secretName || !secretValue) continue;
+
+    out[secretName] = secretValue;
   }
-  return out;
+
+  return Object.freeze(out);
+}
+
+function buildHookRuntimeConfig(secrets: HookSecrets): HookRuntimeConfig {
+  const values = buildHookWorkerConfig(secrets);
+
+  return Object.freeze({
+    ...values,
+    getSecret: (key: string): string => values[normalizeHookSecretName(key)] || '',
+  }) as HookRuntimeConfig;
 }
 
 function pickHookSecretsForWorker(secrets: HookSecrets): Record<string, string> {
@@ -2516,7 +2538,8 @@ export async function validateRequestIssue(
   const allowedHosts = Array.isArray(ah) ? ah : [];
 
   const workerSecrets = pickHookSecretsForWorker(coreSecrets.HOOK_SECRETS || {});
-  const hookPublicConfig = pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {});
+  const hookWorkerConfig = buildHookWorkerConfig(coreSecrets.HOOK_SECRETS || {});
+  const hookRuntimeConfig = buildHookRuntimeConfig(coreSecrets.HOOK_SECRETS || {});
 
   const hookApi = createHookApi(context, {
     secrets: coreSecrets.HOOK_SECRETS || {},
@@ -2543,7 +2566,7 @@ export async function validateRequestIssue(
         requestType,
         form: formData,
         api: null,
-        config: hookPublicConfig,
+        config: hookWorkerConfig,
         log: undefined,
       };
       const res = await runHookInWorker(
@@ -2602,7 +2625,7 @@ export async function validateRequestIssue(
           requestType,
           form: formData,
           api: hookApi,
-          config: hookPublicConfig,
+          config: hookRuntimeConfig,
           log: getHookLogger(context.log),
         });
       } catch (err: unknown) {
@@ -2749,7 +2772,7 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: null,
-            config: hookPublicConfig,
+            config: hookWorkerConfig,
             ...customValidateContextArgs,
             log: undefined,
           };
@@ -2824,7 +2847,7 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: hookApi,
-            config: hookPublicConfig,
+            config: hookRuntimeConfig,
             ...customValidateContextArgs,
             log: getHookLogger(context.log),
           });
@@ -3114,7 +3137,8 @@ export async function runCustomValidateForRegistryCandidate(
     ? context.resourceBotConfig.hooks.allowedHosts
     : [];
 
-  const hookPublicConfig = pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {});
+  const hookWorkerConfig = buildHookWorkerConfig(coreSecrets.HOOK_SECRETS || {});
+  const hookRuntimeConfig = buildHookRuntimeConfig(coreSecrets.HOOK_SECRETS || {});
 
   const form =
     args.formData && isPlainObject(args.formData)
@@ -3151,7 +3175,7 @@ export async function runCustomValidateForRegistryCandidate(
           secrets: coreSecrets.HOOK_SECRETS || {},
           allowedHosts,
         }),
-        config: hookPublicConfig,
+        config: hookRuntimeConfig,
         requestAuthor: { id: '' },
         issue: {
           number: 0,
@@ -3183,7 +3207,7 @@ export async function runCustomValidateForRegistryCandidate(
       candidate: args.candidate,
       form,
       api: null,
-      config: hookPublicConfig,
+      config: hookWorkerConfig,
       requestAuthor: { id: '' },
       issue: {
         number: 0,
