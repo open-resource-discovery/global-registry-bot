@@ -7,6 +7,36 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## Registry Bot Release: Hook Secrets and Parent Owner Approval State
+
+### Added
+
+- Generic hook secret support for validation hooks
+  - Loads only CF environment variables prefixed with `HOOK_SECRET_`
+  - Strips the `HOOK_SECRET_` prefix before exposing values to hooks
+  - Provides hook access via `config.getSecret('<NAME>')`
+  - Example: `HOOK_SECRET_STC_URL` becomes `config.getSecret('STC_URL')`
+
+- Dedicated parent owner approval state
+  - Adds `Parent Owner Action` as workflow state while waiting for parent owner approval
+  - Tries to assign parent owners best-effort
+  - Keeps `@mentions` as fallback if GitHub assignment is not possible
+
+### Changed
+
+- Hook secret handling is now generic
+  - Registry hooks can call external services without hardcoded URLs or credentials
+  - Secrets stay scoped to hook execution
+
+- Parent owner approval flow is clearer
+  - `Parent Owner Action` replaces generic requester/review state while waiting for parent owners
+  - The request flow continues automatically after valid parent owner approval
+
+### Result
+
+- Registry hooks are more flexible and production-ready for external service validation.
+- Parent owner approval is easier to track, safer, and less confusing in the GitHub UI.
+
 ## [[0.1.6](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.6)] - 2026-04-29
 
 ## Enhance approval flow with subcontext direct PR, system contact gate and full parent chain validation
