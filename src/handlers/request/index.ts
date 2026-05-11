@@ -39,6 +39,10 @@ import {
   type DirectPrReviewApprovalCallbacks,
 } from './application/direct-pr-review-approval.js';
 import {
+  evaluateChangedResourceApproval as evaluateChangedResourceApprovalApplication,
+  type DirectPrChangedResourceApprovalCallbacks,
+} from './application/direct-pr-changed-resource-approval.js';
+import {
   resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
   type PullRequestAuthorResolutionCallbacks,
 } from './application/pull-request-author-resolution.js';
@@ -63,16 +67,10 @@ import {
   type HeadGreenRunSummary,
 } from './domain/check-conclusions.js';
 import {
-  buildFormDataFromRegistryDoc,
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
-  resolveRegistryDocResourceName,
 } from './domain/direct-pr-resource-mapping.js';
-import {
-  normalizeApprovalDecision,
-  promoteUnknownApprovalDecisionForDirectPrRequester,
-  type ApprovalDecision,
-} from './domain/approval-decision.js';
+import { normalizeApprovalDecision, type ApprovalDecision } from './domain/approval-decision.js';
 import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
 import {
   normalizeLogin as normalizeLoginPure,
@@ -4799,53 +4797,46 @@ async function evaluateChangedResourceApproval(
   filePath: string,
   requestAuthorId?: string
 ): Promise<ApprovalDecision> {
-  const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
-  if (!parsed) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        filePath,
-        baseOwner: repoInfo.owner,
-        baseRepo: repoInfo.repo,
-        headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
-        headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
-        headRef: toStringTrim(pr.head?.ref),
-        headSha: toStringTrim(pr.head?.sha),
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      },
-      'direct-pr:on-approval:registry-doc-read-failed'
-    );
-
-    return { status: 'unknown' };
-  }
-
-  const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
-  if (!requestType) return { status: 'unknown' };
-
-  const resourceName = resolveRegistryDocResourceName(parsed);
-  if (!resourceName) return { status: 'unknown' };
-
-  const decision = normalizeApprovalDecision(
-    await runApprovalHook(context, repoInfo, {
-      requestType,
-      namespace: resourceName,
-      resourceName,
-      formData: buildFormDataFromRegistryDoc(parsed),
-      requestAuthorId,
-      issue: {
-        number: pr.number,
-        title: pr.title,
-        body: pr.body,
-        state: pr.state,
-        user: pr.user,
-        labels: [],
-      },
-    })
+  return await evaluateChangedResourceApprovalApplication(
+    context,
+    repoInfo,
+    pr,
+    filePath,
+    requestAuthorId,
+    buildDirectPrChangedResourceApprovalCallbacks()
   );
+}
 
-  return promoteUnknownApprovalDecisionForDirectPrRequester(decision, requestAuthorId);
+function buildDirectPrChangedResourceApprovalCallbacks(): DirectPrChangedResourceApprovalCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    readRegistryDocForApproval,
+    pickRequestTypeForChangedResource,
+    runApprovalHook,
+    logRegistryDocReadFailed: (
+      context: BotContext<RequestEvents>,
+      args: { repoInfo: RepoInfo; pr: PullRequestLike; filePath: string }
+    ): void => {
+      log(
+        context,
+        'warn',
+        {
+          prNumber: args.pr.number,
+          filePath: args.filePath,
+          baseOwner: args.repoInfo.owner,
+          baseRepo: args.repoInfo.repo,
+          headOwner: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).owner,
+          headRepo: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).repo,
+          headRef: toStringTrim(args.pr.head?.ref),
+          headSha: toStringTrim(args.pr.head?.sha),
+          crossRepo: isCrossRepositoryPullRequest(args.pr, args.repoInfo),
+        },
+        'direct-pr:on-approval:registry-doc-read-failed'
+      );
+    },
+  };
 }
 
 async function evaluateDirectPrOnApproval(
