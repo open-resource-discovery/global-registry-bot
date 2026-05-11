@@ -11,6 +11,7 @@ import {
 } from '../domain/pull-request-review-state.js';
 import type { ApprovalDecision } from '../domain/approval-decision.js';
 import { getUnknownManualApprovers, isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
+import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
 import {
   resolveAllowedApproversForRequestTypes,
   type DirectPrApproverResolutionCallbacks,
@@ -52,9 +53,6 @@ export type DirectPrReviewApprovalCallbacks<ContextType, PullRequestType extends
   directPrRequestTypeResolutionCallbacks: DirectPrRequestTypeResolutionCallbacks<ContextType, PullRequestType>;
   directPrApproverResolutionCallbacks: DirectPrApproverResolutionCallbacks<ContextType>;
   buildAutoApprovalReviewMarker: (headSha: string) => string;
-  toStringTrim: (value: unknown) => string;
-  normalizeLogin: (value: unknown) => string;
-  uniqLogins: (values: string[]) => string[];
   pullRequestAuthorResolutionCallbacks: PullRequestAuthorResolutionCallbacks;
   log: (context: ContextType, level: 'info', metadata: Record<string, unknown>, message: string) => void;
 };
@@ -72,7 +70,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   options: DirectPrApprovalOptions = {},
   callbacks: DirectPrReviewApprovalCallbacks<ContextType, PullRequestType>
 ): Promise<boolean> {
-  const headSha = callbacks.toStringTrim(pr.head?.sha);
+  const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return false;
 
   let reviews: ReviewType[] = [];
@@ -92,7 +90,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
     reviews.some(
       (review) =>
         isApprovalReviewForCurrentHead(review, headSha) &&
-        callbacks.toStringTrim(review.body).includes(callbacks.buildAutoApprovalReviewMarker(headSha))
+        toStringTrim(review.body).includes(callbacks.buildAutoApprovalReviewMarker(headSha))
     )
   ) {
     return true;
@@ -116,7 +114,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
     configuredApprovers,
     reviews
       .filter((review) => isApprovalReviewForCurrentHead(review, headSha))
-      .map((review) => callbacks.normalizeLogin(review?.user?.login))
+      .map((review) => normalizeLogin(review?.user?.login))
   );
 }
 
@@ -133,7 +131,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   options: DirectPrApprovalOptions = {},
   callbacks: DirectPrReviewApprovalCallbacks<ContextType, PullRequestType>
 ): Promise<boolean> {
-  const headSha = callbacks.toStringTrim(pr.head?.sha);
+  const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return false;
 
   const requestTypes = await resolveDirectPrRequestTypes(
@@ -150,9 +148,9 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
     callbacks.directPrApproverResolutionCallbacks
   );
   const hookManualApprovers = getUnknownManualApprovers(decision);
-  const allowedApprovers = callbacks.uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
+  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
 
-  let requesterLogin = callbacks.normalizeLogin(pr.user?.login);
+  let requesterLogin = normalizeLogin(pr.user?.login);
 
   try {
     requesterLogin =
@@ -175,7 +173,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
 
   const currentHeadReviews = reviews
     .filter((review) => reviewTargetsCurrentHead(review, headSha))
-    .filter((review) => isActionableReviewState(callbacks.toStringTrim(review?.state).toUpperCase()));
+    .filter((review) => isActionableReviewState(toStringTrim(review?.state).toUpperCase()));
 
   if (!currentHeadReviews.length) {
     callbacks.log(
@@ -205,7 +203,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   const latestCurrentHeadReviews = Array.from(latestByEffectiveApprover.values());
 
   const hasBlockingChangesRequested = latestCurrentHeadReviews.some(
-    (review) => callbacks.toStringTrim(review?.state).toUpperCase() === 'CHANGES_REQUESTED'
+    (review) => toStringTrim(review?.state).toUpperCase() === 'CHANGES_REQUESTED'
   );
 
   if (hasBlockingChangesRequested) {
@@ -224,7 +222,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   }
 
   const approvingReview = latestCurrentHeadReviews.find((review) => {
-    const state = callbacks.toStringTrim(review?.state).toUpperCase();
+    const state = toStringTrim(review?.state).toUpperCase();
     if (state !== 'APPROVED') return false;
 
     const approver = resolveEffectiveReviewApproverLogin(review);
@@ -242,10 +240,10 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
         requesterLogin,
         allowedApprovers,
         currentHeadReviewApprovers: latestCurrentHeadReviews.map((review) => ({
-          state: callbacks.toStringTrim(review?.state).toUpperCase(),
-          user: callbacks.normalizeLogin(review?.user?.login),
+          state: toStringTrim(review?.state).toUpperCase(),
+          user: normalizeLogin(review?.user?.login),
           approvedBy: extractApprovedByLoginFromReviewBody(review?.body),
-          commitId: callbacks.toStringTrim(review?.commit_id),
+          commitId: toStringTrim(review?.commit_id),
         })),
       },
       'direct-pr:current-head-manual-approval:no-authorized-approval'

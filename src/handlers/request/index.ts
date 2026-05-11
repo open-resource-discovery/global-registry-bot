@@ -74,6 +74,11 @@ import {
   type ApprovalDecision,
 } from './domain/approval-decision.js';
 import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
+import {
+  normalizeLogin as normalizeLoginPure,
+  toStringTrim as toStringTrimPure,
+  uniqLogins as uniqLoginsPure,
+} from './domain/login-utils.js';
 import { getLatestActionableReviewStates } from './domain/pull-request-review-state.js';
 import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
 import { buildRoutingLockBody, readRoutingLockExpected } from './domain/routing-lock-marker.js';
@@ -469,28 +474,15 @@ function getHttpStatus(err: unknown): number | undefined {
 }
 
 function toStringTrim(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
-  return '';
+  return toStringTrimPure(value);
 }
 
 function normalizeLogin(value: unknown): string {
-  return toStringTrim(value).replace(/^@+/, '').trim();
+  return normalizeLoginPure(value);
 }
 
 function uniqLogins(values: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const v of values || []) {
-    const s = normalizeLogin(v);
-    if (!s) continue;
-    const k = s.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(s);
-  }
-  return out;
+  return uniqLoginsPure(values);
 }
 
 type RepoContentFile = { content?: string; encoding?: string };
@@ -5027,16 +5019,12 @@ async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
 
 function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks<
   BotContext<RequestEvents>,
-  ApprovalDecision,
   PullRequestLike
 > {
   return {
     directPrRequestTypeResolutionCallbacks: buildDirectPrRequestTypeResolutionCallbacks(),
     directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
     buildAutoApprovalReviewMarker,
-    toStringTrim,
-    normalizeLogin,
-    uniqLogins,
     pullRequestAuthorResolutionCallbacks: buildPullRequestAuthorResolutionCallbacks(),
     log: (
       context: BotContext<RequestEvents>,
