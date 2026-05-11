@@ -52,6 +52,10 @@ import {
   type BranchMaintenanceApprovalCallbacks,
 } from './application/branch-maintenance-approval.js';
 import {
+  waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
+  type PullRequestMergeabilityCallbacks,
+} from './application/pull-request-mergeability.js';
+import {
   resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
   type PullRequestAuthorResolutionCallbacks,
 } from './application/pull-request-author-resolution.js';
@@ -2499,9 +2503,6 @@ function isMergeBlockedByBranchProtection(error: unknown): boolean {
   );
 }
 
-const MERGEABILITY_POLL_ATTEMPTS = 6;
-const MERGEABILITY_POLL_DELAY_MS = 1500;
-
 function delayMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2569,36 +2570,48 @@ async function waitForPullRequestMergeability(
   pr: PullRequestLike,
   reason: string
 ): Promise<PullRequestLike> {
-  let current = pr;
+  return await waitForPullRequestMergeabilityApplication(
+    context,
+    repoInfo,
+    pr,
+    reason,
+    buildPullRequestMergeabilityCallbacks()
+  );
+}
 
-  for (let attempt = 1; attempt <= MERGEABILITY_POLL_ATTEMPTS; attempt += 1) {
-    const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
-    if (fresh) current = fresh;
-
-    const mergeable = current.mergeable;
-    const mergeableState = readMergeableState(current);
-
-    log(
-      context,
-      DBG ? 'debug' : 'info',
-      {
-        prNumber: current.number,
-        attempt,
-        headSha: toStringTrim(current.head?.sha),
-        mergeable,
-        mergeableState,
-        reason,
-      },
-      'pull-request mergeability state'
-    );
-
-    if (!isPullRequestOpen(current)) return current;
-    if (!isMergeabilityPending(current)) return current;
-
-    await delayMs(MERGEABILITY_POLL_DELAY_MS);
-  }
-
-  return current;
+function buildPullRequestMergeabilityCallbacks(): PullRequestMergeabilityCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    readFreshPullRequest,
+    delayMs,
+    logMergeabilityState: (
+      context: BotContext<RequestEvents>,
+      args: {
+        prNumber: number;
+        attempt: number;
+        headSha: string;
+        mergeable: boolean | null | undefined;
+        mergeableState: string;
+        reason: string;
+      }
+    ): void => {
+      log(
+        context,
+        DBG ? 'debug' : 'info',
+        {
+          prNumber: args.prNumber,
+          attempt: args.attempt,
+          headSha: args.headSha,
+          mergeable: args.mergeable,
+          mergeableState: args.mergeableState,
+          reason: args.reason,
+        },
+        'pull-request mergeability state'
+      );
+    },
+  };
 }
 
 async function tryMergeApprovedPrOrUpdateBranch(
