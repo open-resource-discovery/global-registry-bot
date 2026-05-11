@@ -44,6 +44,10 @@ import {
   type DirectPrApprovalEvaluationCallbacks,
 } from './application/direct-pr-approval-evaluation.js';
 import {
+  evaluateHeadGreenForApprovalReevaluation as evaluateHeadGreenForApprovalReevaluationApplication,
+  type HeadGreenEvaluationCallbacks,
+} from './application/head-green-evaluation.js';
+import {
   resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
   type PullRequestAuthorResolutionCallbacks,
 } from './application/pull-request-author-resolution.js';
@@ -61,12 +65,7 @@ import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
-import {
-  isBlockingCheckConclusion,
-  isGreenCheckConclusion,
-  summarizeHeadGreenRun,
-  type HeadGreenRunSummary,
-} from './domain/check-conclusions.js';
+import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
@@ -228,13 +227,6 @@ type PullRequestReviewLike = {
   submitted_at?: string | null;
   user?: UserLike | null;
   commit_id?: string | null;
-};
-
-type RefCheckRunLike = {
-  id?: number | null;
-  name?: string | null;
-  status?: string | null;
-  conclusion?: string | null;
 };
 
 type CheckRunPullRequestRef = { number?: number | null };
@@ -2132,155 +2124,37 @@ async function evaluateHeadGreenForApprovalReevaluation(
   repoInfo: RepoInfo,
   headSha: string
 ): Promise<HeadGreenEvaluation> {
-  const ref = toStringTrim(headSha);
-  if (!ref) {
-    return {
-      green: false,
-      reason: 'missing-head-sha',
-      latestRuns: [],
-      blockingRuns: [],
-    };
-  }
+  return await evaluateHeadGreenForApprovalReevaluationApplication(
+    context,
+    repoInfo,
+    headSha,
+    buildHeadGreenEvaluationCallbacks()
+  );
+}
 
-  try {
-    const all: RefCheckRunLike[] = [];
-    let page = 1;
-
-    while (true) {
-      const res = await (
-        context.octokit.checks as unknown as {
-          listForRef: (args: {
-            owner: string;
-            repo: string;
-            ref: string;
-            per_page?: number;
-            page?: number;
-          }) => Promise<{ data?: unknown }>;
-        }
-      ).listForRef({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        ref,
-        per_page: 100,
-        page,
-      });
-
-      const data = (res as { data?: unknown }).data;
-      const runs =
-        isPlainObject(data) && Array.isArray(data['check_runs'])
-          ? (data['check_runs'] as unknown as RefCheckRunLike[])
-          : [];
-
-      all.push(...runs);
-
-      if (runs.length < 100) break;
-      page += 1;
-      if (page > 20) break;
-    }
-
-    const latestByName = new Map<string, RefCheckRunLike>();
-
-    for (const run of all) {
-      const name = toStringTrim(run?.name) || '__unnamed__';
-      const currentId = typeof run?.id === 'number' ? run.id : -1;
-      const prev = latestByName.get(name);
-      const prevId = typeof prev?.id === 'number' ? prev.id : -1;
-
-      if (!prev || currentId > prevId) {
-        latestByName.set(name, run);
-      }
-    }
-
-    if (latestByName.size > 0) {
-      const latestRuns = Array.from(latestByName.values()).map(summarizeHeadGreenRun);
-
-      const incompleteRuns = latestRuns.filter((run) => run.status !== 'completed');
-      if (incompleteRuns.length) {
-        return {
-          green: false,
-          reason: 'check-runs-not-completed',
-          latestRuns,
-          blockingRuns: incompleteRuns,
-        };
-      }
-
-      const blockingRuns = latestRuns.filter(
-        (run) => isBlockingCheckConclusion(run.conclusion) || !isGreenCheckConclusion(run.conclusion)
+function buildHeadGreenEvaluationCallbacks(): HeadGreenEvaluationCallbacks<BotContext<RequestEvents>> {
+  return {
+    isPlainObject,
+    getErrorMessage,
+    getHttpStatus,
+    logCheckRunsFetchFailed: (
+      context: BotContext<RequestEvents>,
+      args: { repoInfo: RepoInfo; headSha: string; error: unknown }
+    ): void => {
+      log(
+        context,
+        'warn',
+        {
+          owner: args.repoInfo.owner,
+          repo: args.repoInfo.repo,
+          headSha: args.headSha,
+          err: getErrorMessage(args.error),
+          status: getHttpStatus(args.error),
+        },
+        'head-green:check-runs-fetch-failed'
       );
-
-      if (blockingRuns.length) {
-        return {
-          green: false,
-          reason: 'check-runs-blocking-or-not-green',
-          latestRuns,
-          blockingRuns,
-        };
-      }
-
-      const sawSuccess = latestRuns.some((run) => run.conclusion === 'success');
-      if (!sawSuccess) {
-        return {
-          green: false,
-          reason: 'no-success-check-run',
-          latestRuns,
-          blockingRuns: [],
-        };
-      }
-
-      return {
-        green: true,
-        reason: 'check-runs-green',
-        latestRuns,
-        blockingRuns: [],
-      };
-    }
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: ref,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'head-green:check-runs-fetch-failed'
-    );
-  }
-
-  try {
-    const res = await (
-      context.octokit.repos as unknown as {
-        getCombinedStatusForRef: (args: {
-          owner: string;
-          repo: string;
-          ref: string;
-        }) => Promise<{ data?: { state?: string | null } }>;
-      }
-    ).getCombinedStatusForRef({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      ref,
-    });
-
-    const statusState = toStringTrim(res?.data?.state).toLowerCase();
-
-    return {
-      green: statusState === 'success',
-      reason: statusState === 'success' ? 'combined-status-success' : 'combined-status-not-success',
-      latestRuns: [],
-      blockingRuns: [],
-      statusState,
-    };
-  } catch (_error: unknown) {
-    return {
-      green: false,
-      reason: 'combined-status-fetch-failed',
-      latestRuns: [],
-      blockingRuns: [],
-    };
-  }
+    },
+  };
 }
 
 function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
