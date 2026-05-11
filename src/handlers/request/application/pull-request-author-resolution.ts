@@ -1,3 +1,5 @@
+import { normalizeLogin } from '../domain/login-utils.js';
+
 type RepoInfo = { owner: string; repo: string };
 
 type PullRequestLike = {
@@ -28,6 +30,10 @@ export type PullRequestAuthorResolutionCallbacks = {
   normalizeLogin: (value: unknown) => string;
 };
 
+const defaultPullRequestAuthorResolutionCallbacks: PullRequestAuthorResolutionCallbacks = {
+  normalizeLogin,
+};
+
 export async function resolvePullRequestRequestAuthorId<
   ContextType extends PullRequestAuthorResolutionContext,
   PullRequestType extends PullRequestLike,
@@ -35,7 +41,7 @@ export async function resolvePullRequestRequestAuthorId<
   context: ContextType,
   repoInfo: RepoInfo,
   pr: PullRequestType,
-  callbacks: PullRequestAuthorResolutionCallbacks
+  callbacks: PullRequestAuthorResolutionCallbacks = defaultPullRequestAuthorResolutionCallbacks
 ): Promise<string> {
   let page = 1;
 

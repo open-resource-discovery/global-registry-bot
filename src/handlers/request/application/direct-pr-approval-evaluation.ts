@@ -4,6 +4,10 @@ import {
   evaluateChangedResourceApproval,
   type DirectPrChangedResourceApprovalCallbacks,
 } from './direct-pr-changed-resource-approval.js';
+import {
+  resolvePullRequestRequestAuthorId,
+  type PullRequestAuthorResolutionContext,
+} from './pull-request-author-resolution.js';
 
 type RepoInfo = { owner: string; repo: string };
 
@@ -27,7 +31,6 @@ export type DirectPrApprovalEvaluationCallbacks<ContextType, PullRequestType ext
     pr: PullRequestType,
     baseBranch?: string
   ) => Promise<string[]>;
-  resolvePullRequestRequestAuthorId: (context: ContextType, repoInfo: RepoInfo, pr: PullRequestType) => Promise<string>;
   changedResourceApprovalCallbacks: DirectPrChangedResourceApprovalCallbacks<ContextType, PullRequestType>;
   logStart: (
     context: ContextType,
@@ -40,7 +43,10 @@ export type DirectPrApprovalEvaluationCallbacks<ContextType, PullRequestType ext
   ) => void;
 };
 
-export async function evaluateDirectPrOnApproval<ContextType, PullRequestType extends PullRequestLike>(
+export async function evaluateDirectPrOnApproval<
+  ContextType extends PullRequestAuthorResolutionContext,
+  PullRequestType extends PullRequestLike,
+>(
   context: ContextType,
   repoInfo: RepoInfo,
   pr: PullRequestType,
@@ -52,7 +58,7 @@ export async function evaluateDirectPrOnApproval<ContextType, PullRequestType ex
 
   const fallbackRequestAuthorId = requestAuthorIdOverride
     ? ''
-    : await callbacks.resolvePullRequestRequestAuthorId(context, repoInfo, pr);
+    : await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
 
   const requestAuthorId = toStringTrim(requestAuthorIdOverride) || fallbackRequestAuthorId;
 

@@ -4846,7 +4846,6 @@ function buildDirectPrApprovalEvaluationCallbacks(): DirectPrApprovalEvaluationC
 > {
   return {
     listChangedYamlFilesForPrWithFallback,
-    resolvePullRequestRequestAuthorId,
     changedResourceApprovalCallbacks: buildDirectPrChangedResourceApprovalCallbacks(),
     logStart: (
       context: BotContext<RequestEvents>,
