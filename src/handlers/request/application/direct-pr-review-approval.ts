@@ -9,6 +9,8 @@ import {
   isActionableReviewState,
   sortPullRequestReviewsChronologically,
 } from '../domain/pull-request-review-state.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
+import { isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
 import {
   resolveAllowedApproversForRequestTypes,
   type DirectPrApproverResolutionCallbacks,
@@ -49,11 +51,6 @@ type PullRequestReviewLike = {
 export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType extends PullRequestLike> = {
   directPrRequestTypeResolutionCallbacks: DirectPrRequestTypeResolutionCallbacks<ContextType, PullRequestType>;
   directPrApproverResolutionCallbacks: DirectPrApproverResolutionCallbacks<ContextType>;
-  isApprovalDecisionAuthorizedByHookApprovers: (
-    decision: DecisionType,
-    configuredApprovers: string[],
-    currentHeadApprovers: string[]
-  ) => boolean;
   buildAutoApprovalReviewMarker: (headSha: string) => string;
   toStringTrim: (value: unknown) => string;
   normalizeLogin: (value: unknown) => string;
@@ -66,7 +63,7 @@ export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullReque
 export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   ContextType extends PullRequestAuthorResolutionContext & PullRequestReviewReadingContext,
   ReviewType extends PullRequestReviewLike,
-  DecisionType,
+  DecisionType extends ApprovalDecision,
   PullRequestType extends PullRequestLike,
 >(
   context: ContextType,
@@ -115,7 +112,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
     callbacks.directPrApproverResolutionCallbacks
   );
 
-  return callbacks.isApprovalDecisionAuthorizedByHookApprovers(
+  return isApprovalDecisionAuthorizedByHookApprovers(
     decision,
     configuredApprovers,
     reviews
@@ -127,7 +124,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
 export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   ContextType extends PullRequestAuthorResolutionContext & PullRequestReviewReadingContext,
   ReviewType extends PullRequestReviewLike,
-  DecisionType,
+  DecisionType extends ApprovalDecision,
   PullRequestType extends PullRequestLike,
 >(
   context: ContextType,

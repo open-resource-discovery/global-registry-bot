@@ -75,11 +75,7 @@ import {
 } from './domain/approval-decision.js';
 import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
 import { getLatestActionableReviewStates } from './domain/pull-request-review-state.js';
-import {
-  getUnknownManualApprovers,
-  getVisibleApprovalText,
-  isApprovalDecisionAuthorizedByHookApprovers,
-} from './domain/approval-policy.js';
+import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
 import { buildRoutingLockBody, readRoutingLockExpected } from './domain/routing-lock-marker.js';
 import {
   buildContactApprovalBody,
@@ -5037,7 +5033,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
   return {
     directPrRequestTypeResolutionCallbacks: buildDirectPrRequestTypeResolutionCallbacks(),
     directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
-    isApprovalDecisionAuthorizedByHookApprovers,
     buildAutoApprovalReviewMarker,
     toStringTrim,
     normalizeLogin,
