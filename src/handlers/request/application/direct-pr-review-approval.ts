@@ -11,6 +11,7 @@ import {
 } from '../domain/pull-request-review-state.js';
 import type { ApprovalDecision } from '../domain/approval-decision.js';
 import { getUnknownManualApprovers, isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
+import { buildAutoApprovalReviewMarker } from '../domain/auto-approval-review-marker.js';
 import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
 import {
   resolveAllowedApproversForRequestTypes,
@@ -52,7 +53,6 @@ type PullRequestReviewLike = {
 export type DirectPrReviewApprovalCallbacks<ContextType, PullRequestType extends PullRequestLike> = {
   directPrRequestTypeResolutionCallbacks: DirectPrRequestTypeResolutionCallbacks<ContextType, PullRequestType>;
   directPrApproverResolutionCallbacks: DirectPrApproverResolutionCallbacks<ContextType>;
-  buildAutoApprovalReviewMarker: (headSha: string) => string;
   pullRequestAuthorResolutionCallbacks: PullRequestAuthorResolutionCallbacks;
   log: (context: ContextType, level: 'info', metadata: Record<string, unknown>, message: string) => void;
 };
@@ -90,7 +90,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
     reviews.some(
       (review) =>
         isApprovalReviewForCurrentHead(review, headSha) &&
-        toStringTrim(review.body).includes(callbacks.buildAutoApprovalReviewMarker(headSha))
+        toStringTrim(review.body).includes(buildAutoApprovalReviewMarker(headSha))
     )
   ) {
     return true;

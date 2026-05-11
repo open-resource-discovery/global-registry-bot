@@ -79,6 +79,7 @@ import {
   toStringTrim as toStringTrimPure,
   uniqLogins as uniqLoginsPure,
 } from './domain/login-utils.js';
+import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
 import { getLatestActionableReviewStates } from './domain/pull-request-review-state.js';
 import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
 import { buildRoutingLockBody, readRoutingLockExpected } from './domain/routing-lock-marker.js';
@@ -1946,10 +1947,8 @@ async function addApprovedLabelToPr(
   }
 }
 
-const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
-
 function buildAutoApprovalReviewMarker(headSha: string): string {
-  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
+  return buildAutoApprovalReviewMarkerPure(headSha);
 }
 
 function buildAutomatedApprovalReviewCallbacks(): AutomatedApprovalReviewCallbacks<
@@ -5024,7 +5023,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
   return {
     directPrRequestTypeResolutionCallbacks: buildDirectPrRequestTypeResolutionCallbacks(),
     directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
-    buildAutoApprovalReviewMarker,
     pullRequestAuthorResolutionCallbacks: buildPullRequestAuthorResolutionCallbacks(),
     log: (
       context: BotContext<RequestEvents>,
