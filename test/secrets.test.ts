@@ -6,27 +6,52 @@ function b64(s: string): string {
 
 test('returns defaults when env is empty', () => {
   const s = loadSecrets({});
+
   expect(s).toEqual({
     APP_ID: undefined,
     WEBHOOK_SECRET: undefined,
     PRIVATE_KEY: undefined,
     DEBUG_NS: '1',
-    HOOK_SECRETS: {
-      CLD_API_BASE_URL: undefined,
-      CLD_API_KEY: undefined,
-      STC_API_BASE_URL: undefined,
-      STC_API_KEY: undefined,
-      PPMS_API_BASE_URL: undefined,
-      PPMS_API_KEY: undefined,
-    },
+    HOOK_SECRETS: {},
   });
 });
 
-test('reads core secrets and hook secrets', () => {
+test('reads core secrets and generic HOOK_SECRET_* values', () => {
   const s = loadSecrets({
     APP_ID: 'app',
     WEBHOOK_SECRET: 'wh',
     DEBUG_NS: '9',
+    HOOK_SECRET_STC_URL: ' https://stc.example ',
+    HOOK_SECRET_BASIC_AUTH: ' Basic abc123 ',
+    HOOK_SECRET_PPMS_URL: ' https://ppms.example ',
+  });
+
+  expect(s.APP_ID).toBe('app');
+  expect(s.WEBHOOK_SECRET).toBe('wh');
+  expect(s.DEBUG_NS).toBe('9');
+
+  expect(s.HOOK_SECRETS).toEqual({
+    STC_URL: 'https://stc.example',
+    BASIC_AUTH: 'Basic abc123',
+    PPMS_URL: 'https://ppms.example',
+  });
+});
+
+test('strips HOOK_SECRET_ prefix and does not expose prefixed names', () => {
+  const s = loadSecrets({
+    HOOK_SECRET_STC_URL: 'https://stc.example',
+    HOOK_SECRET_BASIC_AUTH: 'Basic secret',
+  });
+
+  expect(s.HOOK_SECRETS.STC_URL).toBe('https://stc.example');
+  expect(s.HOOK_SECRETS.BASIC_AUTH).toBe('Basic secret');
+
+  expect(s.HOOK_SECRETS.HOOK_SECRET_STC_URL).toBeUndefined();
+  expect(s.HOOK_SECRETS.HOOK_SECRET_BASIC_AUTH).toBeUndefined();
+});
+
+test('ignores old legacy hook secret env variables', () => {
+  const s = loadSecrets({
     CLD_API_BASE_URL: 'https://cld.example',
     CLD_API_KEY: 'cld',
     STC_API_BASE_URL: 'https://stc.example',
@@ -35,11 +60,46 @@ test('reads core secrets and hook secrets', () => {
     PPMS_API_KEY: 'ppms',
   });
 
-  expect(s.APP_ID).toBe('app');
-  expect(s.WEBHOOK_SECRET).toBe('wh');
-  expect(s.DEBUG_NS).toBe('9');
-  expect(s.HOOK_SECRETS.CLD_API_BASE_URL).toBe('https://cld.example');
-  expect(s.HOOK_SECRETS.PPMS_API_KEY).toBe('ppms');
+  expect(s.HOOK_SECRETS).toEqual({});
+  expect(s.HOOK_SECRETS.CLD_API_BASE_URL).toBeUndefined();
+  expect(s.HOOK_SECRETS.STC_API_BASE_URL).toBeUndefined();
+  expect(s.HOOK_SECRETS.PPMS_API_KEY).toBeUndefined();
+});
+
+test('ignores non-prefixed hook-looking variables', () => {
+  const s = loadSecrets({
+    STC_URL: 'https://stc.example',
+    BASIC_AUTH: 'Basic secret',
+    PPMS_URL: 'https://ppms.example',
+  });
+
+  expect(s.HOOK_SECRETS).toEqual({});
+});
+
+test('trims hook secret values and skips empty names or empty values', () => {
+  const s = loadSecrets({
+    HOOK_SECRET_: 'should-be-ignored',
+    HOOK_SECRET_EMPTY: '',
+    HOOK_SECRET_BLANK: '   ',
+    HOOK_SECRET_VALID: ' valid-value ',
+  });
+
+  expect(s.HOOK_SECRETS).toEqual({
+    VALID: 'valid-value',
+  });
+});
+
+test('skips nullish hook secret values defensively', () => {
+  const s = loadSecrets({
+    HOOK_SECRET_VALID: 'ok',
+    // NodeJS.ProcessEnv normally only has string | undefined.
+    // This keeps the defensive null branch covered.
+    HOOK_SECRET_NULLISH: null,
+  } as unknown as NodeJS.ProcessEnv);
+
+  expect(s.HOOK_SECRETS).toEqual({
+    VALID: 'ok',
+  });
 });
 
 test('PRIVATE_KEY wins if it looks like PEM (contains BEGIN) and is trimmed', () => {
@@ -49,7 +109,7 @@ test('PRIVATE_KEY wins if it looks like PEM (contains BEGIN) and is trimmed', ()
     PRIVATE_KEY_B64: b64('should-not-be-used'),
   });
 
-  expect(s.PRIVATE_KEY).toContain('BEGIN PRIVATE KEY');
+  expect(s.PRIVATE_KEY).toBe('-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----');
 });
 
 test('falls back to PRIVATE_KEY_B64 if PRIVATE_KEY is not a PEM', () => {
@@ -64,16 +124,21 @@ test('falls back to PRIVATE_KEY_B64 if PRIVATE_KEY is not a PEM', () => {
 
 test('PRIVATE_KEY stays undefined if neither PEM nor B64 are provided', () => {
   const s = loadSecrets({ PRIVATE_KEY: 'not-a-pem' });
+
   expect(s.PRIVATE_KEY).toBeUndefined();
 });
 
 test('DEBUG_NS empty string stays empty (no fallback)', () => {
   const s = loadSecrets({ DEBUG_NS: '' });
+
   expect(s.DEBUG_NS).toBe('');
 });
 
 test('returned objects are frozen', () => {
-  const s = loadSecrets({ APP_ID: 'x' });
+  const s = loadSecrets({
+    APP_ID: 'x',
+    HOOK_SECRET_BASIC_AUTH: 'Basic secret',
+  });
 
   expect(Object.isFrozen(s)).toBe(true);
   expect(Object.isFrozen(s.HOOK_SECRETS)).toBe(true);
@@ -85,6 +150,11 @@ test('returned objects are frozen', () => {
 
   expect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (s.HOOK_SECRETS as any).CLD_API_KEY = 'y';
+    (s.HOOK_SECRETS as any).BASIC_AUTH = 'changed';
+  }).toThrow();
+
+  expect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (s.HOOK_SECRETS as any).NEW_SECRET = 'new';
   }).toThrow();
 });

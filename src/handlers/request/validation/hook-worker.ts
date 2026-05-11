@@ -92,6 +92,51 @@ function installSafeFetch(allowedHosts: string[], secrets: Record<string, string
   return api;
 }
 
+function normalizeHookSecretName(value: unknown): string {
+  return String(value ?? '')
+    .replace(/^HOOK_SECRET_/i, '')
+    .trim();
+}
+
+function collectHookConfigValues(configValue: unknown, secrets: Record<string, string>): Record<string, string> {
+  const values: Record<string, string> = {};
+
+  const add = (key: unknown, value: unknown): void => {
+    const normalizedKey = normalizeHookSecretName(key);
+    const normalizedValue = typeof value === 'string' ? value.trim() : '';
+
+    if (!normalizedKey || !normalizedValue) return;
+
+    values[normalizedKey] = normalizedValue;
+  };
+
+  for (const [key, value] of Object.entries(secrets || {})) {
+    add(key, value);
+  }
+
+  if (isPlainObject(configValue)) {
+    for (const [key, value] of Object.entries(configValue)) {
+      add(key, value);
+    }
+  }
+
+  return values;
+}
+
+function withHookGetSecret(configValue: unknown, secrets: Record<string, string>): Record<string, unknown> {
+  const config: Record<string, unknown> = isPlainObject(configValue) ? { ...configValue } : {};
+  const values = collectHookConfigValues(config, secrets);
+
+  Object.defineProperty(config, 'getSecret', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: (key: string): string => values[normalizeHookSecretName(key)] || '',
+  });
+
+  return config;
+}
+
 async function loadModule(task: Task): Promise<Record<string, unknown>> {
   const key = `${task.owner}/${task.repo}:${task.path}#${task.hash}`;
   const cached = MODULE_CACHE.get(key);
@@ -148,6 +193,8 @@ export default async function hookWorker(task: Task): Promise<HookWorkerResult> 
     const argsObj: Record<string, unknown> = isPlainObject(task.args)
       ? { ...task.args, api, log }
       : { value: task.args, api, log };
+
+    argsObj.config = withHookGetSecret(argsObj.config, task.secrets ?? {});
 
     const fn = fnValue as (a: unknown) => unknown;
     const ret = await fn(argsObj);

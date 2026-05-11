@@ -18,18 +18,17 @@ const DBG = process.env.DEBUG_NS === '1';
 
 const CONFIG_BASE_DIR = '.github/registry-bot';
 
-type HookSecrets = Readonly<{
-  CLD_API_BASE_URL?: string;
-  CLD_API_KEY?: string;
+type HookSecrets = Readonly<Record<string, string | undefined>>;
 
-  STC_API_BASE_URL?: string;
-  STC_API_KEY?: string;
+type HookWorkerConfig = Readonly<Record<string, string>>;
 
-  PPMS_API_BASE_URL?: string;
-  PPMS_API_KEY?: string;
+type HookRuntimeConfig = Readonly<
+  Record<string, string | ((key: string) => string)> & {
+    getSecret: (key: string) => string;
+  }
+>;
 
-  [k: string]: string | undefined;
-}>;
+type HookConfig = HookWorkerConfig | HookRuntimeConfig;
 
 type CoreSecrets = Readonly<{
   APP_ID?: string;
@@ -118,7 +117,7 @@ type BeforeValidateArgs = Readonly<{
   requestType: string;
   form: FormData;
   api: unknown;
-  config: Readonly<Record<string, string>>;
+  config: HookConfig;
   log?: LoggerLike | undefined;
 }>;
 
@@ -128,6 +127,22 @@ type CustomValidateArgs = Readonly<{
   candidate: Record<string, unknown>;
   form: FormData;
   api: unknown;
+  config: HookConfig;
+  requestAuthor: Readonly<{
+    id: string;
+    email?: string;
+  }>;
+  issue: Readonly<{
+    number: number;
+    title: string;
+    body: string;
+    state: string;
+    author: string;
+    labels: string[];
+  }>;
+  parentResourceName?: string;
+  parentCandidate?: Readonly<Record<string, unknown>> | null;
+  parentOwners?: readonly string[];
   log?: LoggerLike | undefined;
 }>;
 
@@ -356,13 +371,36 @@ function getHttpStatus(err: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
-function pickHookPublicConfig(secrets: HookSecrets): Readonly<Record<string, string>> {
+function normalizeHookSecretName(value: unknown): string {
+  return toStringSafe(value)
+    .replace(/^HOOK_SECRET_/i, '')
+    .trim();
+}
+
+function buildHookWorkerConfig(secrets: HookSecrets): HookWorkerConfig {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(secrets || {})) {
-    if (!v) continue;
-    if (/_API_BASE_URL$/i.test(k)) out[k] = String(v).trim();
+
+  for (const [key, value] of Object.entries(secrets || {})) {
+    if (typeof value !== 'string') continue;
+
+    const secretName = normalizeHookSecretName(key);
+    const secretValue = value.trim();
+
+    if (!secretName || !secretValue) continue;
+
+    out[secretName] = secretValue;
   }
-  return out;
+
+  return Object.freeze(out);
+}
+
+function buildHookRuntimeConfig(secrets: HookSecrets): HookRuntimeConfig {
+  const values = buildHookWorkerConfig(secrets);
+
+  return Object.freeze({
+    ...values,
+    getSecret: (key: string): string => values[normalizeHookSecretName(key)] || '',
+  }) as HookRuntimeConfig;
 }
 
 function pickHookSecretsForWorker(secrets: HookSecrets): Record<string, string> {
@@ -519,6 +557,189 @@ function approvalIssueLabelName(value: unknown): string {
 function toApprovalIssueLabelNames(labels: IssueLike['labels']): string[] {
   const items = Array.isArray(labels) ? labels : [];
   return items.map((label) => approvalIssueLabelName(label)).filter(Boolean);
+}
+
+function buildValidationHookIssue(issue: IssueLike): CustomValidateArgs['issue'] {
+  const author = toStringSafe(issue?.user?.login);
+
+  return {
+    number: typeof issue?.number === 'number' ? issue.number : 0,
+    title: toStringSafe(issue?.title),
+    body: toStringSafe(issue?.body),
+    state: toStringSafe(issue?.state),
+    author,
+    labels: toApprovalIssueLabelNames(issue?.labels),
+  };
+}
+
+function buildValidationHookRequestAuthor(issue: IssueLike): CustomValidateArgs['requestAuthor'] {
+  return {
+    id: toStringSafe(issue?.user?.login),
+  };
+}
+
+function resolveUpperNamespaceName(resourceName: unknown): string {
+  const parts = toStringSafe(resourceName)
+    .split('.')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 2) return '';
+
+  return parts.slice(0, -1).join('.');
+}
+
+async function parseYamlObject(raw: string): Promise<Record<string, unknown> | null> {
+  try {
+    const yamlMod = (await import('yaml')) as unknown as {
+      parse?: (src: string) => unknown;
+      default?: { parse?: (src: string) => unknown };
+    };
+
+    const parse = yamlMod.parse || yamlMod.default?.parse;
+    if (typeof parse !== 'function') return null;
+
+    const parsed = parse(raw);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readRepoYamlObject(
+  context: ValidationContext,
+  owner: string,
+  repo: string,
+  basePath: string
+): Promise<Record<string, unknown> | null> {
+  for (const ext of ['yaml', 'yml']) {
+    try {
+      const res = await context.octokit.repos.getContent({
+        owner,
+        repo,
+        path: `${basePath}.${ext}`,
+      });
+
+      const data = res.data;
+      if (Array.isArray(data) || !isRepoContentFile(data)) continue;
+
+      const text = Buffer.from(data.content, (data.encoding || 'base64') as BufferEncoding).toString('utf8');
+      const parsed = await parseYamlObject(text);
+      if (parsed) return parsed;
+    } catch (e: unknown) {
+      if (getHttpStatus(e) === 404) continue;
+      throw e;
+    }
+  }
+
+  return null;
+}
+
+async function resolveParentCandidateForValidationHook(
+  context: ValidationContext,
+  owner: string,
+  repo: string,
+  template: TemplateLike,
+  requestCfg: RequestConfigEntry,
+  resourceName: string
+): Promise<{ parentResourceName: string; parentCandidate: Record<string, unknown> | null }> {
+  const parentResourceName = resolveUpperNamespaceName(resourceName);
+  if (!parentResourceName) {
+    return { parentResourceName: '', parentCandidate: null };
+  }
+
+  const root = resolveRegistryRootForTemplate(context, template, requestCfg);
+  const parentCandidate = await readRepoYamlObject(context, owner, repo, `${root}/${parentResourceName}`);
+
+  return {
+    parentResourceName,
+    parentCandidate,
+  };
+}
+
+function addNormalizedOwnerReference(out: Set<string>, value: unknown): void {
+  const raw = toStringSafe(value);
+  if (!raw) return;
+
+  const githubUrlMatch = /(?:github\.com|github\.tools\.sap)\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/i.exec(
+    raw
+  );
+
+  if (githubUrlMatch?.[1]) {
+    out.add(normalizeLoginValue(githubUrlMatch[1]).toLowerCase());
+  }
+
+  for (const part of raw.split(/[,\s;]+/)) {
+    const cleaned = toStringSafe(part).replace(/^@+/, '').toLowerCase();
+    if (!cleaned) continue;
+
+    if (cleaned.includes('@')) {
+      out.add(cleaned);
+      continue;
+    }
+
+    if (/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(cleaned)) {
+      out.add(cleaned);
+    }
+  }
+}
+
+function collectNormalizedOwnerReferences(out: Set<string>, value: unknown): void {
+  if (value === null || value === undefined) return;
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectNormalizedOwnerReferences(out, item);
+    return;
+  }
+
+  if (isPlainObject(value)) {
+    for (const item of Object.values(value)) collectNormalizedOwnerReferences(out, item);
+    return;
+  }
+
+  addNormalizedOwnerReference(out, value);
+}
+
+function resolveParentOwnersForValidationHook(parentCandidate: Record<string, unknown> | null): string[] {
+  if (!parentCandidate) return [];
+
+  const out = new Set<string>();
+
+  collectNormalizedOwnerReferences(
+    out,
+    parentCandidate['contacts'] ?? parentCandidate['contact'] ?? parentCandidate['owners'] ?? parentCandidate['owner']
+  );
+
+  return Array.from(out).filter(Boolean).sort();
+}
+
+async function buildCustomValidateContextArgs(
+  context: ValidationContext,
+  owner: string,
+  repo: string,
+  issue: IssueLike,
+  template: TemplateLike,
+  requestCfg: RequestConfigEntry,
+  resourceName: string
+): Promise<
+  Pick<CustomValidateArgs, 'requestAuthor' | 'issue' | 'parentResourceName' | 'parentCandidate' | 'parentOwners'>
+> {
+  const parent = await resolveParentCandidateForValidationHook(
+    context,
+    owner,
+    repo,
+    template,
+    requestCfg,
+    resourceName
+  );
+
+  return {
+    requestAuthor: buildValidationHookRequestAuthor(issue),
+    issue: buildValidationHookIssue(issue),
+    parentResourceName: parent.parentResourceName,
+    parentCandidate: parent.parentCandidate,
+    parentOwners: resolveParentOwnersForValidationHook(parent.parentCandidate),
+  };
 }
 
 function normalizeApprovalHookErrors(value: unknown): readonly {
@@ -2317,6 +2538,8 @@ export async function validateRequestIssue(
   const allowedHosts = Array.isArray(ah) ? ah : [];
 
   const workerSecrets = pickHookSecretsForWorker(coreSecrets.HOOK_SECRETS || {});
+  const hookWorkerConfig = buildHookWorkerConfig(coreSecrets.HOOK_SECRETS || {});
+  const hookRuntimeConfig = buildHookRuntimeConfig(coreSecrets.HOOK_SECRETS || {});
 
   const hookApi = createHookApi(context, {
     secrets: coreSecrets.HOOK_SECRETS || {},
@@ -2343,7 +2566,7 @@ export async function validateRequestIssue(
         requestType,
         form: formData,
         api: null,
-        config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+        config: hookWorkerConfig,
         log: undefined,
       };
       const res = await runHookInWorker(
@@ -2402,7 +2625,7 @@ export async function validateRequestIssue(
           requestType,
           form: formData,
           api: hookApi,
-          config: pickHookPublicConfig(coreSecrets.HOOK_SECRETS || {}),
+          config: hookRuntimeConfig,
           log: getHookLogger(context.log),
         });
       } catch (err: unknown) {
@@ -2529,6 +2752,16 @@ export async function validateRequestIssue(
       const runCustomValidate = async (): Promise<void> => {
         if (!hooks) return;
 
+        const customValidateContextArgs = await buildCustomValidateContextArgs(
+          context,
+          owner,
+          repo,
+          issue,
+          template,
+          requestCfg,
+          rawIdOrNs
+        );
+
         // Worker path: hooks is just a descriptor (raw code + hash)
         if (isHookDescriptor(hooks)) {
           const nameVal = candidate['name'];
@@ -2539,6 +2772,8 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: null,
+            config: hookWorkerConfig,
+            ...customValidateContextArgs,
             log: undefined,
           };
 
@@ -2612,6 +2847,8 @@ export async function validateRequestIssue(
             candidate,
             form: normalizedFormData,
             api: hookApi,
+            config: hookRuntimeConfig,
+            ...customValidateContextArgs,
             log: getHookLogger(context.log),
           });
 
@@ -2890,6 +3127,8 @@ export async function runCustomValidateForRegistryCandidate(
     formData?: FormData | null;
   }
 ): Promise<string[]> {
+  await ensureStaticConfigLoaded(context);
+
   const hooks = getResourceBotHooks(context);
 
   if (!hooks) return [];
@@ -2897,6 +3136,9 @@ export async function runCustomValidateForRegistryCandidate(
   const allowedHosts = Array.isArray(context.resourceBotConfig?.hooks?.allowedHosts)
     ? context.resourceBotConfig.hooks.allowedHosts
     : [];
+
+  const hookWorkerConfig = buildHookWorkerConfig(coreSecrets.HOOK_SECRETS || {});
+  const hookRuntimeConfig = buildHookRuntimeConfig(coreSecrets.HOOK_SECRETS || {});
 
   const form =
     args.formData && isPlainObject(args.formData)
@@ -2933,6 +3175,19 @@ export async function runCustomValidateForRegistryCandidate(
           secrets: coreSecrets.HOOK_SECRETS || {},
           allowedHosts,
         }),
+        config: hookRuntimeConfig,
+        requestAuthor: { id: '' },
+        issue: {
+          number: 0,
+          title: '',
+          body: '',
+          state: '',
+          author: '',
+          labels: [],
+        },
+        parentResourceName: '',
+        parentCandidate: null,
+        parentOwners: [],
         log: getHookLogger(context.log),
       });
 
@@ -2952,6 +3207,19 @@ export async function runCustomValidateForRegistryCandidate(
       candidate: args.candidate,
       form,
       api: null,
+      config: hookWorkerConfig,
+      requestAuthor: { id: '' },
+      issue: {
+        number: 0,
+        title: '',
+        body: '',
+        state: '',
+        author: '',
+        labels: [],
+      },
+      parentResourceName: '',
+      parentCandidate: null,
+      parentOwners: [],
       log: undefined,
     };
 

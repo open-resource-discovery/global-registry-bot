@@ -1604,7 +1604,31 @@ async function removeReviewPendingLabelsAfterApproval(
 // Request lifecycle status labels
 const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
 const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
+const REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION = 'Parent Owner Action';
 const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
+
+function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: string, fallback: string): string {
+  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const wf = cfg?.workflow ?? {};
+
+  if (!isPlainObject(wf)) return fallback;
+
+  const labelsCfg = isPlainObject((wf as Record<string, unknown>)['labels'])
+    ? ((wf as Record<string, unknown>)['labels'] as Record<string, unknown>)
+    : {};
+
+  const raw = labelsCfg[key];
+
+  if (Array.isArray(raw)) {
+    return toStringTrim(raw[0]) || fallback;
+  }
+
+  return toStringTrim(raw) || fallback;
+}
+
+function resolveParentOwnerActionLabel(context: BotContext<RequestEvents>): string {
+  return resolveWorkflowLabel(context, 'parentOwnerAction', REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION);
+}
 
 const labelsMatching = (labels: string[], expected: string): string[] => {
   const expectedKey = normalizeKey(expected);
@@ -1615,6 +1639,80 @@ const labelsMatching = (labels: string[], expected: string): string[] => {
     return k === expectedKey || k.includes(expectedKey) || expectedKey.includes(k);
   });
 };
+
+async function clearParentOwnerActionState(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  currentLabels?: string[]
+): Promise<void> {
+  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
+
+  let labels = (currentLabels || []).slice();
+  if (!labels.length) {
+    try {
+      labels = await fetchIssueLabels(context, params);
+    } catch {
+      return;
+    }
+  }
+
+  const toRemove = labelsMatching(labels, parentOwnerActionLabel);
+  if (!toRemove.length) return;
+
+  await removeExactLabelsFromIssue(context, params, toRemove);
+}
+
+async function setParentOwnerActionState(context: BotContext<RequestEvents>, params: IssueParams): Promise<void> {
+  const eff = resolveEffectiveConstants(context);
+
+  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
+  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
+  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
+  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+
+  let labels: string[] = [];
+  try {
+    labels = await fetchIssueLabels(context, params);
+  } catch {
+    labels = [];
+  }
+
+  const toRemove = new Set<string>();
+
+  for (const label of [
+    authorActionLabel,
+    approverActionLabel,
+    approvedLabel,
+    REQUEST_STATUS_LABEL_REJECTED,
+    ...(eff.reviewRequestedLabels || []),
+  ]) {
+    for (const match of labelsMatching(labels, label)) {
+      if (normalizeKey(match) !== normalizeKey(parentOwnerActionLabel)) {
+        toRemove.add(match);
+      }
+    }
+  }
+
+  if (toRemove.size) {
+    await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
+  }
+
+  await ensureLabelsPresentOnce(context, params, [parentOwnerActionLabel]);
+}
+
+async function assignParentOwnersForApproval(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  owners: string[]
+): Promise<void> {
+  const assignees = uniqLogins((owners || []).map(toStringTrim).filter(Boolean));
+  if (!assignees.length) return;
+
+  // Best effort only.
+  // If GitHub does not allow assignment, ensureAssigneesPresent logs and continues.
+  // The parent owners are still mentioned in the comment as fallback.
+  await ensureAssigneesPresent(context, params, assignees);
+}
 
 async function removeExactLabelsFromIssue(
   context: BotContext<RequestEvents>,
@@ -1654,9 +1752,14 @@ async function removeProgressStatusLabels(
     }
   }
 
+  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
+  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
+  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
+
   const toRemove = new Set<string>([
-    ...labelsMatching(labels, REQUEST_STATUS_LABEL_REQUESTER_ACTION),
-    ...labelsMatching(labels, REQUEST_STATUS_LABEL_REVIEW_PENDING),
+    ...labelsMatching(labels, authorActionLabel),
+    ...labelsMatching(labels, approverActionLabel),
+    ...labelsMatching(labels, parentOwnerActionLabel),
   ]);
 
   if (!toRemove.size) return;
@@ -6720,6 +6823,7 @@ async function maybeRequireParentOwnerApproval(
   const rt = toStringTrim(requestType).toLowerCase();
   if (!rt.includes('namespace')) {
     await ensureParentApprovalMarker(context, params, issue, null);
+    await clearParentOwnerActionState(context, params);
     return false;
   }
 
@@ -6731,6 +6835,7 @@ async function maybeRequireParentOwnerApproval(
 
   if (parts.length <= 2) {
     await ensureParentApprovalMarker(context, params, issue, null);
+    await clearParentOwnerActionState(context, params);
     return false;
   }
 
@@ -6740,6 +6845,7 @@ async function maybeRequireParentOwnerApproval(
 
   if (!parent || owners.length === 0) {
     await ensureParentApprovalMarker(context, params, issue, null);
+    await clearParentOwnerActionState(context, params);
     return false;
   }
 
@@ -6753,6 +6859,7 @@ async function maybeRequireParentOwnerApproval(
       );
     }
     await ensureParentApprovalMarker(context, params, issue, null);
+    await clearParentOwnerActionState(context, params);
     return false;
   }
 
@@ -6763,9 +6870,15 @@ async function maybeRequireParentOwnerApproval(
     normalizeKey(current.target) === normalizeKey(target) &&
     Boolean(normalizeLogin(current.approvedBy));
 
-  if (alreadyApproved) return false;
+  if (alreadyApproved) {
+    await clearParentOwnerActionState(context, params);
+    return false;
+  }
 
   await ensureParentApprovalMarker(context, params, issue, { v: 1, parent, target, owners });
+
+  await setParentOwnerActionState(context, params);
+  await assignParentOwnersForApproval(context, params, owners);
 
   const mentions = owners.map((o) => `@${o}`).join(' ');
   const tag = `nsreq:parent-approval:${normalizeKey(parent)}:${normalizeKey(target)}`;
@@ -6783,7 +6896,6 @@ Please confirm by commenting \`Approved\`. After that, the bot will continue wit
     { minimizeTag: tag }
   );
 
-  await setStateLabel(context, params, issue, 'author');
   return true;
 }
 
@@ -6806,6 +6918,9 @@ async function handleParentOwnerApprovalIfNeeded(
   const tagBase = `nsreq:parent-approval:${normalizeKey(meta.parent)}:${normalizeKey(meta.target)}`;
 
   if (!isOwner) {
+    await setParentOwnerActionState(context, params);
+    await assignParentOwnersForApproval(context, params, owners);
+
     const mentions = owners.map((o) => `@${o}`).join(' ');
     await postOnce(
       context,
@@ -6842,6 +6957,7 @@ ${mentions}`,
         minimizeTag: 'nsreq:validation',
       }
     );
+    await clearParentOwnerActionState(context, params);
     await setStateLabel(context, params, issue, 'author');
     return true;
   }
@@ -6860,6 +6976,8 @@ ${mentions}`,
     approvedBy: commenterLogin,
     approvedAt: new Date().toISOString(),
   });
+
+  await clearParentOwnerActionState(context, params);
 
   const approvalOutcome = await maybeHandleApprovalDecision(
     context,
@@ -7500,6 +7618,9 @@ export default function requestHandler(app: Probot): void {
       const authorActionLabel = toStringTrim(labelsCfg['authorAction']) || REQUEST_STATUS_LABEL_REQUESTER_ACTION;
       const approverActionLabel = toStringTrim(labelsCfg['approverAction']) || REQUEST_STATUS_LABEL_REVIEW_PENDING;
 
+      const parentOwnerActionLabel =
+        toStringTrim(labelsCfg['parentOwnerAction']) || REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION;
+
       const authorActionKey = normalizeKey(authorActionLabel);
       const approverActionKey = normalizeKey(approverActionLabel);
       const isProgressStateLabel = (k: string): boolean => k === authorActionKey || k === approverActionKey;
@@ -7508,6 +7629,9 @@ export default function requestHandler(app: Probot): void {
 
       const lockedKeys = resolveLockedWorkflowLabelKeys(context);
       const changedKey = normalizeKey(changedLabel);
+
+      const parentOwnerActionKey = normalizeKey(parentOwnerActionLabel);
+      if (parentOwnerActionKey) lockedKeys.add(parentOwnerActionKey);
 
       const effectiveRequestType = template ? resolveEffectiveRequestType(template, parsedFormData) : '';
       const approverRouting = effectiveRequestType
@@ -7525,7 +7649,13 @@ export default function requestHandler(app: Probot): void {
       const senderIsConfiguredApprover = isConfiguredApprover(sender?.login, approverRouting.approvalUsernames);
 
       const managedWorkflowKeys = new Set<string>(Array.from(lockedKeys));
-      for (const label of [authorActionLabel, approverActionLabel, approvedLabel, REQUEST_STATUS_LABEL_REJECTED]) {
+      for (const label of [
+        authorActionLabel,
+        approverActionLabel,
+        parentOwnerActionLabel,
+        approvedLabel,
+        REQUEST_STATUS_LABEL_REJECTED,
+      ]) {
         const key = normalizeKey(label);
         if (key) managedWorkflowKeys.add(key);
       }

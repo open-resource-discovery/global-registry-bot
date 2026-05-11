@@ -134,11 +134,13 @@ describe('src/handlers/request/constants.ts', () => {
       global: null,
       authorAction: null,
       approverAction: null,
+      parentOwnerAction: null,
       approvalRequested: null,
       approvalSuccessful: null,
       approvalRejected: null,
       autoMergeCandidate: null,
     });
+    expect(mod.DEFAULT_CONFIG.workflow?.approversPool).toBeNull();
     expect(mod.DEFAULT_CONFIG.workflow?.approvers).toBeNull();
     expect(mod.DEFAULT_CONFIG.workflow?.links).toEqual({ docs: null });
   });
@@ -161,5 +163,15 @@ describe('src/handlers/request/constants.ts', () => {
     expect(methodEnum).toEqual(
       expect.arrayContaining(['merge', 'squash', 'rebase', 'MERGE', 'SQUASH', 'REBASE', null])
     );
+    const workflowLabels = s.properties?.workflow?.properties?.labels;
+
+    expect(workflowLabels?.properties?.parentOwnerAction).toEqual(
+      expect.objectContaining({
+        type: ['string', 'null'],
+        minLength: 1,
+      })
+    );
+
+    expect(workflowLabels?.required).not.toContain('parentOwnerAction');
   });
 });
