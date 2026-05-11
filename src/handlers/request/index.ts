@@ -48,6 +48,10 @@ import {
   type HeadGreenEvaluationCallbacks,
 } from './application/head-green-evaluation.js';
 import {
+  isPullRequestApprovedForBranchMaintenance as isPullRequestApprovedForBranchMaintenanceApplication,
+  type BranchMaintenanceApprovalCallbacks,
+} from './application/branch-maintenance-approval.js';
+import {
   resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
   type PullRequestAuthorResolutionCallbacks,
 } from './application/pull-request-author-resolution.js';
@@ -78,7 +82,6 @@ import {
   uniqLogins as uniqLoginsPure,
 } from './domain/login-utils.js';
 import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
-import { getLatestActionableReviewStates } from './domain/pull-request-review-state.js';
 import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
 import { buildRoutingLockBody, readRoutingLockExpected } from './domain/routing-lock-marker.js';
 import {
@@ -2052,48 +2055,23 @@ async function isPullRequestApprovedForBranchMaintenance(
   pr: PullRequestLike,
   options: { allowLabelFallback?: boolean } = {}
 ): Promise<boolean> {
-  let reviews: PullRequestReviewLike[];
-  try {
-    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
-  } catch {
-    reviews = [];
-  }
+  return await isPullRequestApprovedForBranchMaintenanceApplication(
+    context,
+    repoInfo,
+    pr,
+    options,
+    buildBranchMaintenanceApprovalCallbacks()
+  );
+}
 
-  const latestStates = getLatestActionableReviewStates(reviews);
-  const latestStateValues = new Set(latestStates.values());
-
-  if (latestStateValues.has('CHANGES_REQUESTED')) {
-    return false;
-  }
-
-  if (isSnapshotManagedRequestPr(pr)) return true;
-
-  const headSha = toStringTrim(pr.head?.sha);
-  const marker = headSha ? buildAutoApprovalReviewMarker(headSha) : null;
-
-  if (
-    marker &&
-    reviews.some(
-      (review) =>
-        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
-    )
-  ) {
-    return true;
-  }
-
-  if (latestStateValues.has('APPROVED')) {
-    return true;
-  }
-
-  if (headSha && hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
-    return true;
-  }
-
-  if (options.allowLabelFallback !== false && (await hasApprovedLabelOnPr(context, repoInfo, pr.number))) {
-    return true;
-  }
-
-  return false;
+function buildBranchMaintenanceApprovalCallbacks(): BranchMaintenanceApprovalCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    hasApprovedLabelOnPr,
+    isSnapshotManagedRequestPr,
+  };
 }
 
 async function hasAutoApprovalReviewForHead(
