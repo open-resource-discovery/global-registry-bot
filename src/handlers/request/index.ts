@@ -5038,8 +5038,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
     normalizeLogin,
     uniqLogins,
     pullRequestAuthorResolutionCallbacks: buildPullRequestAuthorResolutionCallbacks(),
-    resolveHookManualApprovers: (decision: ApprovalDecision): string[] =>
-      uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean)),
     log: (
       context: BotContext<RequestEvents>,
       level: 'info',

@@ -10,7 +10,7 @@ import {
   sortPullRequestReviewsChronologically,
 } from '../domain/pull-request-review-state.js';
 import type { ApprovalDecision } from '../domain/approval-decision.js';
-import { isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
+import { getUnknownManualApprovers, isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
 import {
   resolveAllowedApproversForRequestTypes,
   type DirectPrApproverResolutionCallbacks,
@@ -48,7 +48,7 @@ type PullRequestReviewLike = {
   user?: { login?: string | null } | null;
 };
 
-export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType extends PullRequestLike> = {
+export type DirectPrReviewApprovalCallbacks<ContextType, PullRequestType extends PullRequestLike> = {
   directPrRequestTypeResolutionCallbacks: DirectPrRequestTypeResolutionCallbacks<ContextType, PullRequestType>;
   directPrApproverResolutionCallbacks: DirectPrApproverResolutionCallbacks<ContextType>;
   buildAutoApprovalReviewMarker: (headSha: string) => string;
@@ -56,7 +56,6 @@ export type DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullReque
   normalizeLogin: (value: unknown) => string;
   uniqLogins: (values: string[]) => string[];
   pullRequestAuthorResolutionCallbacks: PullRequestAuthorResolutionCallbacks;
-  resolveHookManualApprovers: (decision: DecisionType) => string[];
   log: (context: ContextType, level: 'info', metadata: Record<string, unknown>, message: string) => void;
 };
 
@@ -71,7 +70,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   pr: PullRequestType,
   decision: DecisionType,
   options: DirectPrApprovalOptions = {},
-  callbacks: DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType>
+  callbacks: DirectPrReviewApprovalCallbacks<ContextType, PullRequestType>
 ): Promise<boolean> {
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   if (!headSha) return false;
@@ -132,7 +131,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
   pr: PullRequestType,
   decision: DecisionType,
   options: DirectPrApprovalOptions = {},
-  callbacks: DirectPrReviewApprovalCallbacks<ContextType, DecisionType, PullRequestType>
+  callbacks: DirectPrReviewApprovalCallbacks<ContextType, PullRequestType>
 ): Promise<boolean> {
   const headSha = callbacks.toStringTrim(pr.head?.sha);
   if (!headSha) return false;
@@ -150,7 +149,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
     requestTypes,
     callbacks.directPrApproverResolutionCallbacks
   );
-  const hookManualApprovers = callbacks.resolveHookManualApprovers(decision);
+  const hookManualApprovers = getUnknownManualApprovers(decision);
   const allowedApprovers = callbacks.uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
 
   let requesterLogin = callbacks.normalizeLogin(pr.user?.login);
