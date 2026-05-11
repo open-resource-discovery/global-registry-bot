@@ -38,10 +38,11 @@ import {
   hasAllowedStandaloneDirectPrApprovalForCurrentHead as hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication,
   type DirectPrReviewApprovalCallbacks,
 } from './application/direct-pr-review-approval.js';
+import { type DirectPrChangedResourceApprovalCallbacks } from './application/direct-pr-changed-resource-approval.js';
 import {
-  evaluateChangedResourceApproval as evaluateChangedResourceApprovalApplication,
-  type DirectPrChangedResourceApprovalCallbacks,
-} from './application/direct-pr-changed-resource-approval.js';
+  evaluateDirectPrOnApproval as evaluateDirectPrOnApprovalApplication,
+  type DirectPrApprovalEvaluationCallbacks,
+} from './application/direct-pr-approval-evaluation.js';
 import {
   resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
   type PullRequestAuthorResolutionCallbacks,
@@ -4790,23 +4791,6 @@ async function readRegistryDocForApproval(
   }
 }
 
-async function evaluateChangedResourceApproval(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  filePath: string,
-  requestAuthorId?: string
-): Promise<ApprovalDecision> {
-  return await evaluateChangedResourceApprovalApplication(
-    context,
-    repoInfo,
-    pr,
-    filePath,
-    requestAuthorId,
-    buildDirectPrChangedResourceApprovalCallbacks()
-  );
-}
-
 function buildDirectPrChangedResourceApprovalCallbacks(): DirectPrChangedResourceApprovalCallbacks<
   BotContext<RequestEvents>,
   PullRequestLike
@@ -4846,105 +4830,78 @@ async function evaluateDirectPrOnApproval(
   requestAuthorIdOverride?: string,
   options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalDecision> {
-  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
-
-  const fallbackRequestAuthorId = requestAuthorIdOverride
-    ? ''
-    : await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
-
-  const requestAuthorId = toStringTrim(requestAuthorIdOverride) || fallbackRequestAuthorId;
-
-  log(
+  return await evaluateDirectPrOnApprovalApplication(
     context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha: toStringTrim(pr.head?.sha),
-      headRef: toStringTrim(pr.head?.ref),
-      requestAuthorId,
-      changedFiles,
-      linkedIssueNumber: parseLinkedIssueNumberFromPr(pr, repoInfo),
-      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
-      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
-      hooksSource: context.resourceBotHooksSource,
-    },
-    'direct-pr:on-approval:start'
+    repoInfo,
+    pr,
+    requestAuthorIdOverride,
+    options,
+    buildDirectPrApprovalEvaluationCallbacks()
   );
+}
 
-  if (!changedFiles.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        headRef: toStringTrim(pr.head?.ref),
-      },
-      'direct-pr:on-approval:skip-no-registry-files'
-    );
-
-    return {};
-  }
-
-  let sawApproved = false;
-  let sawNonApproved = false;
-  let approvedComment = '';
-  let firstUnknownDecision: ApprovalDecision | null = null;
-
-  for (const filePath of changedFiles) {
-    const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        filePath,
-        requestAuthorId,
-        status: toStringTrim(decision.status) || 'none',
-        reason: toStringTrim(decision.reason),
-        message: toStringTrim(decision.message),
-        path: toStringTrim(decision.path),
-      },
-      'direct-pr:on-approval:file-decision'
-    );
-
-    if (decision.status === 'rejected') {
-      return decision;
-    }
-
-    if (decision.status === 'approved') {
-      sawApproved = true;
-      if (!approvedComment) approvedComment = toStringTrim(decision.comment);
-      continue;
-    }
-
-    sawNonApproved = true;
-    if (decision.status === 'unknown' && !firstUnknownDecision) {
-      firstUnknownDecision = decision;
-    }
-  }
-
-  if (sawApproved && !sawNonApproved) {
-    return {
-      status: 'approved',
-      ...(approvedComment ? { comment: approvedComment } : {}),
-    };
-  }
-
-  if (firstUnknownDecision) {
-    return firstUnknownDecision;
-  }
-
-  if (sawNonApproved) {
-    return {
-      status: 'unknown',
-      reason: 'Manual review required because onApproval did not approve all changed registry files.',
-    };
-  }
-
-  return {};
+function buildDirectPrApprovalEvaluationCallbacks(): DirectPrApprovalEvaluationCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    listChangedYamlFilesForPrWithFallback,
+    resolvePullRequestRequestAuthorId,
+    changedResourceApprovalCallbacks: buildDirectPrChangedResourceApprovalCallbacks(),
+    logStart: (
+      context: BotContext<RequestEvents>,
+      args: { repoInfo: RepoInfo; pr: PullRequestLike; requestAuthorId: string; changedFiles: string[] }
+    ): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber: args.pr.number,
+          headSha: toStringTrim(args.pr.head?.sha),
+          headRef: toStringTrim(args.pr.head?.ref),
+          requestAuthorId: args.requestAuthorId,
+          changedFiles: args.changedFiles,
+          linkedIssueNumber: parseLinkedIssueNumberFromPr(args.pr, args.repoInfo),
+          crossRepo: isCrossRepositoryPullRequest(args.pr, args.repoInfo),
+          headOwner: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).owner,
+          headRepo: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).repo,
+          hooksSource: context.resourceBotHooksSource,
+        },
+        'direct-pr:on-approval:start'
+      );
+    },
+    logSkipNoRegistryFiles: (context: BotContext<RequestEvents>, args: { pr: PullRequestLike }): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber: args.pr.number,
+          headSha: toStringTrim(args.pr.head?.sha),
+          headRef: toStringTrim(args.pr.head?.ref),
+        },
+        'direct-pr:on-approval:skip-no-registry-files'
+      );
+    },
+    logFileDecision: (
+      context: BotContext<RequestEvents>,
+      args: { pr: PullRequestLike; filePath: string; requestAuthorId: string; decision: ApprovalDecision }
+    ): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber: args.pr.number,
+          filePath: args.filePath,
+          requestAuthorId: args.requestAuthorId,
+          status: toStringTrim(args.decision.status) || 'none',
+          reason: toStringTrim(args.decision.reason),
+          message: toStringTrim(args.decision.message),
+          path: toStringTrim(args.decision.path),
+        },
+        'direct-pr:on-approval:file-decision'
+      );
+    },
+  };
 }
 
 async function resolveDirectPrRequestTypes(
