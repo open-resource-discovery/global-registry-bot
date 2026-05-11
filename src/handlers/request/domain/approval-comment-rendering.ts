@@ -1,12 +1,11 @@
 import { type ApprovalDecision } from './approval-decision.js';
+import { buildAutoApprovalReviewMarker } from './auto-approval-review-marker.js';
 import { getVisibleApprovalText } from './approval-policy.js';
 import {
   buildDetectedIssuesBody,
   normalizeMachineReadableIssues,
   type MachineReadableIssue,
 } from './machine-readable.js';
-
-const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
 
 function toStringTrim(value: unknown): string {
   if (value === undefined || value === null) return '';
@@ -29,10 +28,6 @@ function toSectionTitle(field: string): string {
 
   if (!spaced) return 'Details';
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function buildAutoApprovalReviewMarker(headSha: string): string {
-  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
 export function buildApprovalDecisionJson(decision: ApprovalDecision): string {

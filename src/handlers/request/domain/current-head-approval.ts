@@ -1,3 +1,5 @@
+import { buildAutoApprovalReviewMarker } from './auto-approval-review-marker.js';
+
 type UserLike = { login?: string | null };
 
 type PullRequestReviewLike = {
@@ -9,8 +11,6 @@ type PullRequestReviewLike = {
   commit_id?: string | null;
 };
 
-const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
-
 function toStringTrim(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value.trim();
@@ -20,10 +20,6 @@ function toStringTrim(value: unknown): string {
 
 function normalizeLogin(value: unknown): string {
   return toStringTrim(value).replace(/^@+/, '').trim();
-}
-
-function buildAutoApprovalReviewMarker(headSha: string): string {
-  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
 }
 
 export function isApprovalReviewForCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
