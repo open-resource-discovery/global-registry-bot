@@ -76,6 +76,11 @@ import { rejectRequestFromApprovalHook } from './application/approval-rejection.
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
+  isBenignUpdateBranchFailure as isBenignUpdateBranchFailurePure,
+  isManualUpdateBranchFailure as isManualUpdateBranchFailurePure,
+  type BranchUpdateErrorClassificationCallbacks,
+} from './domain/branch-update-errors.js';
+import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
 } from './domain/direct-pr-resource-mapping.js';
@@ -2233,37 +2238,18 @@ function markUpdateBranchCooldown(key: string): void {
 }
 
 function isBenignUpdateBranchFailure(error: unknown): boolean {
-  const status = getHttpStatus(error);
-  const msg = getErrorMessage(error).toLowerCase();
-
-  if (status !== 422) return false;
-
-  return (
-    msg.includes('expected_head_sha') ||
-    msg.includes('head sha') ||
-    msg.includes('head branch was modified') ||
-    msg.includes('not behind') ||
-    msg.includes('up to date') ||
-    msg.includes('up-to-date') ||
-    msg.includes('already up') ||
-    msg.includes('already up-to-date') ||
-    msg.includes('already up to date')
-  );
+  return isBenignUpdateBranchFailurePure(error, buildBranchUpdateErrorClassificationCallbacks());
 }
 
 function isManualUpdateBranchFailure(error: unknown): boolean {
-  const status = getHttpStatus(error);
-  const msg = getErrorMessage(error).toLowerCase();
+  return isManualUpdateBranchFailurePure(error, buildBranchUpdateErrorClassificationCallbacks());
+}
 
-  return (
-    status === 403 ||
-    status === 404 ||
-    msg.includes('conflict') ||
-    msg.includes('merge conflict') ||
-    msg.includes('protected branch') ||
-    msg.includes('permission') ||
-    msg.includes('forbidden')
-  );
+function buildBranchUpdateErrorClassificationCallbacks(): BranchUpdateErrorClassificationCallbacks {
+  return {
+    getHttpStatus,
+    getErrorMessage,
+  };
 }
 
 async function callPullRequestBranchUpdate(
