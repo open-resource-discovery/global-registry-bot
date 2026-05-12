@@ -90,6 +90,7 @@ import {
   isManualUpdateBranchFailure as isManualUpdateBranchFailurePure,
   type BranchUpdateErrorClassificationCallbacks,
 } from './domain/branch-update-errors.js';
+import { evaluateBranchUpdateRefreshOutcome } from './domain/branch-update-refresh-outcome.js';
 import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
@@ -2317,11 +2318,13 @@ async function requestPullRequestBranchUpdate(
 
       if (isBenignUpdateBranchFailure(error)) {
         const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
-        const freshHeadSha = toStringTrim(fresh?.head?.sha);
-        const freshMergeableState = readMergeableState(fresh);
-        const stillBehind = Boolean(fresh && isPullRequestBehindBase(fresh));
+        const refreshOutcome = evaluateBranchUpdateRefreshOutcome(headSha, fresh, {
+          readMergeableState,
+          isPullRequestBehindBase,
+        });
+        const { freshHeadSha, freshMergeableState, headChanged, shouldRetry } = refreshOutcome;
 
-        if (freshHeadSha && freshHeadSha !== headSha) {
+        if (headChanged) {
           log(
             context,
             'info',
@@ -2340,7 +2343,7 @@ async function requestPullRequestBranchUpdate(
           return false;
         }
 
-        if (stillBehind) {
+        if (shouldRetry) {
           await delayMs(UPDATE_BRANCH_RETRY_DELAY_MS);
 
           try {
