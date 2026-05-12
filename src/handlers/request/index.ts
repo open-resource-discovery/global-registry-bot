@@ -51,6 +51,10 @@ import {
   isPullRequestApprovedForBranchMaintenance as isPullRequestApprovedForBranchMaintenanceApplication,
   type BranchMaintenanceApprovalCallbacks,
 } from './application/branch-maintenance-approval.js';
+import {
+  isUpdateBranchCooldownActive as isUpdateBranchCooldownActiveApplication,
+  markUpdateBranchCooldown as markUpdateBranchCooldownApplication,
+} from './application/branch-update-cooldown.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
@@ -2161,27 +2165,10 @@ function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: st
   return hasAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
-class CooldownUntilMap extends Map<string, number> {
-  public override get(key: string): number | undefined {
-    const until = super.get(key);
-    if (until !== undefined && until <= Date.now()) {
-      super.delete(key);
-      return undefined;
-    }
-    return until;
-  }
-
-  public override has(key: string): boolean {
-    return this.get(key) !== undefined;
-  }
-}
-
 const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
-const UPDATE_BRANCH_COOLDOWN_UNTIL = new CooldownUntilMap();
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
-const UPDATE_BRANCH_COOLDOWN_MS = 15000;
 
 type SequentialRegistryPrResult = {
   updated: boolean;
@@ -2221,20 +2208,11 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
 }
 
 function isUpdateBranchCooldownActive(key: string): boolean {
-  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
-  // eslint-disable-next-line eqeqeq
-  if (until == null) return false;
-
-  if (until <= Date.now()) {
-    UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
-    return false;
-  }
-
-  return true;
+  return isUpdateBranchCooldownActiveApplication(key);
 }
 
 function markUpdateBranchCooldown(key: string): void {
-  UPDATE_BRANCH_COOLDOWN_UNTIL.set(key, Date.now() + UPDATE_BRANCH_COOLDOWN_MS);
+  markUpdateBranchCooldownApplication(key);
 }
 
 function isBenignUpdateBranchFailure(error: unknown): boolean {
