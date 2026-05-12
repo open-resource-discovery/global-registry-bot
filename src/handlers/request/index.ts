@@ -60,6 +60,7 @@ import {
   getUpdateBranchInflight as getUpdateBranchInflightApplication,
   setUpdateBranchInflight as setUpdateBranchInflightApplication,
 } from './application/branch-update-inflight.js';
+import { postManualBranchUpdateNotice as postManualBranchUpdateNoticeApplication } from './application/branch-update-manual-notice.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
@@ -2254,6 +2255,15 @@ async function callPullRequestBranchUpdate(
   await callPullRequestBranchUpdateApplication(context, repoInfo, prNumber, expectedHeadSha);
 }
 
+async function postManualBranchUpdateNotice(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number,
+  message: string
+): Promise<void> {
+  await postManualBranchUpdateNoticeApplication(context, repoInfo, prNumber, message);
+}
+
 async function requestPullRequestBranchUpdate(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2407,19 +2417,7 @@ async function requestPullRequestBranchUpdate(
       );
 
       if (isManualUpdateBranchFailure(error)) {
-        await postOnce(
-          context,
-          { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-          `## Could not update PR branch automatically
-
-The PR is approved, but the bot could not update the branch with the latest base branch.
-
-Reason:
-\`${msg}\`
-
-Please update the branch manually.`,
-          { minimizeTag: 'nsreq:update-branch-failed' }
-        );
+        await postManualBranchUpdateNotice(context, repoInfo, pr.number, msg);
       }
 
       return false;
