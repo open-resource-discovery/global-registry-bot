@@ -55,6 +55,11 @@ import {
   isUpdateBranchCooldownActive as isUpdateBranchCooldownActiveApplication,
   markUpdateBranchCooldown as markUpdateBranchCooldownApplication,
 } from './application/branch-update-cooldown.js';
+import {
+  clearUpdateBranchInflight as clearUpdateBranchInflightApplication,
+  getUpdateBranchInflight as getUpdateBranchInflightApplication,
+  setUpdateBranchInflight as setUpdateBranchInflightApplication,
+} from './application/branch-update-inflight.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
@@ -2165,8 +2170,6 @@ function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: st
   return hasAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
-const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
-
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
 
@@ -2205,6 +2208,18 @@ function getErrorMessage(error: unknown): string {
 
 function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}`;
+}
+
+function getUpdateBranchInflight(key: string): Promise<boolean> | undefined {
+  return getUpdateBranchInflightApplication(key);
+}
+
+function setUpdateBranchInflight(key: string, pending: Promise<boolean>): void {
+  setUpdateBranchInflightApplication(key, pending);
+}
+
+function clearUpdateBranchInflight(key: string): void {
+  clearUpdateBranchInflightApplication(key);
 }
 
 function isUpdateBranchCooldownActive(key: string): boolean {
@@ -2265,7 +2280,7 @@ async function requestPullRequestBranchUpdate(
     return false;
   }
 
-  const existing = UPDATE_BRANCH_INFLIGHT.get(key);
+  const existing = getUpdateBranchInflight(key);
   if (existing) return await existing;
 
   const pending = (async (): Promise<boolean> => {
@@ -2410,10 +2425,10 @@ Please update the branch manually.`,
       return false;
     }
   })().finally(() => {
-    UPDATE_BRANCH_INFLIGHT.delete(key);
+    clearUpdateBranchInflight(key);
   });
 
-  UPDATE_BRANCH_INFLIGHT.set(key, pending);
+  setUpdateBranchInflight(key, pending);
   return await pending;
 }
 
