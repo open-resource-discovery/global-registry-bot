@@ -51,6 +51,7 @@ import {
   isPullRequestApprovedForBranchMaintenance as isPullRequestApprovedForBranchMaintenanceApplication,
   type BranchMaintenanceApprovalCallbacks,
 } from './application/branch-maintenance-approval.js';
+import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
   type PullRequestMergeabilityCallbacks,
@@ -2271,32 +2272,7 @@ async function callPullRequestBranchUpdate(
   prNumber: number,
   expectedHeadSha?: string
 ): Promise<void> {
-  const args: {
-    owner: string;
-    repo: string;
-    pull_number: number;
-    expected_head_sha?: string;
-  } = {
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    pull_number: prNumber,
-  };
-
-  const normalizedExpectedHeadSha = toStringTrim(expectedHeadSha);
-  if (normalizedExpectedHeadSha) {
-    args.expected_head_sha = normalizedExpectedHeadSha;
-  }
-
-  await (
-    context.octokit.pulls as unknown as {
-      updateBranch: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        expected_head_sha?: string;
-      }) => Promise<unknown>;
-    }
-  ).updateBranch(args);
+  await callPullRequestBranchUpdateApplication(context, repoInfo, prNumber, expectedHeadSha);
 }
 
 async function requestPullRequestBranchUpdate(
