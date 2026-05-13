@@ -1,4 +1,5 @@
 import {
+  isBenignUpdateBranchFailure,
   isManualUpdateBranchFailure,
   type BranchUpdateErrorClassificationCallbacks,
 } from '../domain/branch-update-errors.js';
@@ -25,7 +26,6 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
   clearUpdateBranchInflight: (key: string) => void;
   isUpdateBranchCooldownActive: (key: string) => boolean;
   markUpdateBranchCooldown: (key: string) => void;
-  isBenignUpdateBranchFailure: (error: unknown) => boolean;
   runBranchUpdateBenignFailureRetry: (
     context: ContextType,
     repoInfo: RepoInfoType,
@@ -94,7 +94,7 @@ export async function requestPullRequestBranchUpdate<
       const msg = callbacks.getErrorMessage(error);
       const status = callbacks.getHttpStatus(error);
 
-      if (callbacks.isBenignUpdateBranchFailure(error)) {
+      if (isBenignUpdateBranchFailure(error, callbacks satisfies BranchUpdateErrorClassificationCallbacks)) {
         const retryOutcome = await callbacks.runBranchUpdateBenignFailureRetry(context, repoInfo, pr.number, headSha);
         const { freshHeadSha, freshMergeableState } = retryOutcome;
 

@@ -94,10 +94,6 @@ import { rejectRequestFromApprovalHook } from './application/approval-rejection.
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
-  isBenignUpdateBranchFailure as isBenignUpdateBranchFailurePure,
-  type BranchUpdateErrorClassificationCallbacks,
-} from './domain/branch-update-errors.js';
-import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
 } from './domain/direct-pr-resource-mapping.js';
@@ -2238,17 +2234,6 @@ function markUpdateBranchCooldown(key: string): void {
   markUpdateBranchCooldownApplication(key);
 }
 
-function isBenignUpdateBranchFailure(error: unknown): boolean {
-  return isBenignUpdateBranchFailurePure(error, buildBranchUpdateErrorClassificationCallbacks());
-}
-
-function buildBranchUpdateErrorClassificationCallbacks(): BranchUpdateErrorClassificationCallbacks {
-  return {
-    getHttpStatus,
-    getErrorMessage,
-  };
-}
-
 async function callPullRequestBranchUpdate(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2316,7 +2301,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
     clearUpdateBranchInflight,
     isUpdateBranchCooldownActive,
     markUpdateBranchCooldown,
-    isBenignUpdateBranchFailure,
     runBranchUpdateBenignFailureRetry,
     getErrorMessage,
     getHttpStatus,
