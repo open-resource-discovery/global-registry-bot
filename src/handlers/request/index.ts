@@ -78,6 +78,7 @@ import {
   type DirectPrRequestTypeResolutionCallbacks,
 } from './application/direct-pr-request-type-resolution.js';
 import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
+import { tryMergeApprovedPrOrUpdateBranch as tryMergeApprovedPrOrUpdateBranchApplication } from './application/merge-inflight.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
@@ -326,7 +327,6 @@ type EffectiveConstants = {
 type SchemaFieldAliasLookup = Map<string, string>;
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
-const MERGE_INFLIGHT = new Map<string, Promise<void>>();
 const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
@@ -2161,10 +2161,6 @@ function buildHeadGreenEvaluationCallbacks(): HeadGreenEvaluationCallbacks<BotCo
   };
 }
 
-function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
-}
-
 function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
   return autoApprovedPrHeadKeyApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
@@ -2413,20 +2409,7 @@ async function tryMergeApprovedPrOrUpdateBranch(
   pr: PullRequestLike,
   reason: string
 ): Promise<void> {
-  const key = mergeInflightKey(repoInfo, pr);
-  const existing = MERGE_INFLIGHT.get(key);
-
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const pending = runMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason).finally(() => {
-    MERGE_INFLIGHT.delete(key);
-  });
-
-  MERGE_INFLIGHT.set(key, pending);
-  await pending;
+  await tryMergeApprovedPrOrUpdateBranchApplication(context, repoInfo, pr, reason, runMergeApprovedPrOrUpdateBranch);
 }
 
 async function runMergeApprovedPrOrUpdateBranch(
