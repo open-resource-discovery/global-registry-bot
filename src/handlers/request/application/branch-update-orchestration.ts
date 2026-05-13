@@ -5,6 +5,11 @@ import {
 } from '../domain/branch-update-errors.js';
 import { toStringTrim } from '../domain/login-utils.js';
 import {
+  clearUpdateBranchInflight,
+  getUpdateBranchInflight,
+  setUpdateBranchInflight,
+} from './branch-update-inflight.js';
+import {
   callPullRequestBranchUpdate,
   type PullRequestBranchUpdateCallContext,
 } from './pull-request-branch-update-call.js';
@@ -22,9 +27,6 @@ type BranchUpdateLogLevel = 'info' | 'warn';
 
 export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRequestType> = {
   updateBranchInflightKey: (repoInfo: RepoInfoType, pr: PullRequestType) => string;
-  getUpdateBranchInflight: (key: string) => Promise<boolean> | undefined;
-  setUpdateBranchInflight: (key: string, pending: Promise<boolean>) => void;
-  clearUpdateBranchInflight: (key: string) => void;
   isUpdateBranchCooldownActive: (key: string) => boolean;
   markUpdateBranchCooldown: (key: string) => void;
   runBranchUpdateBenignFailureRetry: (
@@ -69,7 +71,7 @@ export async function requestPullRequestBranchUpdate<
     return false;
   }
 
-  const existing = callbacks.getUpdateBranchInflight(key);
+  const existing = getUpdateBranchInflight(key);
   if (existing) return await existing;
 
   const pending = (async (): Promise<boolean> => {
@@ -196,9 +198,9 @@ export async function requestPullRequestBranchUpdate<
       return false;
     }
   })().finally(() => {
-    callbacks.clearUpdateBranchInflight(key);
+    clearUpdateBranchInflight(key);
   });
 
-  callbacks.setUpdateBranchInflight(key, pending);
+  setUpdateBranchInflight(key, pending);
   return await pending;
 }

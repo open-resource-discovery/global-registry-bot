@@ -56,11 +56,6 @@ import {
   markUpdateBranchCooldown as markUpdateBranchCooldownApplication,
 } from './application/branch-update-cooldown.js';
 import {
-  clearUpdateBranchInflight as clearUpdateBranchInflightApplication,
-  getUpdateBranchInflight as getUpdateBranchInflightApplication,
-  setUpdateBranchInflight as setUpdateBranchInflightApplication,
-} from './application/branch-update-inflight.js';
-import {
   runBranchUpdateBenignFailureRetry as runBranchUpdateBenignFailureRetryApplication,
   type BranchUpdateBenignRetryCallbacks,
   type BranchUpdateBenignRetryOutcome,
@@ -2214,18 +2209,6 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}`;
 }
 
-function getUpdateBranchInflight(key: string): Promise<boolean> | undefined {
-  return getUpdateBranchInflightApplication(key);
-}
-
-function setUpdateBranchInflight(key: string, pending: Promise<boolean>): void {
-  setUpdateBranchInflightApplication(key, pending);
-}
-
-function clearUpdateBranchInflight(key: string): void {
-  clearUpdateBranchInflightApplication(key);
-}
-
 function isUpdateBranchCooldownActive(key: string): boolean {
   return isUpdateBranchCooldownActiveApplication(key);
 }
@@ -2296,9 +2279,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
 > {
   return {
     updateBranchInflightKey,
-    getUpdateBranchInflight,
-    setUpdateBranchInflight,
-    clearUpdateBranchInflight,
     isUpdateBranchCooldownActive,
     markUpdateBranchCooldown,
     runBranchUpdateBenignFailureRetry,
