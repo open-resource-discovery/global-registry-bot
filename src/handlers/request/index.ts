@@ -65,6 +65,10 @@ import {
   type BranchUpdateBenignRetryCallbacks,
   type BranchUpdateBenignRetryOutcome,
 } from './application/branch-update-benign-retry.js';
+import {
+  requestPullRequestBranchUpdate as requestPullRequestBranchUpdateApplication,
+  type BranchUpdateOrchestrationCallbacks,
+} from './application/branch-update-orchestration.js';
 import { postManualBranchUpdateNotice as postManualBranchUpdateNoticeApplication } from './application/branch-update-manual-notice.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
@@ -2306,158 +2310,37 @@ async function requestPullRequestBranchUpdate(
   pr: PullRequestLike,
   reason: string
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
+  return await requestPullRequestBranchUpdateApplication(
+    context,
+    repoInfo,
+    pr,
+    reason,
+    buildBranchUpdateOrchestrationCallbacks()
+  );
+}
 
-  const key = updateBranchInflightKey(repoInfo, pr);
-
-  if (isUpdateBranchCooldownActive(key)) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-        reason,
-      },
-      'pull-request branch update skipped: cooldown active'
-    );
-
-    return false;
-  }
-
-  const existing = getUpdateBranchInflight(key);
-  if (existing) return await existing;
-
-  const pending = (async (): Promise<boolean> => {
-    try {
-      await callPullRequestBranchUpdate(context, repoInfo, pr.number, headSha);
-
-      markUpdateBranchCooldown(key);
-
-      log(
-        context,
-        'info',
-        {
-          prNumber: pr.number,
-          headSha,
-          reason,
-        },
-        'pull-request branch update requested'
-      );
-
-      return true;
-    } catch (error: unknown) {
-      const msg = getErrorMessage(error);
-      const status = getHttpStatus(error);
-
-      if (isBenignUpdateBranchFailure(error)) {
-        const retryOutcome = await runBranchUpdateBenignFailureRetry(context, repoInfo, pr.number, headSha);
-        const { freshHeadSha, freshMergeableState } = retryOutcome;
-
-        if (retryOutcome.outcome === 'head-changed') {
-          log(
-            context,
-            'info',
-            {
-              prNumber: pr.number,
-              oldHeadSha: headSha,
-              freshHeadSha,
-              status,
-              err: msg,
-              reason,
-              freshMergeableState,
-            },
-            'pull-request branch update skipped: head already changed'
-          );
-
-          return false;
-        }
-
-        if (retryOutcome.outcome === 'retry-success') {
-          markUpdateBranchCooldown(key);
-
-          log(
-            context,
-            'info',
-            {
-              prNumber: pr.number,
-              headSha,
-              freshHeadSha,
-              reason,
-            },
-            'pull-request branch update requested after expected-head retry'
-          );
-
-          return true;
-        }
-
-        if (retryOutcome.outcome === 'retry-failed') {
-          markUpdateBranchCooldown(key);
-
-          log(
-            context,
-            'warn',
-            {
-              prNumber: pr.number,
-              headSha,
-              freshHeadSha,
-              status: retryOutcome.retryErrorStatus,
-              err: retryOutcome.retryErrorMessage,
-              originalStatus: status,
-              originalErr: msg,
-              reason,
-              freshMergeableState,
-            },
-            'pull-request branch update retry failed'
-          );
-
-          return false;
-        }
-
-        log(
-          context,
-          'info',
-          {
-            prNumber: pr.number,
-            oldHeadSha: headSha,
-            freshHeadSha,
-            status,
-            err: msg,
-            reason,
-            freshMergeableState,
-          },
-          'pull-request branch update skipped after benign failure'
-        );
-
-        return false;
-      }
-
-      log(
-        context,
-        'warn',
-        {
-          prNumber: pr.number,
-          headSha,
-          status,
-          err: msg,
-          reason,
-        },
-        'pull-request branch update failed'
-      );
-
-      if (isManualUpdateBranchFailure(error)) {
-        await postManualBranchUpdateNotice(context, repoInfo, pr.number, msg);
-      }
-
-      return false;
-    }
-  })().finally(() => {
-    clearUpdateBranchInflight(key);
-  });
-
-  setUpdateBranchInflight(key, pending);
-  return await pending;
+function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike
+> {
+  return {
+    updateBranchInflightKey,
+    getUpdateBranchInflight,
+    setUpdateBranchInflight,
+    clearUpdateBranchInflight,
+    isUpdateBranchCooldownActive,
+    markUpdateBranchCooldown,
+    callPullRequestBranchUpdate,
+    isBenignUpdateBranchFailure,
+    isManualUpdateBranchFailure,
+    runBranchUpdateBenignFailureRetry,
+    postManualBranchUpdateNotice,
+    getErrorMessage,
+    getHttpStatus,
+    log,
+    toStringTrim,
+  };
 }
 
 function shouldTryBranchUpdateAfterMergeFailure(error: unknown): boolean {
