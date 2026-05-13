@@ -2331,7 +2331,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
     clearUpdateBranchInflight,
     isUpdateBranchCooldownActive,
     markUpdateBranchCooldown,
-    callPullRequestBranchUpdate,
     isBenignUpdateBranchFailure,
     isManualUpdateBranchFailure,
     runBranchUpdateBenignFailureRetry,

@@ -1,3 +1,7 @@
+import {
+  callPullRequestBranchUpdate,
+  type PullRequestBranchUpdateCallContext,
+} from './pull-request-branch-update-call.js';
 import type { BranchUpdateBenignRetryOutcome } from './branch-update-benign-retry.js';
 
 type RepoInfo = { owner: string; repo: string };
@@ -16,12 +20,6 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
   clearUpdateBranchInflight: (key: string) => void;
   isUpdateBranchCooldownActive: (key: string) => boolean;
   markUpdateBranchCooldown: (key: string) => void;
-  callPullRequestBranchUpdate: (
-    context: ContextType,
-    repoInfo: RepoInfoType,
-    prNumber: number,
-    expectedHeadSha?: string
-  ) => Promise<void>;
   isBenignUpdateBranchFailure: (error: unknown) => boolean;
   isManualUpdateBranchFailure: (error: unknown) => boolean;
   runBranchUpdateBenignFailureRetry: (
@@ -43,7 +41,7 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
 };
 
 export async function requestPullRequestBranchUpdate<
-  ContextType,
+  ContextType extends PullRequestBranchUpdateCallContext,
   RepoInfoType extends RepoInfo,
   PullRequestType extends PullRequestLike,
 >(
@@ -78,7 +76,7 @@ export async function requestPullRequestBranchUpdate<
 
   const pending = (async (): Promise<boolean> => {
     try {
-      await callbacks.callPullRequestBranchUpdate(context, repoInfo, pr.number, headSha);
+      await callPullRequestBranchUpdate(context, repoInfo, pr.number, headSha);
 
       callbacks.markUpdateBranchCooldown(key);
 
