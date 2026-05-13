@@ -85,6 +85,11 @@ import { rejectRequestFromApprovalHook } from './application/approval-rejection.
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
+  isMergeBlockedByBranchProtection as isMergeBlockedByBranchProtectionPure,
+  shouldTryBranchUpdateAfterMergeFailure as shouldTryBranchUpdateAfterMergeFailurePure,
+  type MergeFailureClassificationCallbacks,
+} from './domain/merge-failure-errors.js';
+import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
 } from './domain/direct-pr-resource-mapping.js';
@@ -2274,30 +2279,18 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
   };
 }
 
-function shouldTryBranchUpdateAfterMergeFailure(error: unknown): boolean {
-  const msg = getErrorMessage(error).toLowerCase();
+function buildMergeFailureClassificationCallbacks(): MergeFailureClassificationCallbacks {
+  return {
+    getErrorMessage,
+  };
+}
 
-  return (
-    msg.includes('branch is out-of-date') ||
-    msg.includes('branch is out of date') ||
-    msg.includes('update branch') ||
-    msg.includes('must be up to date') ||
-    msg.includes('must be up-to-date') ||
-    msg.includes('behind the base branch')
-  );
+function shouldTryBranchUpdateAfterMergeFailure(error: unknown): boolean {
+  return shouldTryBranchUpdateAfterMergeFailurePure(error, buildMergeFailureClassificationCallbacks());
 }
 
 function isMergeBlockedByBranchProtection(error: unknown): boolean {
-  const msg = getErrorMessage(error).toLowerCase();
-
-  return (
-    msg.includes('at least 1 approving review is required') ||
-    msg.includes('approving review is required') ||
-    msg.includes('required status check') ||
-    msg.includes('is expected') ||
-    msg.includes('protected branch') ||
-    msg.includes('pull request is not mergeable')
-  );
+  return isMergeBlockedByBranchProtectionPure(error, buildMergeFailureClassificationCallbacks());
 }
 
 function delayMs(ms: number): Promise<void> {
