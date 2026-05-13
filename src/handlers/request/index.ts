@@ -90,6 +90,13 @@ import {
   type MergeFailureClassificationCallbacks,
 } from './domain/merge-failure-errors.js';
 import {
+  isMergeabilityPending as isMergeabilityPendingPure,
+  isPullRequestBehindBase as isPullRequestBehindBasePure,
+  isPullRequestDirty as isPullRequestDirtyPure,
+  isPullRequestOpen as isPullRequestOpenPure,
+  readMergeableState as readMergeableStatePure,
+} from './domain/pull-request-merge-state.js';
+import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
 } from './domain/direct-pr-resource-mapping.js';
@@ -2331,27 +2338,23 @@ async function readFreshPullRequest(
 }
 
 function readMergeableState(pr: PullRequestLike | null | undefined): string {
-  return toStringTrim(pr?.mergeable_state).toLowerCase();
+  return readMergeableStatePure(pr);
 }
 
 function isPullRequestOpen(pr: PullRequestLike | null | undefined): boolean {
-  return toStringTrim(pr?.state).toLowerCase() === 'open';
+  return isPullRequestOpenPure(pr);
 }
 
 function isMergeabilityPending(pr: PullRequestLike | null | undefined): boolean {
-  const state = readMergeableState(pr);
-
-  return pr?.mergeable === null || state === 'unknown' || state === 'checking';
+  return isMergeabilityPendingPure(pr);
 }
 
 function isPullRequestBehindBase(pr: PullRequestLike | null | undefined): boolean {
-  return readMergeableState(pr) === 'behind';
+  return isPullRequestBehindBasePure(pr);
 }
 
 function isPullRequestDirty(pr: PullRequestLike | null | undefined): boolean {
-  const state = readMergeableState(pr);
-
-  return state === 'dirty' || state === 'conflicting';
+  return isPullRequestDirtyPure(pr);
 }
 
 async function waitForPullRequestMergeability(

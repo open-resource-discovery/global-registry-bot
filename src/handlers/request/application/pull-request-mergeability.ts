@@ -1,4 +1,5 @@
 import { toStringTrim } from '../domain/login-utils.js';
+import { isMergeabilityPending, isPullRequestOpen, readMergeableState } from '../domain/pull-request-merge-state.js';
 
 const MERGEABILITY_POLL_ATTEMPTS = 6;
 const MERGEABILITY_POLL_DELAY_MS = 1500;
@@ -28,20 +29,6 @@ export type PullRequestMergeabilityCallbacks<ContextType, PullRequestType> = {
     }
   ) => void;
 };
-
-function readMergeableState(pr: PullRequestLike | null | undefined): string {
-  return toStringTrim(pr?.mergeable_state).toLowerCase();
-}
-
-function isPullRequestOpen(pr: PullRequestLike | null | undefined): boolean {
-  return toStringTrim(pr?.state).toLowerCase() === 'open';
-}
-
-function isMergeabilityPending(pr: PullRequestLike | null | undefined): boolean {
-  const state = readMergeableState(pr);
-
-  return pr?.mergeable === null || state === 'unknown' || state === 'checking';
-}
 
 export async function waitForPullRequestMergeability<ContextType, PullRequestType extends PullRequestLike>(
   context: ContextType,
