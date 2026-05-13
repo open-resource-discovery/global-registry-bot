@@ -69,7 +69,6 @@ import {
   requestPullRequestBranchUpdate as requestPullRequestBranchUpdateApplication,
   type BranchUpdateOrchestrationCallbacks,
 } from './application/branch-update-orchestration.js';
-import { postManualBranchUpdateNotice as postManualBranchUpdateNoticeApplication } from './application/branch-update-manual-notice.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
@@ -2264,15 +2263,6 @@ async function callPullRequestBranchUpdate(
   await callPullRequestBranchUpdateApplication(context, repoInfo, prNumber, expectedHeadSha);
 }
 
-async function postManualBranchUpdateNotice(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number,
-  message: string
-): Promise<void> {
-  await postManualBranchUpdateNoticeApplication(context, repoInfo, prNumber, message);
-}
-
 async function runBranchUpdateBenignFailureRetry(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2334,7 +2324,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
     isBenignUpdateBranchFailure,
     isManualUpdateBranchFailure,
     runBranchUpdateBenignFailureRetry,
-    postManualBranchUpdateNotice,
     getErrorMessage,
     getHttpStatus,
     log,

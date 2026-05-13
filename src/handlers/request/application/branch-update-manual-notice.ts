@@ -1,6 +1,7 @@
 import { postOnce } from '../comments.js';
 
 type PostOnceContext = Parameters<typeof postOnce>[0];
+export type { PostOnceContext };
 
 type RepoInfo = {
   owner: string;

@@ -2,6 +2,7 @@ import {
   callPullRequestBranchUpdate,
   type PullRequestBranchUpdateCallContext,
 } from './pull-request-branch-update-call.js';
+import { postManualBranchUpdateNotice, type PostOnceContext } from './branch-update-manual-notice.js';
 import type { BranchUpdateBenignRetryOutcome } from './branch-update-benign-retry.js';
 
 type RepoInfo = { owner: string; repo: string };
@@ -28,12 +29,6 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
     prNumber: number,
     headSha: string
   ) => Promise<BranchUpdateBenignRetryOutcome>;
-  postManualBranchUpdateNotice: (
-    context: ContextType,
-    repoInfo: RepoInfoType,
-    prNumber: number,
-    message: string
-  ) => Promise<void>;
   getErrorMessage: (error: unknown) => string;
   getHttpStatus: (error: unknown) => number | undefined;
   log: (context: ContextType, level: BranchUpdateLogLevel, obj: unknown, msg: string) => void;
@@ -41,7 +36,7 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
 };
 
 export async function requestPullRequestBranchUpdate<
-  ContextType extends PullRequestBranchUpdateCallContext,
+  ContextType extends PullRequestBranchUpdateCallContext & PostOnceContext,
   RepoInfoType extends RepoInfo,
   PullRequestType extends PullRequestLike,
 >(
@@ -192,7 +187,7 @@ export async function requestPullRequestBranchUpdate<
       );
 
       if (callbacks.isManualUpdateBranchFailure(error)) {
-        await callbacks.postManualBranchUpdateNotice(context, repoInfo, pr.number, msg);
+        await postManualBranchUpdateNotice(context, repoInfo, pr.number, msg);
       }
 
       return false;
