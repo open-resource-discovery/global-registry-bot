@@ -99,6 +99,11 @@ import {
 } from './domain/pull-request-merge-state.js';
 import { evaluatePullRequestCompareResult } from './domain/pull-request-compare-result.js';
 import {
+  isCrossRepositoryPullRequest as isCrossRepositoryPullRequestPure,
+  resolvePullRequestHeadRepoInfo as resolvePullRequestHeadRepoInfoPure,
+  sameRepoInfo as sameRepoInfoPure,
+} from './domain/pull-request-repo-info.js';
+import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
 } from './domain/direct-pr-resource-mapping.js';
@@ -3366,34 +3371,15 @@ type PullRequestHeadReadCandidate = {
 };
 
 function sameRepoInfo(a: RepoInfo, b: RepoInfo): boolean {
-  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase();
-}
-
-function resolveRepoInfoFromRepoLike(repoLike: PullRequestRepoLike | null | undefined): RepoInfo | null {
-  const fullName = toStringTrim(repoLike?.full_name);
-  if (fullName) {
-    const parts = fullName
-      .split('/')
-      .map((part) => toStringTrim(part))
-      .filter(Boolean);
-
-    if (parts.length === 2) {
-      return { owner: parts[0], repo: parts[1] };
-    }
-  }
-
-  const owner = normalizeLogin(repoLike?.owner?.login);
-  const repo = toStringTrim(repoLike?.name);
-
-  return owner && repo ? { owner, repo } : null;
+  return sameRepoInfoPure(a, b);
 }
 
 function resolvePullRequestHeadRepoInfo(pr: PullRequestLike, fallbackRepoInfo: RepoInfo): RepoInfo {
-  return resolveRepoInfoFromRepoLike(pr.head?.repo) || fallbackRepoInfo;
+  return resolvePullRequestHeadRepoInfoPure(pr, fallbackRepoInfo);
 }
 
 function isCrossRepositoryPullRequest(pr: PullRequestLike, baseRepoInfo: RepoInfo): boolean {
-  return !sameRepoInfo(resolvePullRequestHeadRepoInfo(pr, baseRepoInfo), baseRepoInfo);
+  return isCrossRepositoryPullRequestPure(pr, baseRepoInfo);
 }
 
 function buildPullRequestHeadReadCandidates(repoInfo: RepoInfo, pr: PullRequestLike): PullRequestHeadReadCandidate[] {
