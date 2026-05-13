@@ -3,6 +3,7 @@ import {
   isManualUpdateBranchFailure,
   type BranchUpdateErrorClassificationCallbacks,
 } from '../domain/branch-update-errors.js';
+import { toStringTrim } from '../domain/login-utils.js';
 import {
   callPullRequestBranchUpdate,
   type PullRequestBranchUpdateCallContext,
@@ -35,7 +36,6 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
   getErrorMessage: (error: unknown) => string;
   getHttpStatus: (error: unknown) => number | undefined;
   log: (context: ContextType, level: BranchUpdateLogLevel, obj: unknown, msg: string) => void;
-  toStringTrim: (value: unknown) => string;
 };
 
 export async function requestPullRequestBranchUpdate<
@@ -49,7 +49,7 @@ export async function requestPullRequestBranchUpdate<
   reason: string,
   callbacks: BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRequestType>
 ): Promise<boolean> {
-  const headSha = callbacks.toStringTrim(pr.head?.sha);
+  const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return false;
 
   const key = callbacks.updateBranchInflightKey(repoInfo, pr);

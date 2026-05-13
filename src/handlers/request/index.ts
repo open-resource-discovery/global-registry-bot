@@ -2305,7 +2305,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
     getErrorMessage,
     getHttpStatus,
     log,
-    toStringTrim,
   };
 }
 
