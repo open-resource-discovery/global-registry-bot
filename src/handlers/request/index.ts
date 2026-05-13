@@ -97,6 +97,7 @@ import {
   isPullRequestOpen as isPullRequestOpenPure,
   readMergeableState as readMergeableStatePure,
 } from './domain/pull-request-merge-state.js';
+import { evaluatePullRequestCompareResult } from './domain/pull-request-compare-result.js';
 import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
@@ -3656,8 +3657,7 @@ async function isPullRequestBehindCurrentBase(
         basehead,
       });
 
-      const status = toStringTrim(res?.data?.status).toLowerCase();
-      const aheadBy = typeof res?.data?.ahead_by === 'number' ? res.data.ahead_by : 0;
+      const compareResult = evaluatePullRequestCompareResult(res?.data);
 
       log(
         context,
@@ -3665,8 +3665,8 @@ async function isPullRequestBehindCurrentBase(
         {
           prNumber: pr.number,
           basehead,
-          status,
-          aheadBy,
+          status: compareResult.status,
+          aheadBy: compareResult.aheadBy,
           headSha,
           baseHeadSha,
           crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
@@ -3674,8 +3674,8 @@ async function isPullRequestBehindCurrentBase(
         'pull-request behind-current-base compare'
       );
 
-      if (status === 'ahead' || status === 'diverged' || aheadBy > 0) return true;
-      if (status === 'identical') return false;
+      if (compareResult.isBehindCurrentBase === true) return true;
+      if (compareResult.isBehindCurrentBase === false) return false;
     } catch (error: unknown) {
       log(
         context,
