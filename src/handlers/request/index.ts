@@ -91,6 +91,7 @@ import {
   type BranchUpdateErrorClassificationCallbacks,
 } from './domain/branch-update-errors.js';
 import { evaluateBranchUpdateRefreshOutcome } from './domain/branch-update-refresh-outcome.js';
+import { planBranchUpdateRetryAfterRefresh } from './domain/branch-update-retry-plan.js';
 import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
@@ -2322,9 +2323,10 @@ async function requestPullRequestBranchUpdate(
           readMergeableState,
           isPullRequestBehindBase,
         });
-        const { freshHeadSha, freshMergeableState, headChanged, shouldRetry } = refreshOutcome;
+        const { freshHeadSha, freshMergeableState } = refreshOutcome;
+        const retryPlan = planBranchUpdateRetryAfterRefresh(refreshOutcome);
 
-        if (headChanged) {
+        if (retryPlan.action === 'skip-head-changed') {
           log(
             context,
             'info',
@@ -2343,7 +2345,7 @@ async function requestPullRequestBranchUpdate(
           return false;
         }
 
-        if (shouldRetry) {
+        if (retryPlan.action === 'retry') {
           await delayMs(UPDATE_BRANCH_RETRY_DELAY_MS);
 
           try {
