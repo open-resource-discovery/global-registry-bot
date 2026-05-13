@@ -97,6 +97,7 @@ import {
   isPullRequestOpen as isPullRequestOpenPure,
   readMergeableState as readMergeableStatePure,
 } from './domain/pull-request-merge-state.js';
+import { buildPullRequestCompareCandidates } from './domain/pull-request-compare-candidates.js';
 import { evaluatePullRequestCompareResult } from './domain/pull-request-compare-result.js';
 import {
   isCrossRepositoryPullRequest as isCrossRepositoryPullRequestPure,
@@ -3621,11 +3622,14 @@ async function isPullRequestBehindCurrentBase(
   if (!baseHeadSha || baseHeadSha === headSha) return false;
 
   const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const candidates: string[] = [`${headSha}...${baseHeadSha}`];
-
-  if (!sameRepoInfo(headRepoInfo, repoInfo) && headRef) {
-    candidates.push(`${headRepoInfo.owner}:${headRef}...${repoInfo.owner}:${baseRef}`);
-  }
+  const candidates = buildPullRequestCompareCandidates({
+    headSha,
+    baseHeadSha,
+    headRef,
+    headRepoInfo,
+    repoInfo,
+    baseRef,
+  });
 
   for (const basehead of candidates) {
     try {
