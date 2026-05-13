@@ -52,10 +52,6 @@ import {
   type BranchMaintenanceApprovalCallbacks,
 } from './application/branch-maintenance-approval.js';
 import {
-  isUpdateBranchCooldownActive as isUpdateBranchCooldownActiveApplication,
-  markUpdateBranchCooldown as markUpdateBranchCooldownApplication,
-} from './application/branch-update-cooldown.js';
-import {
   runBranchUpdateBenignFailureRetry as runBranchUpdateBenignFailureRetryApplication,
   type BranchUpdateBenignRetryCallbacks,
   type BranchUpdateBenignRetryOutcome,
@@ -2209,14 +2205,6 @@ function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): strin
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}`;
 }
 
-function isUpdateBranchCooldownActive(key: string): boolean {
-  return isUpdateBranchCooldownActiveApplication(key);
-}
-
-function markUpdateBranchCooldown(key: string): void {
-  markUpdateBranchCooldownApplication(key);
-}
-
 async function callPullRequestBranchUpdate(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2279,8 +2267,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
 > {
   return {
     updateBranchInflightKey,
-    isUpdateBranchCooldownActive,
-    markUpdateBranchCooldown,
     runBranchUpdateBenignFailureRetry,
     getErrorMessage,
     getHttpStatus,

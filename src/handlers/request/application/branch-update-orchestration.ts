@@ -9,6 +9,7 @@ import {
   getUpdateBranchInflight,
   setUpdateBranchInflight,
 } from './branch-update-inflight.js';
+import { isUpdateBranchCooldownActive, markUpdateBranchCooldown } from './branch-update-cooldown.js';
 import {
   callPullRequestBranchUpdate,
   type PullRequestBranchUpdateCallContext,
@@ -27,8 +28,6 @@ type BranchUpdateLogLevel = 'info' | 'warn';
 
 export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRequestType> = {
   updateBranchInflightKey: (repoInfo: RepoInfoType, pr: PullRequestType) => string;
-  isUpdateBranchCooldownActive: (key: string) => boolean;
-  markUpdateBranchCooldown: (key: string) => void;
   runBranchUpdateBenignFailureRetry: (
     context: ContextType,
     repoInfo: RepoInfoType,
@@ -56,7 +55,7 @@ export async function requestPullRequestBranchUpdate<
 
   const key = callbacks.updateBranchInflightKey(repoInfo, pr);
 
-  if (callbacks.isUpdateBranchCooldownActive(key)) {
+  if (isUpdateBranchCooldownActive(key)) {
     callbacks.log(
       context,
       'info',
@@ -78,7 +77,7 @@ export async function requestPullRequestBranchUpdate<
     try {
       await callPullRequestBranchUpdate(context, repoInfo, pr.number, headSha);
 
-      callbacks.markUpdateBranchCooldown(key);
+      markUpdateBranchCooldown(key);
 
       callbacks.log(
         context,
@@ -120,7 +119,7 @@ export async function requestPullRequestBranchUpdate<
         }
 
         if (retryOutcome.outcome === 'retry-success') {
-          callbacks.markUpdateBranchCooldown(key);
+          markUpdateBranchCooldown(key);
 
           callbacks.log(
             context,
@@ -138,7 +137,7 @@ export async function requestPullRequestBranchUpdate<
         }
 
         if (retryOutcome.outcome === 'retry-failed') {
-          callbacks.markUpdateBranchCooldown(key);
+          markUpdateBranchCooldown(key);
 
           callbacks.log(
             context,
