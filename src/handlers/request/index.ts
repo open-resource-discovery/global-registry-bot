@@ -95,7 +95,6 @@ import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application
 import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
   isBenignUpdateBranchFailure as isBenignUpdateBranchFailurePure,
-  isManualUpdateBranchFailure as isManualUpdateBranchFailurePure,
   type BranchUpdateErrorClassificationCallbacks,
 } from './domain/branch-update-errors.js';
 import {
@@ -2243,10 +2242,6 @@ function isBenignUpdateBranchFailure(error: unknown): boolean {
   return isBenignUpdateBranchFailurePure(error, buildBranchUpdateErrorClassificationCallbacks());
 }
 
-function isManualUpdateBranchFailure(error: unknown): boolean {
-  return isManualUpdateBranchFailurePure(error, buildBranchUpdateErrorClassificationCallbacks());
-}
-
 function buildBranchUpdateErrorClassificationCallbacks(): BranchUpdateErrorClassificationCallbacks {
   return {
     getHttpStatus,
@@ -2322,7 +2317,6 @@ function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCal
     isUpdateBranchCooldownActive,
     markUpdateBranchCooldown,
     isBenignUpdateBranchFailure,
-    isManualUpdateBranchFailure,
     runBranchUpdateBenignFailureRetry,
     getErrorMessage,
     getHttpStatus,

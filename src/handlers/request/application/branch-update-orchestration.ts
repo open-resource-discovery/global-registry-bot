@@ -1,4 +1,8 @@
 import {
+  isManualUpdateBranchFailure,
+  type BranchUpdateErrorClassificationCallbacks,
+} from '../domain/branch-update-errors.js';
+import {
   callPullRequestBranchUpdate,
   type PullRequestBranchUpdateCallContext,
 } from './pull-request-branch-update-call.js';
@@ -22,7 +26,6 @@ export type BranchUpdateOrchestrationCallbacks<ContextType, RepoInfoType, PullRe
   isUpdateBranchCooldownActive: (key: string) => boolean;
   markUpdateBranchCooldown: (key: string) => void;
   isBenignUpdateBranchFailure: (error: unknown) => boolean;
-  isManualUpdateBranchFailure: (error: unknown) => boolean;
   runBranchUpdateBenignFailureRetry: (
     context: ContextType,
     repoInfo: RepoInfoType,
@@ -186,7 +189,7 @@ export async function requestPullRequestBranchUpdate<
         'pull-request branch update failed'
       );
 
-      if (callbacks.isManualUpdateBranchFailure(error)) {
+      if (isManualUpdateBranchFailure(error, callbacks satisfies BranchUpdateErrorClassificationCallbacks)) {
         await postManualBranchUpdateNotice(context, repoInfo, pr.number, msg);
       }
 
