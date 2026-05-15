@@ -105,6 +105,10 @@ import {
   type DefaultBranchCheckSuiteReevaluationCallbacks,
 } from './application/default-branch-check-suite-reevaluation.js';
 import {
+  updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry as updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication,
+  type DefaultBranchApprovedPrBranchUpdateCallbacks,
+} from './application/default-branch-approved-pr-branch-update.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -2798,153 +2802,18 @@ function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): bool
   return !prBase || prBase === target;
 }
 
-async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason = 'default-branch-push'
-): Promise<boolean> {
-  if (await isSequentialRegistryPrActiveBlocking(context, repoInfo)) {
-    return false;
-  }
-
-  const openPrs = await listOpenPullRequests(context, repoInfo);
-
-  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
-    const headSha = toStringTrim(pr.head?.sha);
-
-    if (!headSha) continue;
-    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
-    if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) continue;
-
-    try {
-      const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
-
-      if (!changedRegistryFiles.length) {
-        log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: no registry yaml files changed');
-        continue;
-      }
-
-      if (!isSnapshotManagedRequestPr(pr)) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: pr.number,
-            reason,
-          },
-          'skip branch update: direct registry PR handled by sequential queue'
-        );
-        continue;
-      }
-
-      const approved = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, pr);
-      if (!approved) {
-        log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: PR is not approved');
-        continue;
-      }
-
-      const freshPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-update-branch`);
-
-      if (!isPullRequestOpen(freshPr)) continue;
-
-      if (isPullRequestDirty(freshPr)) {
-        log(
-          context,
-          'warn',
-          {
-            prNumber: freshPr.number,
-            mergeableState: readMergeableState(freshPr),
-            reason,
-          },
-          'skip branch update: PR has merge conflicts'
-        );
-        continue;
-      }
-
-      const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
-
-      if (!mustUpdate) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: freshPr.number,
-            mergeable: freshPr.mergeable,
-            mergeableState: readMergeableState(freshPr),
-            reason,
-          },
-          'skip branch update: PR is not behind current base'
-        );
-        continue;
-      }
-
-      const requested = await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
-
-      if (requested) {
-        return true;
-      }
-
-      markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'approved-branch-update-request-failed');
-    } catch (error: unknown) {
-      log(
-        context,
-        'warn',
-        {
-          err: getErrorMessage(error),
-          prNumber: pr.number,
-          reason,
-        },
-        'failed to update approved pull request branch after default branch push'
-      );
-
-      markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, 'approved-branch-update-exception');
-    }
-  }
-
-  return false;
-}
-
 async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   baseBranch: string
 ): Promise<boolean> {
-  const requested = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
+  return await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication(
     context,
     repoInfo,
     baseBranch,
-    'default-branch-push'
+    DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS,
+    buildDefaultBranchApprovedPrBranchUpdateCallbacks()
   );
-
-  if (requested) return true;
-
-  const retryTimer = setTimeout(() => {
-    void updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
-      context,
-      repoInfo,
-      baseBranch,
-      'default-branch-push:delayed-retry'
-    ).catch((error: unknown) => {
-      log(
-        context,
-        'warn',
-        {
-          err: getErrorMessage(error),
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          baseBranch,
-        },
-        'failed to run delayed approved pull request branch update retry'
-      );
-    });
-  }, DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
-
-  if (retryTimer && typeof (retryTimer as { unref?: () => void }).unref === 'function') {
-    retryTimer.unref();
-  }
-
-  return false;
 }
 
 function normalizeRepoPath(path: unknown): string {
@@ -3717,6 +3586,30 @@ async function readRegistryDocForApproval(
   } catch {
     return null;
   }
+}
+
+function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchApprovedPrBranchUpdateCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike
+> {
+  return {
+    isSequentialRegistryPrActiveBlocking,
+    listOpenPullRequests,
+    isSequentialRegistryPrHeadSkipped,
+    listChangedYamlFilesForPrWithFallback,
+    isSnapshotManagedRequestPr,
+    isPullRequestApprovedForBranchMaintenance,
+    waitForPullRequestMergeability,
+    isPullRequestOpen,
+    isPullRequestDirty,
+    readMergeableState,
+    shouldUpdatePullRequestBranch,
+    requestPullRequestBranchUpdate,
+    markSequentialRegistryPrHeadSkipped,
+    getErrorMessage,
+    log,
+  };
 }
 
 function buildDirectPrChangedResourceApprovalCallbacks(): DirectPrChangedResourceApprovalCallbacks<
