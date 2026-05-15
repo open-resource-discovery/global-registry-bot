@@ -53,7 +53,7 @@ export async function listAllCheckRunsForSuite<ContextType, CheckRunType extends
   owner: string,
   repo: string,
   checkSuiteId: number,
-  callbacks: CheckSuiteAnnotationsCallbacks<ContextType, CheckRunType, CheckRunAnnotationLike>
+  callbacks: CheckSuiteAnnotationsCallbacks<ContextType, CheckRunType>
 ): Promise<CheckRunType[]> {
   const all: CheckRunType[] = [];
   let page = 1;
@@ -90,7 +90,7 @@ export async function listAllCheckRunAnnotations<
   owner: string,
   repo: string,
   checkRunId: number,
-  callbacks: CheckSuiteAnnotationsCallbacks<ContextType, CheckRunType, CheckRunAnnotationType>
+  callbacks: CheckSuiteAnnotationsCallbacks<ContextType, CheckRunType>
 ): Promise<CheckRunAnnotationType[]> {
   const all: CheckRunAnnotationType[] = [];
   let page = 1;
@@ -126,7 +126,7 @@ export async function readFirstRegistryValidationArtifactsForSuiteRuns<
   owner: string,
   repo: string,
   runsForSuite: CheckRunType[],
-  callbacks: CheckSuiteAnnotationsCallbacks<ContextType, CheckRunType, CheckRunAnnotationType>
+  callbacks: CheckSuiteAnnotationsCallbacks<ContextType, CheckRunType>
 ): Promise<CheckSuiteRegistryValidationArtifacts | null> {
   for (const run of runsForSuite) {
     const runId = callbacks.readCheckRunId(run);

@@ -321,14 +321,6 @@ type CheckRunLike = {
   pull_requests?: CheckRunPullRequestRef[] | null;
 };
 
-type CheckRunAnnotationLike = {
-  path?: string | null;
-  message?: string | null;
-  title?: string | null;
-  annotation_level?: string | null;
-  raw_details?: string | null;
-};
-
 type GitTreeEntryLike = {
   path?: string | null;
   type?: string | null;
@@ -847,8 +839,7 @@ async function listAllCheckRunsForSuite(
 
 function buildCheckSuiteAnnotationsCallbacks(): CheckSuiteAnnotationsCallbacks<
   BotContext<RequestEvents>,
-  CheckRunLike,
-  CheckRunAnnotationLike
+  CheckRunLike
 > {
   return {
     isPlainObject,
