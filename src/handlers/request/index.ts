@@ -80,6 +80,14 @@ import {
   type AutoMergeTriggerCallbacks,
 } from './application/auto-merge-trigger.js';
 import {
+  readCheckRunFromPayload as readCheckRunFromPayloadApplication,
+  readCheckRunPrNumbers as readCheckRunPrNumbersApplication,
+  readCheckSuiteFromPayload as readCheckSuiteFromPayloadApplication,
+  readCheckSuiteId as readCheckSuiteIdApplication,
+  resolveCheckSuitePrNumbers as resolveCheckSuitePrNumbersApplication,
+  type CheckPrResolutionCallbacks,
+} from './application/check-pr-resolution.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -780,25 +788,11 @@ type CheckSuiteLike = {
 };
 
 function readCheckSuiteFromPayload(payload: unknown): CheckSuiteLike | null {
-  if (!isPlainObject(payload)) return null;
-  const suite = payload['check_suite'];
-  if (!isPlainObject(suite)) return null;
-  return suite as unknown as CheckSuiteLike;
+  return readCheckSuiteFromPayloadApplication<CheckSuiteLike>(payload, buildCheckPrResolutionCallbacks());
 }
 
 function readCheckSuiteId(suite: CheckSuiteLike | null): number | null {
-  const id = suite?.id;
-  return typeof id === 'number' && Number.isFinite(id) ? id : null;
-}
-
-function readCheckSuitePrNumbers(suite: CheckSuiteLike | null): number[] {
-  const prs = Array.isArray(suite?.pull_requests) ? suite?.pull_requests : [];
-  const out: number[] = [];
-  for (const pr of prs) {
-    const n = pr?.number;
-    if (typeof n === 'number' && Number.isFinite(n)) out.push(n);
-  }
-  return out;
+  return readCheckSuiteIdApplication(suite);
 }
 
 async function resolveCheckSuitePrNumbers(
@@ -807,69 +801,13 @@ async function resolveCheckSuitePrNumbers(
   suite: CheckSuiteLike | null,
   headSha: string
 ): Promise<number[]> {
-  const direct = readCheckSuitePrNumbers(suite);
-  if (direct.length) return Array.from(new Set(direct));
-
-  const sha = toStringTrim(headSha);
-  if (!sha) return [];
-
-  try {
-    const res = await context.octokit.repos.listPullRequestsAssociatedWithCommit({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      commit_sha: sha,
-      per_page: 100,
-    });
-
-    const data = (res as unknown as { data?: unknown }).data;
-    const items = Array.isArray(data) ? data : [];
-
-    const fromCommit = items
-      .map((pr) => {
-        if (!isPlainObject(pr)) return null;
-
-        const state = toStringTrim(pr['state']).toLowerCase();
-        const number = pr['number'];
-
-        if (state !== 'open') return null;
-        if (typeof number !== 'number' || !Number.isFinite(number)) return null;
-
-        return number;
-      })
-      .filter((n): n is number => typeof n === 'number');
-
-    if (fromCommit.length) return Array.from(new Set(fromCommit));
-  } catch {
-    // ignore and fall through to the repo scan fallback
-  }
-
-  const matches: number[] = [];
-  let page = 1;
-
-  while (true) {
-    const { data } = await context.octokit.pulls.list({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      state: 'open',
-      per_page: 100,
-      page,
-    });
-
-    const prs = (data || []) as unknown as PullRequestLike[];
-    if (!prs.length) break;
-
-    for (const pr of prs) {
-      if (toStringTrim(pr.head?.sha) !== sha) continue;
-      if (typeof pr.number !== 'number' || !Number.isFinite(pr.number)) continue;
-      matches.push(pr.number);
-    }
-
-    if (prs.length < 100) break;
-    page += 1;
-    if (page > 20) break;
-  }
-
-  return Array.from(new Set(matches));
+  return await resolveCheckSuitePrNumbersApplication(
+    context,
+    repoInfo,
+    suite,
+    headSha,
+    buildCheckPrResolutionCallbacks()
+  );
 }
 
 async function listAllCheckRunsForSuite(
@@ -1344,24 +1282,40 @@ const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
 const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
 
 function readCheckRunFromPayload(payload: unknown): CheckRunLike | null {
-  if (!isPlainObject(payload)) return null;
-
-  const run = payload['check_run'];
-  if (!isPlainObject(run)) return null;
-
-  return run as unknown as CheckRunLike;
+  return readCheckRunFromPayloadApplication<CheckRunLike>(payload, buildCheckPrResolutionCallbacks());
 }
 
 function readCheckRunPrNumbers(run: CheckRunLike | null): number[] {
-  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
-  const out: number[] = [];
+  return readCheckRunPrNumbersApplication(run);
+}
 
-  for (const pr of prs) {
-    const n = pr?.number;
-    if (typeof n === 'number' && Number.isFinite(n)) out.push(n);
-  }
-
-  return Array.from(new Set(out));
+function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike
+> {
+  return {
+    isPlainObject,
+    listPullRequestsAssociatedWithCommit: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        commit_sha: string;
+        per_page: number;
+      }
+    ): Promise<{ data?: unknown }> => await context.octokit.repos.listPullRequestsAssociatedWithCommit(args),
+    listPulls: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        state: 'open';
+        per_page: number;
+        page: number;
+      }
+    ): Promise<{ data?: PullRequestLike[] }> => await context.octokit.pulls.list(args),
+  };
 }
 
 function extractResourceNameFromForm(formData: FormData, template: TemplateLike): string {
