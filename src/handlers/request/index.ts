@@ -104,6 +104,7 @@ import {
   resolvePullRequestHeadRepoInfo as resolvePullRequestHeadRepoInfoPure,
   sameRepoInfo as sameRepoInfoPure,
 } from './domain/pull-request-repo-info.js';
+import { readBranchHeadShaFromResponse } from './domain/branch-head-response.js';
 import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
@@ -3291,7 +3292,15 @@ async function readBranchHeadSha(
       branch,
     });
 
-    return toStringTrim((res as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha);
+    return readBranchHeadShaFromResponse(
+      res as unknown as {
+        data?: {
+          commit?: {
+            sha?: string | null;
+          };
+        };
+      }
+    );
   } catch (error: unknown) {
     log(
       context,
