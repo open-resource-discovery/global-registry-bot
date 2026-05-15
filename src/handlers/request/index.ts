@@ -93,6 +93,10 @@ import {
   type CheckSuiteAnnotationsCallbacks,
 } from './application/check-suite-annotations.js';
 import {
+  postCheckSuiteRegistryValidationComments as postCheckSuiteRegistryValidationCommentsApplication,
+  type CheckSuiteCiCommentingCallbacks,
+} from './application/check-suite-ci-commenting.js';
+import {
   maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
   type DefaultBranchCheckSuiteReevaluationCallbacks,
 } from './application/default-branch-check-suite-reevaluation.js';
@@ -1310,6 +1314,51 @@ function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<BotContex
       }
     ): Promise<{ data?: PullRequestLike[] }> => await context.octokit.pulls.list(args),
   };
+}
+
+function buildCheckSuiteCiCommentingCallbacks(): CheckSuiteCiCommentingCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  RegistryValidationMachineReadableSource
+> {
+  return {
+    collapseBotCommentsByPrefix,
+    buildRegistryValidationAggregatePrCommentBody,
+    postOnce,
+    onBeforePost: (
+      context: BotContext<RequestEvents>,
+      args: { prNumber: number; files: string[]; bodyLength: number }
+    ): void => {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          { prNumber: args.prNumber, files: args.files, bodyLen: args.bodyLength },
+          'dbg:checks:posting PR comment'
+        );
+      }
+    },
+  };
+}
+
+async function postCheckSuiteRegistryValidationComments(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumbers: number[],
+  artifacts: {
+    byFile: Map<string, string[]>;
+    machineReadableSources: RegistryValidationMachineReadableSource[];
+  },
+  minimizeTag: string
+): Promise<void> {
+  await postCheckSuiteRegistryValidationCommentsApplication(
+    context,
+    repoInfo,
+    prNumbers,
+    artifacts,
+    minimizeTag,
+    buildCheckSuiteCiCommentingCallbacks()
+  );
 }
 
 function extractResourceNameFromForm(formData: FormData, template: TemplateLike): string {
@@ -7070,45 +7119,13 @@ export default function requestHandler(app: Probot): void {
       );
       if (!registryValidationArtifacts) return;
 
-      const { byFile, machineReadableSources } = registryValidationArtifacts;
-
-      const currentCiTags = ['nsreq:ci-validation'];
-
-      for (const prNumber of prNumbers) {
-        await collapseBotCommentsByPrefix(
-          context,
-          { owner: ownerLogin, repo: repoName, issue_number: prNumber },
-          {
-            tagPrefix: 'nsreq:ci-validation',
-            keepTags: currentCiTags,
-            collapseBody: 'Validation issues resolved.',
-            classifier: 'RESOLVED',
-          }
-        );
-      }
-
-      const body = await buildRegistryValidationAggregatePrCommentBody(
+      await postCheckSuiteRegistryValidationComments(
         context,
         { owner: ownerLogin, repo: repoName },
-        byFile,
-        machineReadableSources
+        prNumbers,
+        registryValidationArtifacts,
+        'nsreq:ci-validation'
       );
-      if (!body) return;
-
-      for (const prNumber of prNumbers) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            { prNumber, files: Array.from(byFile.keys()), bodyLen: body.length },
-            'dbg:checks:posting PR comment'
-          );
-        }
-
-        await postOnce(context, { owner: ownerLogin, repo: repoName, issue_number: prNumber }, body, {
-          minimizeTag: 'nsreq:ci-validation',
-        });
-      }
 
       return;
     }
