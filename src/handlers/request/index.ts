@@ -105,6 +105,10 @@ import {
   type DefaultBranchCheckSuiteReevaluationCallbacks,
 } from './application/default-branch-check-suite-reevaluation.js';
 import {
+  reevaluateOpenDirectPullRequestsAfterDefaultBranchPush as reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication,
+  type DefaultBranchDirectPrReevaluationCallbacks,
+} from './application/default-branch-direct-pr-reevaluation.js';
+import {
   updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry as updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication,
   type DefaultBranchApprovedPrBranchUpdateCallbacks,
 } from './application/default-branch-approved-pr-branch-update.js';
@@ -2742,35 +2746,13 @@ async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
   baseBranch: string,
   reason = 'default-branch-push:direct-pr-reevaluation'
 ): Promise<SequentialRegistryPrResult> {
-  log(
+  return await reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication(
     context,
-    'info',
-    {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      baseBranch,
-      reason,
-      hooksSource: context.resourceBotHooksSource,
-    },
-    'direct-pr-reeval:start'
+    repoInfo,
+    baseBranch,
+    buildDefaultBranchDirectPrReevaluationCallbacks(),
+    reason
   );
-
-  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
-
-  log(
-    context,
-    'info',
-    {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      baseBranch,
-      reason,
-      ...result,
-    },
-    'direct-pr-reeval:done'
-  );
-
-  return result;
 }
 
 function isDefaultBranchPush(payload: unknown): boolean {
@@ -3608,6 +3590,17 @@ function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchAppro
     requestPullRequestBranchUpdate,
     markSequentialRegistryPrHeadSkipped,
     getErrorMessage,
+    log,
+  };
+}
+
+function buildDefaultBranchDirectPrReevaluationCallbacks(): DefaultBranchDirectPrReevaluationCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  SequentialRegistryPrResult
+> {
+  return {
+    runOneSequentialDirectRegistryPrMaintenance,
     log,
   };
 }
