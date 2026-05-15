@@ -65,14 +65,15 @@ import {
   type BranchUpdateSequentialHandoffCallbacks,
 } from './application/branch-update-sequential-handoff.js';
 import {
+  runOneSequentialDirectRegistryPrMaintenance as runOneSequentialDirectRegistryPrMaintenanceApplication,
+  type SequentialRegistryPrQueueCallbacks,
+} from './application/sequential-registry-pr-queue.js';
+import {
   clearSequentialRegistryPrActive,
-  clearSequentialRegistryPrQueueInflight,
   getSequentialRegistryPrActive,
-  getSequentialRegistryPrQueueInflight,
   isSequentialRegistryPrHeadSkipped,
   markSequentialRegistryPrActive as markSequentialRegistryPrActiveState,
   markSequentialRegistryPrHeadSkipped as markSequentialRegistryPrHeadSkippedState,
-  setSequentialRegistryPrQueueInflight,
   type SequentialRegistryPrActive as SequentialRegistryPrActiveState,
 } from './application/sequential-registry-pr-state.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
@@ -2205,14 +2206,6 @@ type SequentialRegistryPrResult = {
   blockedByActive: boolean;
 };
 
-type SequentialRegistryPrCandidate = {
-  pr: PullRequestLike;
-  freshPr: PullRequestLike;
-  changedRegistryFiles: string[];
-  mustUpdate: boolean;
-  approvedForUpdate: boolean;
-};
-
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -3582,134 +3575,30 @@ async function advanceSequentialRegistryPrQueueAfterTerminalState(
   await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
 }
 
-async function collectSequentialDirectRegistryPrCandidates(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason: string
-): Promise<SequentialRegistryPrCandidate[]> {
-  const openPrs = await listOpenPullRequests(context, repoInfo);
-  const candidates: SequentialRegistryPrCandidate[] = [];
-
-  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
-    const headSha = toStringTrim(pr.head?.sha);
-    const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
-    const snapshotManaged = isSnapshotManagedRequestPr(pr);
-
-    const baseLog = {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      prNumber: pr.number,
-      title: toStringTrim(pr.title),
-      headSha,
-      headRef: toStringTrim(pr.head?.ref),
-      prBase: toStringTrim(pr.base?.ref),
-      baseBranch,
-      linkedIssueNumber,
-      snapshotManaged,
-      reason,
-    };
-
-    if (snapshotManaged) {
-      log(context, 'info', { ...baseLog, skipReason: 'snapshot-managed-request-pr' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    if (!headSha) {
-      log(context, 'info', { ...baseLog, skipReason: 'missing-head-sha' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    if (!pullRequestTargetsBranch(pr, baseBranch)) {
-      log(context, 'info', { ...baseLog, skipReason: 'different-base-branch' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) {
-      log(context, 'info', { ...baseLog, skipReason: 'head-temporarily-skipped' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
-
-    if (!changedRegistryFiles.length) {
-      log(
-        context,
-        'info',
-        {
-          ...baseLog,
-          changedRegistryFiles,
-          skipReason: 'no-registry-yaml-files-changed',
-        },
-        'direct-pr-reeval:skip'
-      );
-      continue;
-    }
-
-    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-    const freshHeadSha = toStringTrim(freshPr.head?.sha);
-
-    if (!isPullRequestOpen(freshPr)) {
-      log(
-        context,
-        'info',
-        {
-          ...baseLog,
-          freshHeadSha,
-          changedRegistryFiles,
-          skipReason: 'pr-not-open',
-        },
-        'direct-pr-reeval:skip'
-      );
-      continue;
-    }
-
-    if (isPullRequestDirty(freshPr)) {
-      log(
-        context,
-        'warn',
-        {
-          ...baseLog,
-          freshHeadSha,
-          changedRegistryFiles,
-          mergeableState: readMergeableState(freshPr),
-          skipReason: 'pr-has-merge-conflicts',
-        },
-        'direct-pr-reeval:skip'
-      );
-      continue;
-    }
-
-    const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
-    const approvedForUpdate = mustUpdate
-      ? await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr)
-      : false;
-
-    log(
-      context,
-      'info',
-      {
-        ...baseLog,
-        freshHeadSha,
-        changedRegistryFiles,
-        mergeable: freshPr.mergeable,
-        mergeableState: readMergeableState(freshPr),
-        mustUpdate,
-        approvedForUpdate,
-      },
-      'direct-pr-reeval:update-check'
-    );
-
-    candidates.push({
-      pr,
-      freshPr,
-      changedRegistryFiles,
-      mustUpdate,
-      approvedForUpdate,
-    });
-  }
-
-  return candidates;
+function buildSequentialRegistryPrQueueCallbacks(): SequentialRegistryPrQueueCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike,
+  HeadGreenEvaluation
+> {
+  return {
+    isSequentialRegistryPrActiveBlocking,
+    listOpenPullRequests,
+    parseLinkedIssueNumberFromPr,
+    isSnapshotManagedRequestPr,
+    pullRequestTargetsBranch,
+    isSequentialRegistryPrHeadSkipped,
+    listChangedYamlFilesForPrWithFallback,
+    readFreshPullRequest,
+    shouldUpdatePullRequestBranch,
+    isPullRequestApprovedForBranchMaintenance,
+    requestPullRequestBranchUpdate,
+    markSequentialRegistryPrActive,
+    markSequentialRegistryPrHeadSkipped,
+    evaluateHeadGreenForApprovalReevaluation,
+    processPullRequestForAutoMerge,
+    log,
+  };
 }
 
 async function runOneSequentialDirectRegistryPrMaintenance(
@@ -3718,98 +3607,13 @@ async function runOneSequentialDirectRegistryPrMaintenance(
   baseBranch: string,
   reason: string
 ): Promise<SequentialRegistryPrResult> {
-  const existing = getSequentialRegistryPrQueueInflight<SequentialRegistryPrResult, RepoInfo>(repoInfo);
-
-  if (existing) return await existing;
-
-  const pending = (async (): Promise<SequentialRegistryPrResult> => {
-    if (await isSequentialRegistryPrActiveBlocking(context, repoInfo)) {
-      return { updated: false, processed: false, blockedByActive: true };
-    }
-
-    const candidates = await collectSequentialDirectRegistryPrCandidates(context, repoInfo, baseBranch, reason);
-
-    for (const candidate of candidates.filter((item) => item.mustUpdate)) {
-      const requested = await requestPullRequestBranchUpdate(
-        context,
-        repoInfo,
-        candidate.freshPr,
-        candidate.approvedForUpdate
-          ? `${reason}:sequential-direct-pr-update-approved`
-          : `${reason}:sequential-direct-pr-refresh-stale`
-      );
-
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          prNumber: candidate.freshPr.number,
-          title: toStringTrim(candidate.freshPr.title),
-          headSha: toStringTrim(candidate.freshPr.head?.sha),
-          headRef: toStringTrim(candidate.freshPr.head?.ref),
-          baseBranch,
-          changedRegistryFiles: candidate.changedRegistryFiles,
-          requested,
-          reason,
-        },
-        'direct-pr-reeval:update-before-approval-result'
-      );
-
-      if (requested) {
-        markSequentialRegistryPrActive(context, repoInfo, candidate.freshPr, reason);
-        return { updated: true, processed: true, blockedByActive: false };
-      }
-
-      markSequentialRegistryPrHeadSkipped(context, repoInfo, candidate.freshPr, 'branch-update-request-failed');
-    }
-
-    for (const candidate of candidates.filter((item) => !item.mustUpdate)) {
-      const headSha = toStringTrim(candidate.freshPr.head?.sha);
-      const greenResult = headSha
-        ? await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha)
-        : {
-            green: false,
-            reason: 'missing-head-sha',
-            latestRuns: [],
-            blockingRuns: [],
-          };
-
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          prNumber: candidate.freshPr.number,
-          headSha,
-          baseBranch,
-          changedRegistryFiles: candidate.changedRegistryFiles,
-          green: greenResult.green,
-          greenReason: greenResult.reason,
-          blockingRuns: greenResult.blockingRuns,
-          latestRuns: greenResult.latestRuns.slice(0, 30),
-          reason,
-        },
-        'direct-pr-reeval:head-green'
-      );
-
-      if (!greenResult.green) {
-        continue;
-      }
-
-      await processPullRequestForAutoMerge(context, repoInfo, candidate.freshPr);
-      return { updated: false, processed: true, blockedByActive: false };
-    }
-
-    return { updated: false, processed: false, blockedByActive: false };
-  })().finally(() => {
-    clearSequentialRegistryPrQueueInflight(repoInfo);
-  });
-
-  setSequentialRegistryPrQueueInflight(repoInfo, pending);
-  return await pending;
+  return await runOneSequentialDirectRegistryPrMaintenanceApplication(
+    context,
+    repoInfo,
+    baseBranch,
+    reason,
+    buildSequentialRegistryPrQueueCallbacks()
+  );
 }
 
 async function markFailedRegistryPrHeadsForSha(
