@@ -88,6 +88,11 @@ import {
   type CheckPrResolutionCallbacks,
 } from './application/check-pr-resolution.js';
 import {
+  listAllCheckRunsForSuite as listAllCheckRunsForSuiteApplication,
+  readFirstRegistryValidationArtifactsForSuiteRuns as readFirstRegistryValidationArtifactsForSuiteRunsApplication,
+  type CheckSuiteAnnotationsCallbacks,
+} from './application/check-suite-annotations.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -166,11 +171,9 @@ import { readIssueBodyForProcessing } from './domain/issue-body-processing.js';
 import {
   buildRegistryValidationAggregateBody,
   buildRegistryValidationCommentHeading,
-  collectRegistryValidationArtifacts,
   extractFieldFromMsg,
   filterMachineReadableSourcesForFile,
   filterRegistryValidationEntries,
-  isRegistryValidateAnnotation,
   normalizeMsg,
   type RegistryValidationMachineReadableSource,
 } from './domain/registry-validation-annotations.js';
@@ -368,6 +371,19 @@ type EffectiveConstants = {
 };
 
 type SchemaFieldAliasLookup = Map<string, string>;
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+type LoggerFn = (this: unknown, obj: unknown, msg?: string) => void;
+type LoggerLike = Partial<Record<LogLevel, LoggerFn>>;
+
+const log = (context: { log?: LoggerLike } | undefined, level: LogLevel, obj: unknown, msg: string): void => {
+  const logger = context?.log;
+  const fn = logger?.[level];
+
+  if (typeof fn === 'function') {
+    fn.call(logger, obj, msg);
+  }
+};
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
 
@@ -816,61 +832,61 @@ async function listAllCheckRunsForSuite(
   repo: string,
   checkSuiteId: number
 ): Promise<CheckRunLike[]> {
-  const all: CheckRunLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await context.octokit.checks.listForSuite({
-      owner,
-      repo,
-      check_suite_id: checkSuiteId,
-      per_page: 100,
-      page,
-    });
-
-    const data = (res as unknown as { data?: unknown }).data;
-    const runs = isPlainObject(data) && Array.isArray(data['check_runs']) ? (data['check_runs'] as unknown[]) : [];
-
-    all.push(...(runs as unknown as CheckRunLike[]));
-
-    if (runs.length < 100) break;
-    page += 1;
-    if (page > 20) break; // safety cap
-  }
-
-  return all;
+  return await listAllCheckRunsForSuiteApplication(
+    context,
+    owner,
+    repo,
+    checkSuiteId,
+    buildCheckSuiteAnnotationsCallbacks()
+  );
 }
 
-async function listAllCheckRunAnnotations(
-  context: BotContext<RequestEvents>,
-  owner: string,
-  repo: string,
-  checkRunId: number
-): Promise<CheckRunAnnotationLike[]> {
-  const all: CheckRunAnnotationLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await context.octokit.checks.listAnnotations({
-      owner,
-      repo,
-      check_run_id: checkRunId,
-      per_page: 100,
-      page,
-    });
-
-    const data = (res as unknown as { data?: unknown }).data;
-    const items = Array.isArray(data) ? (data as unknown[]) : [];
-
-    all.push(...(items as unknown as CheckRunAnnotationLike[]));
-
-    if (items.length < 100) break;
-    page += 1;
-
-    if (page > 20) break; // safety cap
-  }
-
-  return all;
+function buildCheckSuiteAnnotationsCallbacks(): CheckSuiteAnnotationsCallbacks<
+  BotContext<RequestEvents>,
+  CheckRunLike,
+  CheckRunAnnotationLike
+> {
+  return {
+    isPlainObject,
+    readCheckRunId,
+    listCheckRunsForSuite: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        check_suite_id: number;
+        per_page: number;
+        page: number;
+      }
+    ): Promise<{ data?: unknown }> => await context.octokit.checks.listForSuite(args),
+    listCheckRunAnnotations: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        check_run_id: number;
+        per_page: number;
+        page: number;
+      }
+    ): Promise<{ data?: unknown }> => await context.octokit.checks.listAnnotations(args),
+    onCheckRunAnnotationsLoaded: (
+      context: BotContext<RequestEvents>,
+      args: {
+        checkRunId: number;
+        annotationsTotal: number;
+        relevant: number;
+      }
+    ): void => {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          { checkRunId: args.checkRunId, annotationsTotal: args.annotationsTotal, relevant: args.relevant },
+          'dbg:checks:annotations loaded (suite run)'
+        );
+      }
+    },
+  };
 }
 
 const normalizeKey = (s: unknown): string => {
@@ -927,19 +943,6 @@ async function buildRegistryValidationAggregatePrCommentBody(
 
 ${buildMachineReadableMetadataBlock(machineReadable)}`;
 }
-
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type LoggerFn = (this: unknown, obj: unknown, msg?: string) => void;
-type LoggerLike = Partial<Record<LogLevel, LoggerFn>>;
-
-const log = (context: { log?: LoggerLike } | undefined, level: LogLevel, obj: unknown, msg: string): void => {
-  const logger = context?.log;
-  const fn = logger?.[level];
-
-  if (typeof fn === 'function') {
-    fn.call(logger, obj, msg);
-  }
-};
 
 const labelName = (l: unknown): string => {
   if (typeof l === 'string') return l;
@@ -7056,70 +7059,56 @@ export default function requestHandler(app: Probot): void {
       }
 
       // Find the first run that contains registry-validate annotations and post from it.
-      for (const r of runsForSuite) {
-        const runId = readCheckRunId(r);
-        if (!runId) continue;
+      const registryValidationArtifacts = await readFirstRegistryValidationArtifactsForSuiteRunsApplication(
+        context,
+        ownerLogin,
+        repoName,
+        runsForSuite,
+        buildCheckSuiteAnnotationsCallbacks()
+      );
+      if (!registryValidationArtifacts) return;
 
-        let annotations: CheckRunAnnotationLike[] = [];
-        try {
-          annotations = await listAllCheckRunAnnotations(context, ownerLogin, repoName, runId);
-        } catch {
-          continue;
-        }
+      const { byFile, machineReadableSources } = registryValidationArtifacts;
 
-        const relevant = annotations.filter(isRegistryValidateAnnotation);
+      const currentCiTags = ['nsreq:ci-validation'];
+
+      for (const prNumber of prNumbers) {
+        await collapseBotCommentsByPrefix(
+          context,
+          { owner: ownerLogin, repo: repoName, issue_number: prNumber },
+          {
+            tagPrefix: 'nsreq:ci-validation',
+            keepTags: currentCiTags,
+            collapseBody: 'Validation issues resolved.',
+            classifier: 'RESOLVED',
+          }
+        );
+      }
+
+      const body = await buildRegistryValidationAggregatePrCommentBody(
+        context,
+        { owner: ownerLogin, repo: repoName },
+        byFile,
+        machineReadableSources
+      );
+      if (!body) return;
+
+      for (const prNumber of prNumbers) {
         if (DBG) {
           log(
             context,
             'debug',
-            { checkRunId: runId, annotationsTotal: annotations.length, relevant: relevant.length },
-            'dbg:checks:annotations loaded (suite run)'
-          );
-        }
-        if (!relevant.length) continue;
-
-        const { byFile, machineReadableSources } = collectRegistryValidationArtifacts(relevant);
-
-        const currentCiTags = ['nsreq:ci-validation'];
-
-        for (const prNumber of prNumbers) {
-          await collapseBotCommentsByPrefix(
-            context,
-            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
-            {
-              tagPrefix: 'nsreq:ci-validation',
-              keepTags: currentCiTags,
-              collapseBody: 'Validation issues resolved.',
-              classifier: 'RESOLVED',
-            }
+            { prNumber, files: Array.from(byFile.keys()), bodyLen: body.length },
+            'dbg:checks:posting PR comment'
           );
         }
 
-        const body = await buildRegistryValidationAggregatePrCommentBody(
-          context,
-          { owner: ownerLogin, repo: repoName },
-          byFile,
-          machineReadableSources
-        );
-        if (!body) break;
-
-        for (const prNumber of prNumbers) {
-          if (DBG) {
-            log(
-              context,
-              'debug',
-              { prNumber, files: Array.from(byFile.keys()), bodyLen: body.length },
-              'dbg:checks:posting PR comment'
-            );
-          }
-
-          await postOnce(context, { owner: ownerLogin, repo: repoName, issue_number: prNumber }, body, {
-            minimizeTag: 'nsreq:ci-validation',
-          });
-        }
-
-        break; // avoid spamming multiple runs/suite events
+        await postOnce(context, { owner: ownerLogin, repo: repoName, issue_number: prNumber }, body, {
+          minimizeTag: 'nsreq:ci-validation',
+        });
       }
+
+      return;
     }
   );
 
