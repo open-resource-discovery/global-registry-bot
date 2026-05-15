@@ -1289,11 +1289,7 @@ function readCheckRunPrNumbers(run: CheckRunLike | null): number[] {
   return readCheckRunPrNumbersApplication(run);
 }
 
-function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike
-> {
+function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<BotContext<RequestEvents>, PullRequestLike> {
   return {
     isPlainObject,
     listPullRequestsAssociatedWithCommit: async (

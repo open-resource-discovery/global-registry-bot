@@ -47,7 +47,7 @@ export type CheckPrResolutionCallbacks<ContextType, PullRequestType extends Pull
 
 export function readCheckRunFromPayload<CheckRunType extends CheckRunLikeBase>(
   payload: unknown,
-  callbacks: Pick<CheckPrResolutionCallbacks<unknown, RepoInfoBase, PullRequestLikeBase>, 'isPlainObject'>
+  callbacks: Pick<CheckPrResolutionCallbacks<unknown, PullRequestLikeBase>, 'isPlainObject'>
 ): CheckRunType | null {
   if (!callbacks.isPlainObject(payload)) return null;
 
@@ -71,7 +71,7 @@ export function readCheckRunPrNumbers<CheckRunType extends CheckRunLikeBase>(run
 
 export function readCheckSuiteFromPayload<CheckSuiteType extends CheckSuiteLikeBase>(
   payload: unknown,
-  callbacks: Pick<CheckPrResolutionCallbacks<unknown, RepoInfoBase, PullRequestLikeBase>, 'isPlainObject'>
+  callbacks: Pick<CheckPrResolutionCallbacks<unknown, PullRequestLikeBase>, 'isPlainObject'>
 ): CheckSuiteType | null {
   if (!callbacks.isPlainObject(payload)) return null;
   const suite = payload['check_suite'];
@@ -108,7 +108,7 @@ export async function resolveCheckSuitePrNumbers<
   repoInfo: RepoInfoType,
   suite: CheckSuiteType | null,
   headSha: string,
-  callbacks: CheckPrResolutionCallbacks<ContextType, RepoInfoType, PullRequestType>
+  callbacks: CheckPrResolutionCallbacks<ContextType, PullRequestType>
 ): Promise<number[]> {
   const direct = readCheckSuitePrNumbers(suite);
   if (direct.length) return Array.from(new Set(direct));
