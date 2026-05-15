@@ -64,6 +64,17 @@ import {
   requestPullRequestBranchUpdateRespectingSequentialRegistryQueue as requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication,
   type BranchUpdateSequentialHandoffCallbacks,
 } from './application/branch-update-sequential-handoff.js';
+import {
+  clearSequentialRegistryPrActive,
+  clearSequentialRegistryPrQueueInflight,
+  getSequentialRegistryPrActive,
+  getSequentialRegistryPrQueueInflight,
+  isSequentialRegistryPrHeadSkipped,
+  markSequentialRegistryPrActive as markSequentialRegistryPrActiveState,
+  markSequentialRegistryPrHeadSkipped as markSequentialRegistryPrHeadSkippedState,
+  setSequentialRegistryPrQueueInflight,
+  type SequentialRegistryPrActive as SequentialRegistryPrActiveState,
+} from './application/sequential-registry-pr-state.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
@@ -2202,21 +2213,6 @@ type SequentialRegistryPrCandidate = {
   approvedForUpdate: boolean;
 };
 
-type SequentialRegistryPrActive = {
-  prNumber: number;
-  startedHeadSha: string;
-  startedAt: number;
-  expiresAt: number;
-  reason: string;
-};
-
-const SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT = new Map<string, Promise<SequentialRegistryPrResult>>();
-const SEQUENTIAL_REGISTRY_PR_ACTIVE = new Map<string, SequentialRegistryPrActive>();
-const SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS = new Map<string, number>();
-
-const SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS = 30 * 60 * 1000;
-const SEQUENTIAL_REGISTRY_PR_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
-
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -3371,62 +3367,15 @@ async function shouldUpdatePullRequestBranch(
   return await isPullRequestBehindCurrentBase(context, repoInfo, pr, baseBranch);
 }
 
-function sequentialRegistryPrRepoKey(repoInfo: RepoInfo): string {
-  return `${repoInfo.owner}/${repoInfo.repo}`.toLowerCase();
-}
-
-function sequentialRegistryPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
-  return `${sequentialRegistryPrRepoKey(repoInfo)}#${prNumber}:${toStringTrim(headSha)}`;
-}
-
-function pruneSequentialRegistryPrSkipState(): void {
-  const now = Date.now();
-
-  for (const [key, until] of SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.entries()) {
-    if (until <= now) SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.delete(key);
-  }
-}
-
-function isSequentialRegistryPrHeadSkipped(repoInfo: RepoInfo, pr: PullRequestLike): boolean {
-  pruneSequentialRegistryPrSkipState();
-
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  const key = sequentialRegistryPrHeadKey(repoInfo, pr.number, headSha);
-  return (SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.get(key) || 0) > Date.now();
-}
-
 function markSequentialRegistryPrHeadSkipped(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   reason: string
 ): void {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return;
-
-  const key = sequentialRegistryPrHeadKey(repoInfo, pr.number, headSha);
-  SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.set(key, Date.now() + SEQUENTIAL_REGISTRY_PR_SKIP_TTL_MS);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha,
-      reason,
-    },
-    'sequential-registry-pr:head-skipped'
-  );
-}
-
-function getSequentialRegistryPrActive(repoInfo: RepoInfo): SequentialRegistryPrActive | null {
-  return SEQUENTIAL_REGISTRY_PR_ACTIVE.get(sequentialRegistryPrRepoKey(repoInfo)) || null;
-}
-
-function clearSequentialRegistryPrActive(repoInfo: RepoInfo): void {
-  SEQUENTIAL_REGISTRY_PR_ACTIVE.delete(sequentialRegistryPrRepoKey(repoInfo));
+  markSequentialRegistryPrHeadSkippedState(context, repoInfo, pr, reason, {
+    log,
+  });
 }
 
 function markSequentialRegistryPrActive(
@@ -3435,31 +3384,9 @@ function markSequentialRegistryPrActive(
   pr: PullRequestLike,
   reason: string
 ): void {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return;
-
-  const startedAt = Date.now();
-  const active: SequentialRegistryPrActive = {
-    prNumber: pr.number,
-    startedHeadSha: headSha,
-    startedAt,
-    expiresAt: startedAt + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
-    reason,
-  };
-
-  SEQUENTIAL_REGISTRY_PR_ACTIVE.set(sequentialRegistryPrRepoKey(repoInfo), active);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha,
-      expiresAt: active.expiresAt,
-      reason,
-    },
-    'sequential-registry-pr:active-set'
-  );
+  markSequentialRegistryPrActiveState(context, repoInfo, pr, reason, {
+    log,
+  });
 }
 
 async function isSequentialRegistryPrActiveBlocking(
@@ -3604,7 +3531,7 @@ function buildBranchUpdateSequentialHandoffCallbacks(): BranchUpdateSequentialHa
   BotContext<RequestEvents>,
   RepoInfo,
   PullRequestLike,
-  SequentialRegistryPrActive | null
+  SequentialRegistryPrActiveState | null
 > {
   return {
     isSequentialDirectRegistryPr,
@@ -3791,8 +3718,7 @@ async function runOneSequentialDirectRegistryPrMaintenance(
   baseBranch: string,
   reason: string
 ): Promise<SequentialRegistryPrResult> {
-  const key = sequentialRegistryPrRepoKey(repoInfo);
-  const existing = SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.get(key);
+  const existing = getSequentialRegistryPrQueueInflight<SequentialRegistryPrResult, RepoInfo>(repoInfo);
 
   if (existing) return await existing;
 
@@ -3879,10 +3805,10 @@ async function runOneSequentialDirectRegistryPrMaintenance(
 
     return { updated: false, processed: false, blockedByActive: false };
   })().finally(() => {
-    SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.delete(key);
+    clearSequentialRegistryPrQueueInflight(repoInfo);
   });
 
-  SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.set(key, pending);
+  setSequentialRegistryPrQueueInflight(repoInfo, pending);
   return await pending;
 }
 
