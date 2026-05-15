@@ -113,6 +113,10 @@ import {
   type DefaultBranchApprovedPrBranchUpdateCallbacks,
 } from './application/default-branch-approved-pr-branch-update.js';
 import {
+  processRequestIssueLifecycle as processRequestIssueLifecycleApplication,
+  type RequestIssueLifecycleCallbacks,
+} from './application/request-issue-lifecycle.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -4512,231 +4516,101 @@ function isConfiguredApprover(login: string | undefined | null, allowedApprovers
   return (allowedApprovers || []).some((u) => normalizeLogin(u).toLowerCase() === who);
 }
 
+function buildRequestIssueLifecycleCallbacks(
+  app: Probot
+): RequestIssueLifecycleCallbacks<
+  BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  ValidateRequestIssueResult
+> {
+  return {
+    isJestWorker: Boolean(process.env.JEST_WORKER_ID),
+    isDebugEnabled: DBG,
+    hasIssueFormInputs,
+    loadTemplateWithLabelRefresh,
+    buildTemplateLoadErrorMessage,
+    postOnce,
+    setStateLabel,
+    parseForm,
+    isRequestIssue,
+    log,
+    toLabelNames,
+    detectSingleRoutingLabel,
+    ensureRoutingLockMarker,
+    enforceRoutingLabelLock,
+    removeRejectedStatusLabel,
+    buildCompatibleRequestSnapshotHashes,
+    calcSnapshotHash,
+    normalizeIssueTitle,
+    closeOutdatedRequestPrs,
+    onCloseOutdatedRequestPrsSkipped: (error: unknown): void => {
+      (app.log || console).warn?.(
+        { err: error instanceof Error ? error.message : String(error) },
+        'closeOutdatedRequestPRs skipped'
+      );
+    },
+    validateRequestIssue,
+    checkParentChainExistsInFlatStructure,
+    onParentChainCheckFailed: (error: unknown): void => {
+      (app.log || console).warn?.(
+        { err: error instanceof Error ? error.message : String(error) },
+        'parent chain check failed'
+      );
+    },
+    resolveEffectiveRequestType,
+    maybeRequireParentOwnerApproval,
+    maybeRequireSystemContactOwnerApproval,
+    getApprovedParentOwnerLogin,
+    isSubContextRequestType,
+    maybeHandleApprovalDecision: async (
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType,
+      namespace,
+      options
+    ): Promise<ApprovalHandlingResult> =>
+      await maybeHandleApprovalDecision(
+        context,
+        params,
+        issue,
+        template,
+        parsedFormData,
+        requestType,
+        namespace,
+        options as ReturnType<typeof buildApprovalDecisionDispatchOptions>
+      ),
+    buildApprovalDecisionDispatchOptions,
+    finalizeApprovedRequest,
+    resolveManualReviewApproverOverrideFromApprovalHook,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    handoverToCpa: async (context, params, issue, nsType, namespace, labels, options): Promise<void> =>
+      await handoverToCpa(
+        context,
+        params,
+        issue,
+        nsType,
+        namespace,
+        labels,
+        options as ReturnType<typeof buildReviewHandoverOptions>
+      ),
+    buildReviewHandoverOptions: (): Record<string, unknown> =>
+      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+  };
+}
+
 async function processIssueEvent(
   app: Probot,
   context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
   params: IssueParams,
   issue: IssueLike
 ): Promise<void> {
-  if (!process.env.JEST_WORKER_ID) {
-    if (!hasIssueFormInputs(issue)) return;
-  }
-  let template: TemplateLike;
-  try {
-    template = await loadTemplateWithLabelRefresh(context, params, issue);
-  } catch (e: unknown) {
-    const msg = toStringTrim(e instanceof Error ? e.message : e);
-
-    const msgLc = msg.toLowerCase();
-    const isRoutingErr = msgLc.includes('no routing label found') || msgLc.includes('cannot resolve template');
-
-    // Blanket / freeform issues
-    if (isRoutingErr && !hasIssueFormInputs(issue)) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { issue: issue.number, err: msg },
-          'requestHandler:issues-event skipped (non-form issue)'
-        );
-      }
-      return;
-    }
-    log(context, 'error', { err: msg }, 'Error loading template in issues handler');
-
-    const userMsg = buildTemplateLoadErrorMessage(msg);
-    await postOnce(context, params, userMsg, { minimizeTag: 'nsreq:config' });
-    await setStateLabel(context, params, issue, 'author');
-    return;
-  }
-
-  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-  if (!isRequestIssue(context, template, parsedFormData)) {
-    if (DBG) {
-      log(
-        context,
-        'debug',
-        { issue: issue.number, parsedKeys: Object.keys(parsedFormData || {}) },
-        'requestHandler:issues-event skipped (not a request issue)'
-      );
-    }
-    return;
-  }
-
-  const expectedRouting =
-    readRoutingLockExpected(issue.body) ||
-    (await detectSingleRoutingLabel(context, params, issue, toLabelNames(issue.labels)));
-
-  if (expectedRouting) {
-    await ensureRoutingLockMarker(context, params, issue, expectedRouting);
-    await enforceRoutingLabelLock(context, params, issue, expectedRouting);
-  }
-
-  // Closed issues are terminal (Approved/Rejected). Do not re-run the request workflow on them.
-  if (toStringTrim(issue.state).toLowerCase() === 'closed') return;
-
-  // If the issue was previously closed as rejected and later reopened, clear that terminal status.
-  await removeRejectedStatusLabel(context, params, toLabelNames(issue.labels));
-
-  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
-  const currentHash =
-    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
-
-  await normalizeIssueTitle(context, params, issue, template, parsedFormData);
-
-  try {
-    await closeOutdatedRequestPrs(context, params, template, {
-      parsedFormData,
-      currentHash,
-      acceptedHashes: snapshotHashes,
-    });
-  } catch (e: unknown) {
-    (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'closeOutdatedRequestPRs skipped');
-  }
-
-  const result = await validateRequestIssue(context, params, issue, {
-    template,
-    formData: parsedFormData,
-  });
-
-  const { errors, errorsFormattedSingle, errorsFormatted, namespace: validatedNamespace, nsType } = result;
-
-  if (errors?.length) {
-    const listFallback = (errors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      errorsFormattedSingle?.trim() || errorsFormatted?.trim() || listFallback || 'Unknown validation error.';
-
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(message, normalizeMachineReadableIssues(result.validationIssues || [])),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await setStateLabel(context, params, issue, 'author');
-    return;
-  }
-
-  try {
-    const parentError = await checkParentChainExistsInFlatStructure(
-      context,
-      { owner: params.owner, repo: params.repo },
-      template,
-      parsedFormData,
-      validatedNamespace
-    );
-
-    if (parentError) {
-      await postOnce(
-        context,
-        params,
-        buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
-        {
-          minimizeTag: 'nsreq:validation',
-        }
-      );
-      await setStateLabel(context, params, issue, 'author');
-      return;
-    }
-  } catch (e: unknown) {
-    (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'parent chain check failed');
-  }
-
-  const effectiveRequestType = resolveEffectiveRequestType(result.template || template, parsedFormData);
-
-  const gated = await maybeRequireParentOwnerApproval(
-    context,
-    params,
-    issue,
-    result.template || template,
-    validatedNamespace,
-    effectiveRequestType
-  );
-
-  if (DBG) {
-    log(
-      context,
-      'debug',
-      { issue: issue.number, target: validatedNamespace, requestType: effectiveRequestType, gated },
-      'parent-approval:gate-result'
-    );
-  }
-
-  if (gated) return;
-
-  const contactGated = await maybeRequireSystemContactOwnerApproval(
-    context,
-    params,
-    issue,
-    parsedFormData,
-    effectiveRequestType,
-    validatedNamespace
-  );
-
-  if (contactGated) return;
-
-  const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, validatedNamespace);
-  if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
-    const approvalOutcome = await maybeHandleApprovalDecision(
-      context,
-      params,
-      issue,
-      result.template || template,
-      parsedFormData,
-      effectiveRequestType,
-      validatedNamespace,
-      buildApprovalDecisionDispatchOptions()
-    );
-
-    if (approvalOutcome !== 'continue') return;
-
-    await finalizeApprovedRequest(context, params, issue, result.template || template, parsedFormData, {
-      approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
-    });
-    return;
-  }
-
-  const approvalOutcome = await maybeHandleApprovalDecision(
-    context,
-    params,
-    issue,
-    result.template || template,
-    parsedFormData,
-    effectiveRequestType,
-    validatedNamespace,
-    buildApprovalDecisionDispatchOptions()
-  );
-
-  if (approvalOutcome !== 'continue') return;
-
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    result.template || template,
-    parsedFormData,
-    effectiveRequestType
-  );
-
-  const hookApprovers = manualApproversOverride.length
-    ? []
-    : await resolveAdditionalIssueApproversFromApprovalHook(
-        context,
-        params,
-        issue,
-        result.template || template,
-        parsedFormData,
-        effectiveRequestType
-      );
-
-  await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
-    snapshotHash: currentHash,
-    requestType: effectiveRequestType,
-    extraApprovers: hookApprovers,
-    manualApproversOverride,
-    ...buildReviewHandoverOptions(),
-  });
+  await processRequestIssueLifecycleApplication(context, params, issue, buildRequestIssueLifecycleCallbacks(app));
 }
 
 async function resolveAdditionalIssueApproversFromApprovalHook(
