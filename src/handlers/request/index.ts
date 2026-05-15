@@ -97,6 +97,10 @@ import {
   type CheckSuiteCiCommentingCallbacks,
 } from './application/check-suite-ci-commenting.js';
 import {
+  handleCheckCompletedEvent as handleCheckCompletedEventApplication,
+  type CheckCompletedHandlerCallbacks,
+} from './application/check-completed-handler.js';
+import {
   maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
   type DefaultBranchCheckSuiteReevaluationCallbacks,
 } from './application/default-branch-check-suite-reevaluation.js';
@@ -837,6 +841,24 @@ async function listAllCheckRunsForSuite(
     owner,
     repo,
     checkSuiteId,
+    buildCheckSuiteAnnotationsCallbacks()
+  );
+}
+
+async function readFirstRegistryValidationArtifactsForSuiteRuns(
+  context: BotContext<RequestEvents>,
+  owner: string,
+  repo: string,
+  runsForSuite: CheckRunLike[]
+): Promise<{
+  byFile: Map<string, string[]>;
+  machineReadableSources: RegistryValidationMachineReadableSource[];
+} | null> {
+  return await readFirstRegistryValidationArtifactsForSuiteRunsApplication(
+    context,
+    owner,
+    repo,
+    runsForSuite,
     buildCheckSuiteAnnotationsCallbacks()
   );
 }
@@ -6839,6 +6861,50 @@ export default function requestHandler(app: Probot): void {
     );
   };
 
+  const buildCheckCompletedHandlerCallbacks = (): CheckCompletedHandlerCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    CheckRunLike,
+    CheckSuiteLike,
+    {
+      byFile: Map<string, string[]>;
+      machineReadableSources: RegistryValidationMachineReadableSource[];
+    },
+    RegistryValidationMachineReadableSource
+  > => ({
+    readCheckRunFromPayload,
+    readCheckSuiteFromPayload,
+    readRepoInfoFromPayload,
+    readCheckRunPrNumbers,
+    resolveCheckSuitePrNumbers,
+    readCheckSuiteId,
+    listAllCheckRunsForSuite,
+    readCheckRunId,
+    readFirstRegistryValidationArtifactsForSuiteRuns,
+    readPullRequestHtmlUrl: async (
+      context: BotContext<RequestEvents>,
+      repoInfo: RepoInfo,
+      prNumber: number
+    ): Promise<string> => {
+      const pr = await context.octokit.pulls.get({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        pull_number: prNumber,
+      });
+      return toStringTrim((pr.data as { html_url?: string })?.html_url);
+    },
+    collapseBotCommentsByPrefix,
+    postCheckSuiteRegistryValidationComments,
+    maybeHandleDefaultBranchCheckSuiteSuccess,
+    tryAutoMerge,
+    handleBlockingRegistryHeadConclusion,
+    isBlockingCheckConclusion,
+    readDefaultBranchFromPayload,
+    getStaticConfig: async (context: BotContext<RequestEvents>): Promise<unknown> => await getStaticConfig(context),
+    log,
+    isDebugEnabled: DBG,
+  });
+
   app.on('push', async (context: BotContext<'push'>): Promise<void> => {
     const payload = context.payload as unknown;
     const repoInfo = readRepoInfoFromPayload(payload);
@@ -6901,233 +6967,8 @@ export default function requestHandler(app: Probot): void {
     ['check_suite.completed', 'check_run.completed'],
     async (context: BotContext<'check_suite.completed' | 'check_run.completed'>): Promise<void> => {
       const payload = context.payload as unknown;
-      const action = isPlainObject(payload) ? toStringTrim(payload['action']).toLowerCase() : '';
       const eventName = toStringTrim((context as unknown as { name?: string }).name);
-      const run = readCheckRunFromPayload(payload);
-      const checkSuite = readCheckSuiteFromPayload(payload);
-      const repoInfo = readRepoInfoFromPayload(payload);
-
-      log(
-        context,
-        'info',
-        {
-          event: eventName,
-          action,
-          hasCheckRun: Boolean(run),
-          hasCheckSuite: Boolean(checkSuite),
-          checkRunHeadSha: toStringTrim(run?.head_sha),
-          checkRunStatus: toStringTrim(run?.status).toLowerCase(),
-          checkRunConclusion: toStringTrim(run?.conclusion).toLowerCase(),
-          checkSuiteHeadSha: toStringTrim(checkSuite?.head_sha),
-          checkSuiteHeadBranch: toStringTrim(checkSuite?.head_branch),
-          checkSuiteStatus: toStringTrim(checkSuite?.status).toLowerCase(),
-          checkSuiteConclusion: toStringTrim(checkSuite?.conclusion).toLowerCase(),
-          owner: repoInfo?.owner,
-          repo: repoInfo?.repo,
-        },
-        'checks:event-classification'
-      );
-
-      if (run) {
-        const conclusion = toStringTrim(run?.conclusion).toLowerCase();
-        const status = toStringTrim(run?.status).toLowerCase();
-        const headShaStr = toStringTrim(run?.head_sha);
-
-        if (!repoInfo) {
-          log(
-            context,
-            'warn',
-            {
-              event: eventName,
-              action,
-              conclusion,
-              status,
-              headShaStr,
-            },
-            'checks:check-run-missing-repo-info'
-          );
-          return;
-        }
-
-        const prNumbers = readCheckRunPrNumbers(run);
-
-        log(
-          context,
-          'info',
-          {
-            owner: repoInfo.owner,
-            repo: repoInfo.repo,
-            conclusion,
-            status,
-            headShaStr,
-            prNumbers,
-          },
-          'checks:check-run resolved'
-        );
-
-        if (status !== 'completed') return;
-        if (conclusion && conclusion !== 'success') {
-          if (isBlockingCheckConclusion(conclusion)) {
-            await getStaticConfig(context);
-
-            await handleBlockingRegistryHeadConclusion(
-              context,
-              repoInfo,
-              headShaStr,
-              readDefaultBranchFromPayload(payload),
-              `check-run:${conclusion}`
-            );
-          }
-
-          return;
-        }
-        if (conclusion !== 'success') return;
-        if (!headShaStr) return;
-
-        for (const prNumber of prNumbers) {
-          await collapseBotCommentsByPrefix(
-            context,
-            { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: prNumber },
-            {
-              tagPrefix: 'nsreq:ci-validation',
-              collapseBody: 'Validation issues resolved.',
-              classifier: 'RESOLVED',
-            }
-          );
-        }
-
-        await tryAutoMerge(context, repoInfo, headShaStr);
-        return;
-      }
-
-      if (!checkSuite) return;
-      if (!repoInfo) return;
-
-      const conclusion = toStringTrim(checkSuite.conclusion).toLowerCase();
-      const headShaStr = toStringTrim(checkSuite.head_sha);
-      const ownerLogin = repoInfo.owner;
-      const repoName = repoInfo.repo;
-
-      const prNumbers = await resolveCheckSuitePrNumbers(context, repoInfo, checkSuite, headShaStr);
-
-      log(
-        context,
-        'info',
-        {
-          ownerLogin,
-          repoName,
-          conclusion,
-          headShaStr,
-          checkSuiteHeadBranch: toStringTrim(checkSuite.head_branch),
-          checkSuiteStatus: toStringTrim(checkSuite.status).toLowerCase(),
-          prNumbers,
-        },
-        'checks:context resolved'
-      );
-
-      // success -> collapse old CI validation comments + keep existing auto-merge behavior
-      if (conclusion === 'success') {
-        for (const prNumber of prNumbers) {
-          await collapseBotCommentsByPrefix(
-            context,
-            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
-            {
-              tagPrefix: 'nsreq:ci-validation',
-              collapseBody: 'Validation issues resolved.',
-              classifier: 'RESOLVED',
-            }
-          );
-        }
-
-        await maybeHandleDefaultBranchCheckSuiteSuccess(context, payload, checkSuite, {
-          owner: ownerLogin,
-          repo: repoName,
-        });
-
-        if (!headShaStr) return;
-        await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, headShaStr);
-        return;
-      }
-
-      if (isBlockingCheckConclusion(conclusion)) {
-        await getStaticConfig(context);
-
-        await handleBlockingRegistryHeadConclusion(
-          context,
-          { owner: ownerLogin, repo: repoName },
-          headShaStr,
-          readDefaultBranchFromPayload(payload),
-          `check-suite:${conclusion}`
-        );
-      }
-
-      // failure -> comment on PR if registry-validate annotations exist
-      const suiteId = readCheckSuiteId(checkSuite);
-      if (!suiteId) return;
-      if (!prNumbers.length) return;
-
-      if (DBG) {
-        log(context, 'debug', { suiteId, prNumbers }, 'dbg:checks:failure suite');
-      }
-
-      let runsForSuite: CheckRunLike[] = [];
-      try {
-        runsForSuite = await listAllCheckRunsForSuite(context, ownerLogin, repoName, suiteId);
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            {
-              suiteId,
-              runsForSuite: runsForSuite.map((r) => ({
-                id: readCheckRunId(r),
-                conclusion: toStringTrim(r.conclusion),
-                url: toStringTrim(r.html_url),
-              })),
-            },
-            'dbg:checks:runs listed for suite'
-          );
-        }
-      } catch {
-        return;
-      }
-
-      // Build PR "files changed" URLs once (best-effort).
-      const prFilesUrlByNumber = new Map<number, string>();
-      for (const prNumber of prNumbers) {
-        try {
-          const pr = await context.octokit.pulls.get({
-            owner: ownerLogin,
-            repo: repoName,
-            pull_number: prNumber,
-          });
-          // pr.data is expected to be PullRequestLike, but may have extra fields
-          const html = toStringTrim((pr.data as { html_url?: string })?.html_url);
-          if (html) prFilesUrlByNumber.set(prNumber, `${html}/files`);
-        } catch {
-          // ignore
-        }
-      }
-
-      // Find the first run that contains registry-validate annotations and post from it.
-      const registryValidationArtifacts = await readFirstRegistryValidationArtifactsForSuiteRunsApplication(
-        context,
-        ownerLogin,
-        repoName,
-        runsForSuite,
-        buildCheckSuiteAnnotationsCallbacks()
-      );
-      if (!registryValidationArtifacts) return;
-
-      await postCheckSuiteRegistryValidationComments(
-        context,
-        { owner: ownerLogin, repo: repoName },
-        prNumbers,
-        registryValidationArtifacts,
-        'nsreq:ci-validation'
-      );
-
-      return;
+      await handleCheckCompletedEventApplication(context, payload, eventName, buildCheckCompletedHandlerCallbacks());
     }
   );
 
