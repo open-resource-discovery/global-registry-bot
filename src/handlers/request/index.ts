@@ -97,14 +97,16 @@ import {
   isPullRequestOpen as isPullRequestOpenPure,
   readMergeableState as readMergeableStatePure,
 } from './domain/pull-request-merge-state.js';
-import { buildPullRequestCompareCandidates } from './domain/pull-request-compare-candidates.js';
-import { evaluatePullRequestCompareResult } from './domain/pull-request-compare-result.js';
 import {
   isCrossRepositoryPullRequest as isCrossRepositoryPullRequestPure,
   resolvePullRequestHeadRepoInfo as resolvePullRequestHeadRepoInfoPure,
   sameRepoInfo as sameRepoInfoPure,
 } from './domain/pull-request-repo-info.js';
-import { readBranchHeadShaFromResponse } from './domain/branch-head-response.js';
+import {
+  isPullRequestBehindCurrentBase as isPullRequestBehindCurrentBaseApplication,
+  readBranchHeadSha as readBranchHeadShaApplication,
+  type BranchUpdateDecisionCallbacks,
+} from './application/branch-update-decision.js';
 import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
@@ -2308,6 +2310,31 @@ function delayMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function buildBranchUpdateDecisionCallbacks(): BranchUpdateDecisionCallbacks<BotContext<RequestEvents>> {
+  return {
+    getBranch: async (
+      context: BotContext<RequestEvents>,
+      args: { owner: string; repo: string; branch: string }
+    ): Promise<{ data?: { commit?: { sha?: string | null } } }> => await context.octokit.repos.getBranch(args),
+    compareCommitsWithBasehead: async (
+      context: BotContext<RequestEvents>,
+      args: { owner: string; repo: string; basehead: string }
+    ): Promise<{ data?: { status?: string | null; ahead_by?: number | null } }> =>
+      await (
+        context.octokit.repos as unknown as {
+          compareCommitsWithBasehead: (args: {
+            owner: string;
+            repo: string;
+            basehead: string;
+          }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
+        }
+      ).compareCommitsWithBasehead(args),
+    log,
+    getErrorMessage,
+    getHttpStatus,
+  };
+}
+
 async function readFreshPullRequest(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3282,41 +3309,7 @@ async function readBranchHeadSha(
   repoInfo: RepoInfo,
   branchName: string
 ): Promise<string> {
-  const branch = toStringTrim(branchName);
-  if (!branch) return '';
-
-  try {
-    const res = await context.octokit.repos.getBranch({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      branch,
-    });
-
-    return readBranchHeadShaFromResponse(
-      res as unknown as {
-        data?: {
-          commit?: {
-            sha?: string | null;
-          };
-        };
-      }
-    );
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        branch,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'branch-head-sha:read-failed'
-    );
-
-    return '';
-  }
+  return await readBranchHeadShaApplication(context, repoInfo, branchName, buildBranchUpdateDecisionCallbacks());
 }
 
 async function readRecursiveGitTreeEntries(
@@ -3621,80 +3614,13 @@ async function isPullRequestBehindCurrentBase(
   pr: PullRequestLike,
   baseBranch: string
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  const headRef = toStringTrim(pr.head?.ref);
-  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-
-  if (!headSha || !baseRef) return false;
-
-  const baseHeadSha = await readBranchHeadSha(context, repoInfo, baseRef);
-  if (!baseHeadSha || baseHeadSha === headSha) return false;
-
-  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const candidates = buildPullRequestCompareCandidates({
-    headSha,
-    baseHeadSha,
-    headRef,
-    headRepoInfo,
+  return await isPullRequestBehindCurrentBaseApplication(
+    context,
     repoInfo,
-    baseRef,
-  });
-
-  for (const basehead of candidates) {
-    try {
-      const res = await (
-        context.octokit.repos as unknown as {
-          compareCommitsWithBasehead: (args: {
-            owner: string;
-            repo: string;
-            basehead: string;
-          }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
-        }
-      ).compareCommitsWithBasehead({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        basehead,
-      });
-
-      const compareResult = evaluatePullRequestCompareResult(res?.data);
-
-      log(
-        context,
-        'info',
-        {
-          prNumber: pr.number,
-          basehead,
-          status: compareResult.status,
-          aheadBy: compareResult.aheadBy,
-          headSha,
-          baseHeadSha,
-          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-        },
-        'pull-request behind-current-base compare'
-      );
-
-      if (compareResult.isBehindCurrentBase === true) return true;
-      if (compareResult.isBehindCurrentBase === false) return false;
-    } catch (error: unknown) {
-      log(
-        context,
-        'warn',
-        {
-          prNumber: pr.number,
-          basehead,
-          headSha,
-          baseBranch: baseRef,
-          baseHeadSha,
-          err: getErrorMessage(error),
-          status: getHttpStatus(error),
-          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-        },
-        'pull-request behind-current-base compare failed'
-      );
-    }
-  }
-
-  return isPullRequestBehindBase(pr);
+    pr,
+    baseBranch,
+    buildBranchUpdateDecisionCallbacks()
+  );
 }
 
 async function shouldUpdatePullRequestBranch(
