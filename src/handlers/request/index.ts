@@ -69,6 +69,12 @@ import {
   type SequentialRegistryPrQueueCallbacks,
 } from './application/sequential-registry-pr-queue.js';
 import {
+  advanceSequentialRegistryPrQueueAfterTerminalState as advanceSequentialRegistryPrQueueAfterTerminalStateApplication,
+  handleBlockingRegistryHeadConclusion as handleBlockingRegistryHeadConclusionApplication,
+  releaseSequentialRegistryPrIfNotApprovedAfterGreen as releaseSequentialRegistryPrIfNotApprovedAfterGreenApplication,
+  type SequentialRegistryPrTerminalCallbacks,
+} from './application/sequential-registry-pr-terminal.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -3552,27 +3558,42 @@ async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
   );
 }
 
+function buildSequentialRegistryPrTerminalCallbacks(): SequentialRegistryPrTerminalCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike,
+  SequentialRegistryPrActiveState | null,
+  HeadGreenEvaluation
+> {
+  return {
+    readFreshPullRequest,
+    isPullRequestOpen,
+    getSequentialRegistryPrActive,
+    clearSequentialRegistryPrActive,
+    markSequentialRegistryPrHeadSkipped,
+    listOpenPullRequests,
+    pullRequestTargetsBranch,
+    listChangedYamlFilesForPrWithFallback,
+    runOneSequentialDirectRegistryPrMaintenance,
+    evaluateHeadGreenForApprovalReevaluation,
+    isPullRequestApprovedForBranchMaintenance,
+    log,
+  };
+}
+
 async function advanceSequentialRegistryPrQueueAfterTerminalState(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   reason: string
 ): Promise<void> {
-  const active = getSequentialRegistryPrActive(repoInfo);
-  if (!active || active.prNumber !== pr.number) return;
-
-  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
-
-  if (freshPr && isPullRequestOpen(freshPr)) {
-    return;
-  }
-
-  clearSequentialRegistryPrActive(repoInfo);
-
-  const baseBranch = toStringTrim(freshPr?.base?.ref) || toStringTrim(pr.base?.ref);
-  if (!baseBranch) return;
-
-  await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
+  await advanceSequentialRegistryPrQueueAfterTerminalStateApplication(
+    context,
+    repoInfo,
+    pr,
+    reason,
+    buildSequentialRegistryPrTerminalCallbacks()
+  );
 }
 
 function buildSequentialRegistryPrQueueCallbacks(): SequentialRegistryPrQueueCallbacks<
@@ -3616,77 +3637,6 @@ async function runOneSequentialDirectRegistryPrMaintenance(
   );
 }
 
-async function markFailedRegistryPrHeadsForSha(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  headSha: string,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  const sha = toStringTrim(headSha);
-  if (!sha) return false;
-
-  const openPrs = await listOpenPullRequests(context, repoInfo);
-  const matching = openPrs.filter((pr) => toStringTrim(pr.head?.sha) === sha);
-
-  let marked = false;
-
-  for (const pr of matching) {
-    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
-
-    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
-    if (!changedRegistryFiles.length) continue;
-
-    markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, reason);
-
-    const active = getSequentialRegistryPrActive(repoInfo);
-    if (active?.prNumber === pr.number) {
-      clearSequentialRegistryPrActive(repoInfo);
-    }
-
-    marked = true;
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: sha,
-        changedRegistryFiles,
-        reason,
-      },
-      'sequential-registry-pr:failed-head-marked'
-    );
-  }
-
-  return marked;
-}
-
-async function resolveSequentialRegistryQueueBaseBranchForHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  headSha: string,
-  fallbackBaseBranch: string
-): Promise<string> {
-  const fallback = toStringTrim(fallbackBaseBranch);
-  if (fallback) return fallback;
-
-  const sha = toStringTrim(headSha);
-  if (!sha) return '';
-
-  try {
-    const openPrs = await listOpenPullRequests(context, repoInfo);
-    const matchingPr = openPrs.find((pr) => toStringTrim(pr.head?.sha) === sha);
-    const baseBranch = toStringTrim(matchingPr?.base?.ref);
-
-    if (baseBranch) return baseBranch;
-  } catch {
-    return '';
-  }
-
-  return '';
-}
-
 async function handleBlockingRegistryHeadConclusion(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3694,53 +3644,14 @@ async function handleBlockingRegistryHeadConclusion(
   baseBranch: string,
   reason: string
 ): Promise<boolean> {
-  const sha = toStringTrim(headSha);
-  if (!sha) return false;
-
-  const marked = await markFailedRegistryPrHeadsForSha(context, repoInfo, sha, baseBranch, reason);
-  if (!marked) {
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: sha,
-        baseBranch: toStringTrim(baseBranch),
-        reason,
-      },
-      'sequential-registry-pr:blocking-head-not-marked'
-    );
-
-    return false;
-  }
-
-  const advanceBaseBranch = await resolveSequentialRegistryQueueBaseBranchForHead(context, repoInfo, sha, baseBranch);
-
-  if (!advanceBaseBranch) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: sha,
-        reason,
-      },
-      'sequential-registry-pr:advance-skipped-missing-base-branch'
-    );
-
-    return true;
-  }
-
-  await runOneSequentialDirectRegistryPrMaintenance(
+  return await handleBlockingRegistryHeadConclusionApplication(
     context,
     repoInfo,
-    advanceBaseBranch,
-    `${reason}:advance-next-registry-pr`
+    headSha,
+    baseBranch,
+    reason,
+    buildSequentialRegistryPrTerminalCallbacks()
   );
-
-  return true;
 }
 
 async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
@@ -3748,34 +3659,11 @@ async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<void> {
-  const active = getSequentialRegistryPrActive(repoInfo);
-  if (!active || active.prNumber !== pr.number) return;
-
-  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
-  if (!freshPr || !isPullRequestOpen(freshPr)) {
-    clearSequentialRegistryPrActive(repoInfo);
-    return;
-  }
-
-  const headSha = toStringTrim(freshPr.head?.sha);
-  if (!headSha) return;
-
-  const approvedForMaintenance = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr);
-  if (approvedForMaintenance) {
-    return;
-  }
-
-  const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-  if (!greenResult.green) return;
-
-  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-qualify-for-approval');
-  clearSequentialRegistryPrActive(repoInfo);
-
-  await runOneSequentialDirectRegistryPrMaintenance(
+  await releaseSequentialRegistryPrIfNotApprovedAfterGreenApplication(
     context,
     repoInfo,
-    toStringTrim(freshPr.base?.ref),
-    'sequential-direct-pr:advance-after-not-approved'
+    pr,
+    buildSequentialRegistryPrTerminalCallbacks()
   );
 }
 
