@@ -75,6 +75,11 @@ import {
   type SequentialRegistryPrTerminalCallbacks,
 } from './application/sequential-registry-pr-terminal.js';
 import {
+  runAutoMergeEvaluation as runAutoMergeEvaluationApplication,
+  tryAutoMerge as tryAutoMergeApplication,
+  type AutoMergeTriggerCallbacks,
+} from './application/auto-merge-trigger.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -357,10 +362,6 @@ type EffectiveConstants = {
 type SchemaFieldAliasLookup = Map<string, string>;
 
 const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
-const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
-
-const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
-const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 
 function normalizeSchemaFieldAlias(value: unknown): string {
   const raw = toStringTrim(value);
@@ -1404,23 +1405,6 @@ async function fetchIssueLabels(
 }
 
 const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
-
-function isAutoMergeEvaluationRecentlyCompleted(key: string): boolean {
-  const until = AUTO_MERGE_EVALUATION_RECENT_UNTIL.get(key);
-
-  if (!until) return false;
-
-  if (until <= Date.now()) {
-    AUTO_MERGE_EVALUATION_RECENT_UNTIL.delete(key);
-    return false;
-  }
-
-  return true;
-}
-
-function markAutoMergeEvaluationRecentlyCompleted(key: string): void {
-  AUTO_MERGE_EVALUATION_RECENT_UNTIL.set(key, Date.now() + AUTO_MERGE_EVALUATION_RECENT_TTL_MS);
-}
 
 function issueScopedKey(params: IssueParams, suffix: string): string {
   return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
@@ -6241,6 +6225,28 @@ export default function requestHandler(app: Probot): void {
     }
   };
 
+  const buildAutoMergeTriggerCallbacks = (): AutoMergeTriggerCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    PullRequestLike,
+    SequentialRegistryPrActiveState | null,
+    HeadGreenEvaluation
+  > => ({
+    getStaticConfig,
+    evaluateHeadGreenForApprovalReevaluation,
+    listOpenPullRequests,
+    processPullRequestForAutoMerge,
+    releaseSequentialRegistryPrIfNotApprovedAfterGreen,
+    advanceSequentialRegistryPrQueueAfterTerminalState,
+    readFreshPullRequest,
+    isSequentialDirectRegistryPr,
+    getSequentialRegistryPrActive,
+    clearSequentialRegistryPrActive,
+    markSequentialRegistryPrHeadSkipped,
+    runOneSequentialDirectRegistryPrMaintenance,
+    log,
+  });
+
   const shouldSkipIssueEditedEvent = (
     context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
   ): boolean => {
@@ -6738,94 +6744,7 @@ export default function requestHandler(app: Probot): void {
     repoInfo: RepoInfo,
     normalizedHeadSha: string
   ): Promise<void> => {
-    await getStaticConfig(context);
-
-    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
-
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: normalizedHeadSha,
-        green: greenResult.green,
-        greenReason: greenResult.reason,
-        statusState: greenResult.statusState,
-        blockingRuns: greenResult.blockingRuns,
-        latestRuns: greenResult.latestRuns.slice(0, 30),
-      },
-      'auto-merge:head-green'
-    );
-
-    if (!greenResult.green) return;
-
-    const candidates = (await listOpenPullRequests(context, repoInfo)).filter(
-      (pr) => toStringTrim(pr.head?.sha) === normalizedHeadSha
-    );
-
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: normalizedHeadSha,
-        candidatePrNumbers: candidates.map((pr) => pr.number),
-      },
-      'auto-merge:candidates'
-    );
-
-    for (const pr of candidates) {
-      try {
-        await processPullRequestForAutoMerge(context, repoInfo, pr);
-        await releaseSequentialRegistryPrIfNotApprovedAfterGreen(context, repoInfo, pr);
-        await advanceSequentialRegistryPrQueueAfterTerminalState(
-          context,
-          repoInfo,
-          pr,
-          'sequential-direct-pr:advance-after-terminal-state'
-        );
-      } catch (e: unknown) {
-        log(
-          context,
-          'warn',
-          {
-            err: e instanceof Error ? e.message : String(e),
-            prNumber: pr.number,
-          },
-          'auto-merge candidate processing failed'
-        );
-
-        const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-        const baseBranch = toStringTrim(freshPr.base?.ref) || toStringTrim(pr.base?.ref);
-        const isSequentialDirectRegistry = baseBranch
-          ? await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch)
-          : false;
-
-        if (!isSequentialDirectRegistry) {
-          continue;
-        }
-
-        const active = getSequentialRegistryPrActive(repoInfo);
-        const wasActiveSequentialPr = active?.prNumber === freshPr.number || active?.prNumber === pr.number;
-
-        markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'auto-merge-candidate-processing-failed');
-
-        if (wasActiveSequentialPr) {
-          clearSequentialRegistryPrActive(repoInfo);
-
-          if (baseBranch) {
-            await runOneSequentialDirectRegistryPrMaintenance(
-              context,
-              repoInfo,
-              baseBranch,
-              'sequential-direct-pr:advance-after-processing-failure'
-            );
-          }
-        }
-      }
-    }
+    await runAutoMergeEvaluationApplication(context, repoInfo, normalizedHeadSha, buildAutoMergeTriggerCallbacks());
   };
 
   const tryAutoMerge = async (
@@ -6833,61 +6752,7 @@ export default function requestHandler(app: Probot): void {
     repoInfo: RepoInfo,
     headSha: string
   ): Promise<void> => {
-    const normalizedHeadSha = toStringTrim(headSha);
-    if (!normalizedHeadSha) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-        },
-        'auto-merge:skip-missing-head-sha'
-      );
-      return;
-    }
-
-    const key = `${repoInfo.owner}/${repoInfo.repo}:${normalizedHeadSha}:auto-merge-evaluation`.toLowerCase();
-
-    const existing = AUTO_MERGE_EVALUATION_INFLIGHT.get(key);
-    if (existing) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          headSha: normalizedHeadSha,
-        },
-        'auto-merge:evaluation deduped: already in flight'
-      );
-
-      await existing;
-      return;
-    }
-
-    if (isAutoMergeEvaluationRecentlyCompleted(key)) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          headSha: normalizedHeadSha,
-        },
-        'auto-merge:evaluation skipped: recently completed'
-      );
-
-      return;
-    }
-
-    const pending = runAutoMergeEvaluation(context, repoInfo, normalizedHeadSha).finally(() => {
-      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
-      markAutoMergeEvaluationRecentlyCompleted(key);
-    });
-
-    AUTO_MERGE_EVALUATION_INFLIGHT.set(key, pending);
-    await pending;
+    await tryAutoMergeApplication(context, repoInfo, headSha, runAutoMergeEvaluation, buildAutoMergeTriggerCallbacks());
   };
 
   const maybeHandleDefaultBranchCheckSuiteSuccess = async (
