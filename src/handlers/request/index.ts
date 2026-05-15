@@ -60,6 +60,10 @@ import {
   requestPullRequestBranchUpdate as requestPullRequestBranchUpdateApplication,
   type BranchUpdateOrchestrationCallbacks,
 } from './application/branch-update-orchestration.js';
+import {
+  requestPullRequestBranchUpdateRespectingSequentialRegistryQueue as requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication,
+  type BranchUpdateSequentialHandoffCallbacks,
+} from './application/branch-update-sequential-handoff.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
   waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
@@ -3596,6 +3600,21 @@ async function shouldDeferSequentialDirectRegistryPrProcessing(
   return true;
 }
 
+function buildBranchUpdateSequentialHandoffCallbacks(): BranchUpdateSequentialHandoffCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike,
+  SequentialRegistryPrActive | null
+> {
+  return {
+    isSequentialDirectRegistryPr,
+    requestPullRequestBranchUpdate,
+    getSequentialRegistryPrActive,
+    markSequentialRegistryPrActive,
+    runOneSequentialDirectRegistryPrMaintenance,
+  };
+}
+
 async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3603,26 +3622,14 @@ async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
   baseBranch: string,
   reason: string
 ): Promise<boolean> {
-  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-
-  if (!(await isSequentialDirectRegistryPr(context, repoInfo, pr, targetBaseBranch))) {
-    return await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
-  }
-
-  const active = getSequentialRegistryPrActive(repoInfo);
-
-  if (active && active.prNumber === pr.number) {
-    const requested = await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
-
-    if (requested) {
-      markSequentialRegistryPrActive(context, repoInfo, pr, reason);
-    }
-
-    return requested;
-  }
-
-  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, targetBaseBranch, reason);
-  return result.updated;
+  return await requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication(
+    context,
+    repoInfo,
+    pr,
+    baseBranch,
+    reason,
+    buildBranchUpdateSequentialHandoffCallbacks()
+  );
 }
 
 async function advanceSequentialRegistryPrQueueAfterTerminalState(
