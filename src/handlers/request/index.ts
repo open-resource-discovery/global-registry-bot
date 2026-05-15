@@ -93,6 +93,10 @@ import {
   type CheckSuiteAnnotationsCallbacks,
 } from './application/check-suite-annotations.js';
 import {
+  maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
+  type DefaultBranchCheckSuiteReevaluationCallbacks,
+} from './application/default-branch-check-suite-reevaluation.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -6178,6 +6182,78 @@ export default function requestHandler(app: Probot): void {
     }
   };
 
+  const buildDefaultBranchCheckSuiteReevaluationCallbacks = (): DefaultBranchCheckSuiteReevaluationCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    SequentialRegistryPrResult
+  > => ({
+    readDefaultBranchFromPayload,
+    getBranch: async (
+      context: BotContext<RequestEvents>,
+      args: { owner: string; repo: string; branch: string }
+    ): Promise<{ data?: { commit?: { sha?: string | null } } }> => await context.octokit.repos.getBranch(args),
+    logBranchHeadReadFailed: (
+      context: BotContext<RequestEvents>,
+      args: {
+        repoInfo: RepoInfo;
+        defaultBranch: string;
+        headSha: string;
+        errorMessage: string;
+        status: number | undefined;
+      }
+    ): void => {
+      log(
+        context,
+        'warn',
+        {
+          owner: args.repoInfo.owner,
+          repo: args.repoInfo.repo,
+          defaultBranch: args.defaultBranch,
+          headSha: args.headSha,
+          err: args.errorMessage,
+          status: args.status,
+        },
+        'default-branch-check-suite:branch-head-read-failed'
+      );
+    },
+    logEvaluated: (
+      context: BotContext<RequestEvents>,
+      args: {
+        repoInfo: RepoInfo;
+        defaultBranch: string;
+        headBranch: string;
+        headSha: string;
+        defaultBranchHeadSha: string;
+        conclusion: string;
+        status: string;
+        isDefaultBranchSuite: boolean;
+      }
+    ): void => {
+      log(
+        context,
+        'info',
+        {
+          owner: args.repoInfo.owner,
+          repo: args.repoInfo.repo,
+          defaultBranch: args.defaultBranch,
+          headBranch: args.headBranch,
+          headSha: args.headSha,
+          defaultBranchHeadSha: args.defaultBranchHeadSha,
+          conclusion: args.conclusion,
+          status: args.status,
+          isDefaultBranchSuite: args.isDefaultBranchSuite,
+        },
+        'default-branch-check-suite:evaluated'
+      );
+    },
+    getErrorMessage,
+    getHttpStatus,
+    getStaticConfig: async (context: BotContext<RequestEvents>, options: { forceReload: true }): Promise<unknown> =>
+      await getStaticConfig(context, options),
+    reevaluateOpenDirectPullRequestsAfterDefaultBranchPush,
+    updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry,
+  });
+
   const buildAutoMergeTriggerCallbacks = (): AutoMergeTriggerCallbacks<
     BotContext<RequestEvents>,
     RepoInfo,
@@ -6714,78 +6790,13 @@ export default function requestHandler(app: Probot): void {
     checkSuite: CheckSuiteLike | null,
     repoInfo: RepoInfo
   ): Promise<void> => {
-    const defaultBranch = readDefaultBranchFromPayload(payload);
-    const headBranch = toStringTrim(checkSuite?.head_branch);
-    const headSha = toStringTrim(checkSuite?.head_sha);
-    const conclusion = toStringTrim(checkSuite?.conclusion).toLowerCase();
-    const status = toStringTrim(checkSuite?.status).toLowerCase();
-
-    let isDefaultBranchSuite = Boolean(defaultBranch && headBranch && headBranch === defaultBranch);
-    let defaultBranchHeadSha = '';
-
-    if (!isDefaultBranchSuite && defaultBranch && headSha) {
-      try {
-        const branch = await context.octokit.repos.getBranch({
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          branch: defaultBranch,
-        });
-
-        defaultBranchHeadSha = toStringTrim(
-          (branch as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha
-        );
-
-        isDefaultBranchSuite = Boolean(defaultBranchHeadSha && defaultBranchHeadSha === headSha);
-      } catch (error: unknown) {
-        log(
-          context,
-          'warn',
-          {
-            owner: repoInfo.owner,
-            repo: repoInfo.repo,
-            defaultBranch,
-            headSha,
-            err: getErrorMessage(error),
-            status: getHttpStatus(error),
-          },
-          'default-branch-check-suite:branch-head-read-failed'
-        );
-      }
-    }
-
-    log(
+    await maybeHandleDefaultBranchCheckSuiteSuccessApplication(
       context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        defaultBranch,
-        headBranch,
-        headSha,
-        defaultBranchHeadSha,
-        conclusion,
-        status,
-        isDefaultBranchSuite,
-      },
-      'default-branch-check-suite:evaluated'
-    );
-
-    if (!isDefaultBranchSuite) return;
-    if (status && status !== 'completed') return;
-    if (conclusion !== 'success') return;
-
-    await getStaticConfig(context, { forceReload: true });
-
-    const directResult = await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-      context,
+      payload,
+      checkSuite,
       repoInfo,
-      defaultBranch,
-      'default-branch-check-suite:direct-pr-reevaluation'
+      buildDefaultBranchCheckSuiteReevaluationCallbacks()
     );
-
-    if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
-      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, defaultBranch);
-    }
   };
 
   app.on('push', async (context: BotContext<'push'>): Promise<void> => {
