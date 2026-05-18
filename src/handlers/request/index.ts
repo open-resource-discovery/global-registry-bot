@@ -154,6 +154,10 @@ import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
+import {
+  finalizeApprovedRequest as finalizeApprovedRequestApplication,
+  type ApprovedRequestFinalizationCallbacks,
+} from './application/approved-request-finalization.js';
 import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
   isPullRequestBehindBase as isPullRequestBehindBasePure,
@@ -4033,6 +4037,29 @@ async function maybeHandleStandaloneDirectPrApproval(
   return 'continue';
 }
 
+function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizationCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants,
+  PullRequestLike
+> {
+  return {
+    resolveEffectiveConstants,
+    extractResourceNameFromForm,
+    resolveEffectiveRequestType,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    findOpenIssuePrs,
+    applyApprovedRequestState,
+    addApprovedLabelToPr,
+    ensureAssigneesPresent,
+    createRequestPrWithRecovery,
+    postOnce,
+  };
+}
+
 async function finalizeApprovedRequest(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -4045,81 +4072,15 @@ async function finalizeApprovedRequest(
     autoApproved?: boolean;
   }
 ): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const approvalPrefix = toStringTrim(options.approvalPrefix);
-  const approvalComment = toStringTrim(options.approvalComment);
-  const autoApproved = options.autoApproved === true;
-
-  const resourceName = extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
-  if (!resourceName) {
-    await postOnce(
-      context,
-      params,
-      'Cannot create PR: missing resource name in the form (expected identifier, product-id or namespace).',
-      { minimizeTag: 'nsreq:config' }
-    );
-    return;
-  }
-
-  const requestType = resolveEffectiveRequestType(template, parsedFormData);
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+  await finalizeApprovedRequestApplication(
     context,
     params,
     issue,
     template,
     parsedFormData,
-    requestType
+    options,
+    buildApprovedRequestFinalizationCallbacks()
   );
-
-  const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
-  if (existing.length) {
-    await applyApprovedRequestState(context, params, eff);
-
-    if (autoApproved) {
-      await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, existing[0].number);
-    }
-
-    await ensureAssigneesPresent(
-      context,
-      { owner: params.owner, repo: params.repo, issue_number: existing[0].number },
-      hookApprovers
-    );
-
-    const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
-    const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
-
-    await postOnce(context, params, body, {
-      minimizeTag: 'nsreq:approval-info',
-    });
-    return;
-  }
-
-  try {
-    const pr = await createRequestPrWithRecovery(context, params, issue, parsedFormData, template, resourceName);
-
-    await applyApprovedRequestState(context, params, eff);
-
-    if (autoApproved) {
-      await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, pr.number);
-    }
-
-    await ensureAssigneesPresent(
-      context,
-      { owner: params.owner, repo: params.repo, issue_number: pr.number },
-      hookApprovers
-    );
-
-    const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
-    const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
-
-    await postOnce(context, params, body, {
-      minimizeTag: 'nsreq:approval-info',
-    });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-
-    await postOnce(context, params, `Failed to create Pull Request: ${msg}`, { minimizeTag: 'nsreq:approval-info' });
-  }
 }
 
 function buildApprovalDecisionDispatchOptions(): {
