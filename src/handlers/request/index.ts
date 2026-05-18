@@ -186,6 +186,16 @@ import {
   type IssueWorkflowGuardCallbacks,
 } from './application/issue-workflow-guard.js';
 import {
+  assignParentOwnersForApproval as assignParentOwnersForApprovalApplication,
+  clearParentOwnerActionState as clearParentOwnerActionStateApplication,
+  ensureContactApprovalMarker as ensureContactApprovalMarkerApplication,
+  ensureParentApprovalMarker as ensureParentApprovalMarkerApplication,
+  maybeRequireParentOwnerApproval as maybeRequireParentOwnerApprovalApplication,
+  maybeRequireSystemContactOwnerApproval as maybeRequireSystemContactOwnerApprovalApplication,
+  setParentOwnerActionState as setParentOwnerActionStateApplication,
+  type OwnerApprovalRequirementsCallbacks,
+} from './application/owner-approval-requirements.js';
+import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
 } from './application/approved-request-finalization.js';
@@ -220,8 +230,6 @@ import {
 import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
 import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
 import {
-  buildContactApprovalBody,
-  buildParentApprovalBody,
   readContactApprovalMeta,
   readParentApprovalMeta,
   type ContactApprovalMeta,
@@ -795,48 +803,6 @@ async function lookupGithubLoginsByEmail(context: BotContext<RequestEvents>, ema
 
   EMAIL_TO_LOGINS_CACHE.set(e, p);
   return await p;
-}
-
-async function resolveParentOwnerLoginsForTarget(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  template: TemplateLike,
-  validatedNamespace: string,
-  requestType: string
-): Promise<{ parent: string; owners: string[] }> {
-  const rt = toStringTrim(requestType).toLowerCase();
-  if (!rt.includes('namespace')) return { parent: '', owners: [] };
-
-  const target = toStringTrim(validatedNamespace);
-  const parts = target
-    .split('.')
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  if (parts.length <= 2) return { parent: '', owners: [] };
-
-  const parent = parts.slice(0, -1).join('.');
-  if (!parent) return { parent: '', owners: [] };
-
-  const rootRaw = toStringTrim(template?._meta?.root);
-  const root = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!root) return { parent, owners: [] };
-
-  const parentPath = `${root}/${parent}.yaml`;
-  const doc = await readYamlFromRepo(context, { owner: params.owner, repo: params.repo }, parentPath);
-  if (!isPlainObject(doc)) return { parent, owners: [] };
-
-  const rec = doc;
-  const contacts = rec['contacts'] ?? rec['contact'] ?? rec['owners'] ?? rec['owner'];
-
-  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
-
-  const resolved: string[] = [...directLogins];
-  for (const email of emails.slice(0, 10)) {
-    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
-  }
-
-  return { parent, owners: uniqLogins(resolved) };
 }
 
 function readCheckRunId(run: CheckRunLike | null): number | null {
@@ -1735,59 +1701,16 @@ async function clearParentOwnerActionState(
   params: IssueParams,
   currentLabels?: string[]
 ): Promise<void> {
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-
-  let labels = (currentLabels || []).slice();
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
-  }
-
-  const toRemove = labelsMatching(labels, parentOwnerActionLabel);
-  if (!toRemove.length) return;
-
-  await removeExactLabelsFromIssue(context, params, toRemove);
+  await clearParentOwnerActionStateApplication(
+    context,
+    params,
+    buildOwnerApprovalRequirementsCallbacks(),
+    currentLabels
+  );
 }
 
 async function setParentOwnerActionState(context: BotContext<RequestEvents>, params: IssueParams): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
-  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-
-  let labels: string[] = [];
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    labels = [];
-  }
-
-  const toRemove = new Set<string>();
-
-  for (const label of [
-    authorActionLabel,
-    approverActionLabel,
-    approvedLabel,
-    REQUEST_STATUS_LABEL_REJECTED,
-    ...(eff.reviewRequestedLabels || []),
-  ]) {
-    for (const match of labelsMatching(labels, label)) {
-      if (normalizeKey(match) !== normalizeKey(parentOwnerActionLabel)) {
-        toRemove.add(match);
-      }
-    }
-  }
-
-  if (toRemove.size) {
-    await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
-  }
-
-  await ensureLabelsPresentOnce(context, params, [parentOwnerActionLabel]);
+  await setParentOwnerActionStateApplication(context, params, buildOwnerApprovalRequirementsCallbacks());
 }
 
 async function assignParentOwnersForApproval(
@@ -1795,13 +1718,7 @@ async function assignParentOwnersForApproval(
   params: IssueParams,
   owners: string[]
 ): Promise<void> {
-  const assignees = uniqLogins((owners || []).map(toStringTrim).filter(Boolean));
-  if (!assignees.length) return;
-
-  // Best effort only.
-  // If GitHub does not allow assignment, ensureAssigneesPresent logs and continues.
-  // The parent owners are still mentioned in the comment as fallback.
-  await ensureAssigneesPresent(context, params, assignees);
+  await assignParentOwnersForApprovalApplication(context, params, owners, buildOwnerApprovalRequirementsCallbacks());
 }
 
 async function removeExactLabelsFromIssue(
@@ -4810,20 +4727,6 @@ async function tryLoadTemplateForLabels(
   }
 }
 
-function sameNormalizedLoginSet(a: string[], b: string[]): boolean {
-  const normalizedA = uniqLogins(a)
-    .map((login) => normalizeLogin(login))
-    .filter((login): login is string => !!login)
-    .sort((left, right) => left.localeCompare(right));
-  const normalizedB = uniqLogins(b)
-    .map((login) => normalizeLogin(login))
-    .filter((login): login is string => !!login)
-    .sort((left, right) => left.localeCompare(right));
-
-  if (normalizedA.length !== normalizedB.length) return false;
-  return normalizedA.every((login, index) => login === normalizedB[index]);
-}
-
 function isSubContextRequestType(requestType: unknown): boolean {
   const rt = normalizeTypeToken(requestType);
   return rt === 'subcontextnamespace' || rt === 'subcontext';
@@ -4845,68 +4748,13 @@ async function ensureContactApprovalMarker(
   issue: IssueLike,
   meta: ContactApprovalMeta | null
 ): Promise<boolean> {
-  const current = readContactApprovalMeta(issue.body);
-
-  if (!meta) {
-    if (!current) return false;
-
-    try {
-      const nextBody = buildContactApprovalBody(issue.body, null);
-      await context.octokit.issues.update({ ...params, body: nextBody });
-      issue.body = nextBody;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  const next: ContactApprovalMeta = {
-    v: 1,
-    target: toStringTrim(meta.target),
-    owners: uniqLogins(meta.owners || []),
-  };
-
-  const approvedBy = normalizeLogin(meta.approvedBy);
-  const approvedAt = toStringTrim(meta.approvedAt);
-
-  if (approvedBy) next.approvedBy = approvedBy;
-  if (approvedAt) next.approvedAt = approvedAt;
-
-  if (!next.target || !next.owners.length) return false;
-
-  const same =
-    current &&
-    normalizeKey(current.target) === normalizeKey(next.target) &&
-    sameNormalizedLoginSet(current.owners, next.owners) &&
-    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
-    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
-
-  if (same) return false;
-
-  const nextBody = buildContactApprovalBody(issue.body, next);
-
-  try {
-    await context.octokit.issues.update({ ...params, body: nextBody });
-    issue.body = nextBody;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function resolveRequestContactOwnerLogins(
-  context: BotContext<RequestEvents>,
-  formData: FormData
-): Promise<string[]> {
-  const contacts = formData['contact'] ?? formData['contacts'] ?? '';
-  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
-
-  const resolved: string[] = [...directLogins];
-  for (const email of emails.slice(0, 10)) {
-    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
-  }
-
-  return uniqLogins(resolved);
+  return await ensureContactApprovalMarkerApplication(
+    context,
+    params,
+    issue,
+    meta,
+    buildOwnerApprovalRequirementsCallbacks()
+  );
 }
 
 async function maybeRequireSystemContactOwnerApproval(
@@ -4917,54 +4765,15 @@ async function maybeRequireSystemContactOwnerApproval(
   requestType: string,
   validatedNamespace: string
 ): Promise<boolean> {
-  if (normalizeTypeToken(requestType) !== 'systemnamespace') {
-    await ensureContactApprovalMarker(context, params, issue, null);
-    return false;
-  }
-
-  const target = toStringTrim(validatedNamespace);
-  const owners = await resolveRequestContactOwnerLogins(context, parsedFormData);
-  const requester = normalizeLogin(issue.user?.login);
-
-  if (!target || !owners.length) {
-    await ensureContactApprovalMarker(context, params, issue, null);
-    return false;
-  }
-
-  if (requester && owners.some((owner) => owner.toLowerCase() === requester.toLowerCase())) {
-    await ensureContactApprovalMarker(context, params, issue, null);
-    return false;
-  }
-
-  const current = readContactApprovalMeta(issue.body);
-  const alreadyApproved =
-    current &&
-    normalizeKey(current.target) === normalizeKey(target) &&
-    sameNormalizedLoginSet(current.owners, owners) &&
-    Boolean(normalizeLogin(current.approvedBy));
-
-  if (alreadyApproved) return false;
-
-  await ensureContactApprovalMarker(context, params, issue, { v: 1, target, owners });
-
-  const mentions = owners.map((owner) => `@${owner}`).join(' ');
-  const tag = `nsreq:contact-approval:${normalizeKey(target)}`;
-
-  await postOnce(
+  return await maybeRequireSystemContactOwnerApprovalApplication(
     context,
     params,
-    `### 🔒 Contact owner approval required
-
-Requester @${requester || 'unknown'} is not listed in the contact owners for \`${target}\`.
-
-${mentions}
-
-Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
-    { minimizeTag: tag }
+    issue,
+    parsedFormData,
+    requestType,
+    validatedNamespace,
+    buildOwnerApprovalRequirementsCallbacks()
   );
-
-  await setStateLabel(context, params, issue, 'author');
-  return true;
 }
 
 async function handleSystemContactOwnerApprovalIfNeeded(
@@ -4992,53 +4801,13 @@ async function ensureParentApprovalMarker(
   issue: IssueLike,
   meta: ParentApprovalMeta | null
 ): Promise<boolean> {
-  const current = readParentApprovalMeta(issue.body);
-
-  if (!meta) {
-    if (!current) return false;
-    try {
-      const nextBody = buildParentApprovalBody(issue.body, null);
-      await context.octokit.issues.update({ ...params, body: nextBody });
-      issue.body = nextBody;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  const next: ParentApprovalMeta = {
-    v: 1,
-    parent: toStringTrim(meta.parent),
-    target: toStringTrim(meta.target),
-    owners: uniqLogins(meta.owners || []),
-  };
-
-  const ab = normalizeLogin(meta.approvedBy);
-  const at = toStringTrim(meta.approvedAt);
-  if (ab) next.approvedBy = ab;
-  if (at) next.approvedAt = at;
-
-  if (!next.parent || !next.target) return false;
-
-  const same =
-    current &&
-    normalizeKey(current.parent) === normalizeKey(next.parent) &&
-    normalizeKey(current.target) === normalizeKey(next.target) &&
-    uniqLogins(current.owners).join('|').toLowerCase() === uniqLogins(next.owners).join('|').toLowerCase() &&
-    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
-    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
-
-  if (same) return false;
-
-  const nextBody = buildParentApprovalBody(issue.body, next);
-
-  try {
-    await context.octokit.issues.update({ ...params, body: nextBody });
-    issue.body = nextBody;
-    return true;
-  } catch {
-    return false;
-  }
+  return await ensureParentApprovalMarkerApplication(
+    context,
+    params,
+    issue,
+    meta,
+    buildOwnerApprovalRequirementsCallbacks()
+  );
 }
 
 async function maybeRequireParentOwnerApproval(
@@ -5049,83 +4818,44 @@ async function maybeRequireParentOwnerApproval(
   validatedNamespace: string,
   requestType: string
 ): Promise<boolean> {
-  const rt = toStringTrim(requestType).toLowerCase();
-  if (!rt.includes('namespace')) {
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  const target = toStringTrim(validatedNamespace);
-  const parts = target
-    .split('.')
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  if (parts.length <= 2) {
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  const requester = normalizeLogin(issue.user?.login);
-
-  const { parent, owners } = await resolveParentOwnerLoginsForTarget(context, params, template, target, requestType);
-
-  if (!parent || owners.length === 0) {
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  if (requester && owners.some((o) => o.toLowerCase() === requester.toLowerCase())) {
-    if (DBG) {
-      log(
-        context,
-        'debug',
-        { issue: issue.number, requester, parent, target, owners },
-        'parent-approval:skip (requester is parent owner)'
-      );
-    }
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  const current = readParentApprovalMeta(issue.body);
-  const alreadyApproved =
-    current &&
-    normalizeKey(current.parent) === normalizeKey(parent) &&
-    normalizeKey(current.target) === normalizeKey(target) &&
-    Boolean(normalizeLogin(current.approvedBy));
-
-  if (alreadyApproved) {
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  await ensureParentApprovalMarker(context, params, issue, { v: 1, parent, target, owners });
-
-  await setParentOwnerActionState(context, params);
-  await assignParentOwnersForApproval(context, params, owners);
-
-  const mentions = owners.map((o) => `@${o}`).join(' ');
-  const tag = `nsreq:parent-approval:${normalizeKey(parent)}:${normalizeKey(target)}`;
-
-  await postOnce(
+  return await maybeRequireParentOwnerApprovalApplication(
     context,
     params,
-    `### 🔒 Parent owner approval required
-
-Sub-namespace request under \`${parent}\` (target: \`${target}\`).
-
-${mentions}
-
-Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
-    { minimizeTag: tag }
+    issue,
+    template,
+    validatedNamespace,
+    requestType,
+    buildOwnerApprovalRequirementsCallbacks()
   );
+}
 
-  return true;
+function buildOwnerApprovalRequirementsCallbacks(): OwnerApprovalRequirementsCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants
+> {
+  return {
+    normalizeKey,
+    labelsMatching,
+    updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
+      await context.octokit.issues.update({ ...params, body });
+    },
+    readYamlFromRepo,
+    extractParentContactCandidates,
+    lookupGithubLoginsByEmail,
+    resolveEffectiveConstants,
+    resolveWorkflowLabel,
+    fetchIssueLabels,
+    removeExactLabelsFromIssue,
+    ensureLabelsPresentOnce,
+    ensureAssigneesPresent,
+    postOnce,
+    setStateLabel,
+    log,
+  };
 }
 
 async function handleParentOwnerApprovalIfNeeded(
