@@ -166,6 +166,10 @@ import {
   type StandaloneDirectPrApprovalCallbacks,
 } from './application/direct-pr-standalone-approval.js';
 import {
+  maybeHandleDirectPrApprovalForMerge as maybeHandleDirectPrApprovalForMergeApplication,
+  type DirectPrLinkedIssueApprovalCallbacks,
+} from './application/direct-pr-linked-issue-approval.js';
+import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
 } from './application/approved-request-finalization.js';
@@ -4114,6 +4118,38 @@ function buildApprovalDecisionDispatchOptions(): {
   };
 }
 
+function buildDirectPrLinkedIssueApprovalCallbacks(): DirectPrLinkedIssueApprovalCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  IssueLike,
+  PullRequestLike,
+  EffectiveConstants
+> {
+  return {
+    resolvePullRequestRequestAuthorId,
+    evaluateDirectPrOnApproval,
+    ensureAutomatedApprovalReviewForCurrentHead,
+    applyApprovedRequestState,
+    resolveEffectiveConstants,
+    postApprovalRejectedOnce,
+    rejectRequestFromApprovalHook: async (
+      context: BotContext<RequestEvents>,
+      params: IssueParams,
+      issue: IssueLike,
+      decision: ApprovalDecision
+    ): Promise<void> =>
+      await rejectRequestFromApprovalHook(context, params, issue, decision, {
+        closeLinkedPrs: true,
+        minimizeTag: 'nsreq:on-approval:issue-rejected',
+        listOpenPullRequests,
+        parseLinkedIssueNumberFromPr,
+      }),
+    postApprovalUnknownOnce,
+    log,
+  };
+}
+
 async function maybeHandleDirectPrApprovalForMerge(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -4123,72 +4159,16 @@ async function maybeHandleDirectPrApprovalForMerge(
   _parsedFormData: FormData,
   pr: PullRequestLike
 ): Promise<ApprovalHandlingResult> {
-  const issueAuthorId = normalizeLogin(issue.user?.login);
-  const prRequesterId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
-  const requestAuthorId = issueAuthorId || prRequesterId;
-
-  log(
+  return await maybeHandleDirectPrApprovalForMergeApplication(
     context,
-    'info',
-    {
-      prNumber: pr.number,
-      linkedIssueNumber: issue.number,
-      issueAuthorId,
-      prRequesterId,
-      requestAuthorId,
-    },
-    'direct-pr:linked-issue-requester-resolved'
+    repoInfo,
+    issueParams,
+    issue,
+    _template,
+    _parsedFormData,
+    pr,
+    buildDirectPrLinkedIssueApprovalCallbacks()
   );
-
-  const decision = normalizeApprovalDecision(
-    await evaluateDirectPrOnApproval(context, repoInfo, pr, requestAuthorId || undefined)
-  );
-
-  if (decision.status === 'approved') {
-    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
-    if (!approved) return 'continue';
-
-    await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
-    return 'approved';
-  }
-
-  if (decision.status === 'rejected') {
-    await postApprovalRejectedOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      decision
-    );
-
-    try {
-      await context.octokit.pulls.update({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        state: 'closed',
-      });
-    } catch {
-      // ignore
-    }
-
-    await rejectRequestFromApprovalHook(context, issueParams, issue, decision, {
-      closeLinkedPrs: true,
-      minimizeTag: 'nsreq:on-approval:issue-rejected',
-      listOpenPullRequests,
-      parseLinkedIssueNumberFromPr,
-    });
-
-    return 'rejected';
-  }
-
-  if (decision.status === 'unknown') {
-    await postApprovalUnknownOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      decision
-    );
-  }
-
-  return 'continue';
 }
 
 function buildSafeResourceSlug(resourceName: unknown): string {
