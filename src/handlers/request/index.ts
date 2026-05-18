@@ -152,6 +152,7 @@ import {
   registryYamlTreeEntryPath as registryYamlTreeEntryPathApplication,
 } from './application/pr-head-changed-file-discovery.js';
 import { readRegistryDocForApproval as readRegistryDocForApprovalApplication } from './application/registry-doc-for-approval.js';
+import { isSequentialDirectRegistryPr as isSequentialDirectRegistryPrApplication } from './application/sequential-direct-registry-pr-detection.js';
 import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
@@ -2549,28 +2550,13 @@ async function isSequentialDirectRegistryPr(
   pr: PullRequestLike,
   baseBranch?: string
 ): Promise<boolean> {
-  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-  if (!targetBaseBranch) return false;
-  if (isSnapshotManagedRequestPr(pr)) return false;
-  if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
-
-  try {
-    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
-    return changedRegistryFiles.length > 0;
-  } catch (error) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        baseBranch: targetBaseBranch,
-        error: error instanceof Error ? error.message : String(error),
-      },
-      'sequential-registry-pr:changed-files-lookup-failed'
-    );
-
-    return false;
-  }
+  return await isSequentialDirectRegistryPrApplication(context, repoInfo, pr, baseBranch, {
+    isSnapshotManagedRequestPr,
+    pullRequestTargetsBranch,
+    listChangedYamlFilesForPrWithFallback,
+    log,
+    getErrorMessage,
+  });
 }
 
 async function shouldDeferSequentialDirectRegistryPrProcessing(
