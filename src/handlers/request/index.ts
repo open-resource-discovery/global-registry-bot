@@ -162,6 +162,10 @@ import {
   type OwnerApprovalCommentHandlingCallbacks,
 } from './application/owner-approval-comment-handling.js';
 import {
+  maybeHandleStandaloneDirectPrApproval as maybeHandleStandaloneDirectPrApprovalApplication,
+  type StandaloneDirectPrApprovalCallbacks,
+} from './application/direct-pr-standalone-approval.js';
+import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
 } from './application/approved-request-finalization.js';
@@ -3887,6 +3891,26 @@ function buildStandaloneDirectPrReviewHandoverOptions(): {
   };
 }
 
+function buildStandaloneDirectPrApprovalCallbacks(): StandaloneDirectPrApprovalCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike,
+  ReturnType<typeof buildStandaloneDirectPrReviewHandoverOptions>
+> {
+  return {
+    evaluateDirectPrOnApproval,
+    hasAllowedStandaloneDirectPrApprovalForCurrentHead,
+    ensureAutomatedApprovalReviewForCurrentHead,
+    postApprovalRejectedOnce,
+    hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr,
+    addApprovedLabelToPr,
+    handoverStandaloneDirectPrToReview,
+    isCrossRepositoryPullRequest,
+    buildStandaloneDirectPrReviewHandoverOptions,
+    log,
+  };
+}
+
 async function handleDirectPrApprovalComment(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3961,87 +3985,13 @@ async function maybeHandleStandaloneDirectPrApproval(
   pr: PullRequestLike,
   options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalHandlingResult> {
-  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
-
-  if (
-    decision.status !== 'approved' &&
-    decision.status !== 'rejected' &&
-    (await hasAllowedStandaloneDirectPrApprovalForCurrentHead(context, repoInfo, pr, decision, options))
-  ) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        decisionStatus: toStringTrim(decision.status) || 'none',
-      },
-      'direct-pr:standalone-current-head-approval-present'
-    );
-
-    return 'approved';
-  }
-
-  if (decision.status === 'approved') {
-    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision, {
-      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
-    });
-
-    if (!approved) return 'continue';
-
-    return 'approved';
-  }
-
-  if (decision.status === 'rejected') {
-    await postApprovalRejectedOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      decision
-    );
-
-    try {
-      await context.octokit.pulls.update({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        state: 'closed',
-      });
-    } catch {
-      // ignore
-    }
-
-    return 'rejected';
-  }
-
-  if (decision.status === 'unknown') {
-    const hasCurrentHeadManualApproval = await hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
-      context,
-      repoInfo,
-      pr,
-      decision,
-      options
-    );
-
-    if (hasCurrentHeadManualApproval) {
-      await addApprovedLabelToPr(context, repoInfo, pr.number, {
-        skipStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
-      });
-
-      return 'approved';
-    }
-
-    await handoverStandaloneDirectPrToReview(
-      context,
-      repoInfo,
-      pr,
-      decision,
-      options,
-      buildStandaloneDirectPrReviewHandoverOptions()
-    );
-    return 'continue';
-  }
-
-  return 'continue';
+  return await maybeHandleStandaloneDirectPrApprovalApplication(
+    context,
+    repoInfo,
+    pr,
+    options,
+    buildStandaloneDirectPrApprovalCallbacks()
+  );
 }
 
 function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizationCallbacks<
