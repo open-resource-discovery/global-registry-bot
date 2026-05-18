@@ -120,6 +120,20 @@ import {
   type RequestPrCreationRecoveryCallbacks,
 } from './application/request-pr-creation-recovery.js';
 import {
+  addApprovedLabelToPr as addApprovedLabelToPrApplication,
+  applyApprovedRequestState as applyApprovedRequestStateApplication,
+  ensureAssigneesPresent as ensureAssigneesPresentApplication,
+  ensureLabelsPresentOnce as ensureLabelsPresentOnceApplication,
+  ensureReviewLabelsPresentOnIssue as ensureReviewLabelsPresentOnIssueApplication,
+  fetchIssueLabels as fetchIssueLabelsApplication,
+  removeExactLabelsFromIssue as removeExactLabelsFromIssueApplication,
+  removeProgressStatusLabels as removeProgressStatusLabelsApplication,
+  removeRejectedStatusLabel as removeRejectedStatusLabelApplication,
+  resolveAdditionalIssueApproversFromApprovalHook as resolveAdditionalIssueApproversFromApprovalHookApplication,
+  resolveManualReviewApproverOverrideFromApprovalHook as resolveManualReviewApproverOverrideFromApprovalHookApplication,
+  type IssueStateReviewerOperationsCallbacks,
+} from './application/issue-state-reviewer-operations.js';
+import {
   buildRegistryValidationAggregatePrCommentBody as buildRegistryValidationAggregatePrCommentBodyApplication,
   type RequestValidationPostingCallbacks,
 } from './application/request-validation-posting.js';
@@ -227,7 +241,7 @@ import {
   matchRequestTypesForFile as matchRequestTypesForFilePure,
   pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
 } from './domain/direct-pr-resource-mapping.js';
-import { normalizeApprovalDecision, type ApprovalDecision } from './domain/approval-decision.js';
+import { type ApprovalDecision } from './domain/approval-decision.js';
 import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
 import {
   normalizeLogin as normalizeLoginPure,
@@ -1249,15 +1263,11 @@ async function fetchIssueLabels(
   context: BotContext<RequestEvents>,
   { owner, repo, issue_number }: IssueParams
 ): Promise<string[]> {
-  const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
-  const issue = data as unknown as IssueLike;
-  return toLabelNames(issue.labels);
-}
-
-const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
-
-function issueScopedKey(params: IssueParams, suffix: string): string {
-  return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
+  return await fetchIssueLabelsApplication(
+    context,
+    { owner, repo, issue_number },
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function ensureLabelsPresentOnce(
@@ -1265,59 +1275,7 @@ async function ensureLabelsPresentOnce(
   params: IssueParams,
   labels: string[]
 ): Promise<void> {
-  const targetLabels = Array.from(new Set((labels || []).map(toStringTrim).filter(Boolean)));
-  if (!targetLabels.length) return;
-
-  const key = issueScopedKey(params, `labels:${targetLabels.map(normalizeKey).sort().join('|')}`);
-  const existing = ENSURE_LABELS_INFLIGHT.get(key);
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const pending = (async (): Promise<void> => {
-    let currentLabels: string[] = [];
-
-    try {
-      currentLabels = await fetchIssueLabels(context, params);
-    } catch {
-      currentLabels = [];
-    }
-
-    const currentKeys = new Set(currentLabels.map(normalizeKey).filter(Boolean));
-    const missing = targetLabels.filter((label) => {
-      const key = normalizeKey(label);
-      return key && !currentKeys.has(key);
-    });
-
-    if (!missing.length) return;
-
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: missing,
-      });
-    } catch (error: unknown) {
-      const status = getHttpStatus(error);
-      if (status !== 404) {
-        log(
-          context,
-          'warn',
-          {
-            err: getErrorMessage(error),
-            labels: missing,
-            issueNumber: params.issue_number,
-          },
-          'failed to ensure labels'
-        );
-      }
-    }
-  })().finally(() => {
-    ENSURE_LABELS_INFLIGHT.delete(key);
-  });
-
-  ENSURE_LABELS_INFLIGHT.set(key, pending);
-  await pending;
+  await ensureLabelsPresentOnceApplication(context, params, labels, buildIssueStateReviewerOperationsCallbacks());
 }
 
 async function ensureAssigneesPresent(
@@ -1325,42 +1283,7 @@ async function ensureAssigneesPresent(
   params: IssueParams,
   assignees: string[]
 ): Promise<void> {
-  const targetAssignees = uniqLogins((assignees || []).map((x) => toStringTrim(x)).filter(Boolean));
-  if (!targetAssignees.length) return;
-
-  try {
-    const { data } = await context.octokit.issues.get(params);
-    const currentAssignees = uniqLogins(
-      (((data as Record<string, unknown>)['assignees'] as (Record<string, unknown> | null | undefined)[]) || [])
-        .map((item) => normalizeLogin(toStringTrim(item?.login)))
-        .filter(Boolean)
-    );
-
-    const missing = targetAssignees.filter(
-      (candidate) =>
-        !currentAssignees.some(
-          (existing) => normalizeLogin(existing).toLowerCase() === normalizeLogin(candidate).toLowerCase()
-        )
-    );
-
-    if (!missing.length) return;
-
-    await context.octokit.issues.addAssignees({
-      ...params,
-      assignees: missing,
-    });
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        err: e instanceof Error ? e.message : String(e),
-        issueNumber: params.issue_number,
-        assignees: targetAssignees,
-      },
-      'failed to ensure assignees'
-    );
-  }
+  await ensureAssigneesPresentApplication(context, params, assignees, buildIssueStateReviewerOperationsCallbacks());
 }
 
 function buildReviewHandoverBody(
@@ -1409,76 +1332,14 @@ async function ensureReviewLabelsPresentOnIssue(
   issue: IssueLike,
   eff: EffectiveConstants
 ): Promise<boolean> {
-  const cfgKeys = (eff.reviewRequestedLabels || []).map(normalizeKey);
-  if (!cfgKeys.length) return true;
-
-  let labels = toLabelNames(issue.labels);
-
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    // keep payload labels as fallback
-  }
-
-  return labels.some((l) => {
-    const k = normalizeKey(l);
-    return cfgKeys.some((ck) => k === ck || k.includes(ck) || ck.includes(k));
-  });
+  return await ensureReviewLabelsPresentOnIssueApplication(
+    context,
+    params,
+    issue,
+    eff,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
-
-async function removeReviewPendingLabelsAfterApproval(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  eff: EffectiveConstants
-): Promise<void> {
-  const approvedCfg = toStringTrim(eff.labelOnApproved);
-  const pendingCfg = (eff.reviewRequestedLabels || []).map(toStringTrim).filter(Boolean);
-
-  if (!approvedCfg || !pendingCfg.length) return;
-
-  let labels: string[] = [];
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    return;
-  }
-
-  const approvedKey = normalizeKey(approvedCfg);
-  const hasApproved = labels.some((l) => {
-    const k = normalizeKey(l);
-    return k === approvedKey || k.includes(approvedKey) || approvedKey.includes(k);
-  });
-
-  if (!hasApproved) return;
-
-  const pendingKeys = pendingCfg.map(normalizeKey);
-
-  const toRemove = labels.filter((l) => {
-    const k = normalizeKey(l);
-    return pendingKeys.some((pk) => k === pk || k.includes(pk) || pk.includes(k));
-  });
-
-  for (const label of toRemove) {
-    try {
-      await context.octokit.issues.removeLabel({ ...params, name: label });
-    } catch (e: unknown) {
-      if (getHttpStatus(e) !== 404) {
-        log(
-          context,
-          'warn',
-          { err: e instanceof Error ? e.message : String(e), label },
-          'failed to remove review pending label after approval'
-        );
-      }
-    }
-  }
-}
-
-// Request lifecycle status labels
-const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
-const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
-const REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION = 'Parent Owner Action';
-const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
 
 function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: string, fallback: string): string {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
@@ -1497,10 +1358,6 @@ function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: string, f
   }
 
   return toStringTrim(raw) || fallback;
-}
-
-function resolveParentOwnerActionLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'parentOwnerAction', REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION);
 }
 
 const labelsMatching = (labels: string[], expected: string): string[] => {
@@ -1543,23 +1400,12 @@ async function removeExactLabelsFromIssue(
   params: IssueParams,
   labelsToRemove: string[]
 ): Promise<void> {
-  for (const label of labelsToRemove) {
-    const name = toStringTrim(label);
-    if (!name) continue;
-
-    try {
-      await context.octokit.issues.removeLabel({ ...params, name });
-    } catch (e: unknown) {
-      if (getHttpStatus(e) !== 404) {
-        log(
-          context,
-          'warn',
-          { err: e instanceof Error ? e.message : String(e), label: name },
-          'failed to remove label'
-        );
-      }
-    }
-  }
+  await removeExactLabelsFromIssueApplication(
+    context,
+    params,
+    labelsToRemove,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function removeProgressStatusLabels(
@@ -1567,27 +1413,12 @@ async function removeProgressStatusLabels(
   params: IssueParams,
   currentLabels?: string[]
 ): Promise<void> {
-  let labels = (currentLabels || []).slice();
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
-  }
-
-  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
-  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-
-  const toRemove = new Set<string>([
-    ...labelsMatching(labels, authorActionLabel),
-    ...labelsMatching(labels, approverActionLabel),
-    ...labelsMatching(labels, parentOwnerActionLabel),
-  ]);
-
-  if (!toRemove.size) return;
-  await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
+  await removeProgressStatusLabelsApplication(
+    context,
+    params,
+    currentLabels,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function removeRejectedStatusLabel(
@@ -1595,18 +1426,12 @@ async function removeRejectedStatusLabel(
   params: IssueParams,
   currentLabels?: string[]
 ): Promise<void> {
-  let labels = (currentLabels || []).slice();
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
-  }
-
-  const toRemove = labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED);
-  if (!toRemove.length) return;
-  await removeExactLabelsFromIssue(context, params, toRemove);
+  await removeRejectedStatusLabelApplication(
+    context,
+    params,
+    currentLabels,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 // Higher-level orchestration helpers to reduce handler complexity
@@ -1623,26 +1448,7 @@ async function applyApprovedRequestState(
   params: IssueParams,
   eff: EffectiveConstants
 ): Promise<void> {
-  try {
-    if (eff.labelOnApproved) {
-      await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
-    }
-  } catch {
-    // ignore
-  }
-
-  await removeReviewPendingLabelsAfterApproval(context, params, eff);
-
-  try {
-    const labelsAfter = await fetchIssueLabels(context, params);
-    const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-    if (labelsMatching(labelsAfter, approvedLabel).length) {
-      await removeProgressStatusLabels(context, params, labelsAfter);
-      await removeRejectedStatusLabel(context, params, labelsAfter);
-    }
-  } catch {
-    // ignore
-  }
+  await applyApprovedRequestStateApplication(context, params, eff, buildIssueStateReviewerOperationsCallbacks());
 }
 
 function prAsIssueLike(pr: PullRequestLike): IssueLike {
@@ -1745,41 +1551,13 @@ async function addApprovedLabelToPr(
   prNumber: number,
   options: { skipStateCleanup?: boolean } = {}
 ): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-  if (!approvedLabel) return;
-
-  const params: IssueParams = {
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    issue_number: prNumber,
-  };
-
-  try {
-    await context.octokit.issues.addLabels({
-      ...params,
-      labels: [approvedLabel],
-    });
-  } catch {
-    return;
-  }
-
-  // Standalone cross-repo direct PRs must stay PR-only here.
-  // Reading the PR as an issue would break the no-linked-issue guarantee.
-  if (options.skipStateCleanup) return;
-
-  await removeReviewPendingLabelsAfterApproval(context, params, eff);
-
-  try {
-    const labelsAfter = await fetchIssueLabels(context, params);
-
-    if (labelsMatching(labelsAfter, approvedLabel).length) {
-      await removeProgressStatusLabels(context, params, labelsAfter);
-      await removeRejectedStatusLabel(context, params, labelsAfter);
-    }
-  } catch {
-    // best effort cleanup only
-  }
+  await addApprovedLabelToPrApplication(
+    context,
+    repoInfo,
+    prNumber,
+    options,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 function buildAutoApprovalReviewMarker(headSha: string): string {
@@ -4040,31 +3818,15 @@ async function resolveAdditionalIssueApproversFromApprovalHook(
   parsedFormData: FormData,
   requestType?: string
 ): Promise<string[]> {
-  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
-  const resourceName = extractResourceNameFromForm(parsedFormData, template);
-
-  if (!effectiveRequestType) return [];
-
-  try {
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType: effectiveRequestType,
-          namespace: resourceName,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-          requestAuthorId: normalizeLogin(issue.user?.login),
-        }
-      )
-    );
-
-    return uniqLogins((decision.approvers || []).filter(Boolean));
-  } catch {
-    return [];
-  }
+  return await resolveAdditionalIssueApproversFromApprovalHookApplication(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function resolveManualReviewApproverOverrideFromApprovalHook(
@@ -4075,31 +3837,38 @@ async function resolveManualReviewApproverOverrideFromApprovalHook(
   parsedFormData: FormData,
   requestType?: string
 ): Promise<string[]> {
-  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
-  const resourceName = extractResourceNameFromForm(parsedFormData, template);
+  return await resolveManualReviewApproverOverrideFromApprovalHookApplication(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    requestType,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
+}
 
-  if (!effectiveRequestType) return [];
-
-  try {
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType: effectiveRequestType,
-          namespace: resourceName,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-          requestAuthorId: normalizeLogin(issue.user?.login),
-        }
-      )
-    );
-
-    return getUnknownManualApprovers(decision);
-  } catch {
-    return [];
-  }
+function buildIssueStateReviewerOperationsCallbacks(): IssueStateReviewerOperationsCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants
+> {
+  return {
+    toLabelNames,
+    normalizeKey,
+    resolveWorkflowLabel,
+    labelsMatching,
+    resolveEffectiveConstants,
+    extractResourceNameFromForm,
+    resolveEffectiveRequestType,
+    runApprovalHook,
+    getHttpStatus,
+    getErrorMessage,
+    log,
+  };
 }
 
 function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbacks<
