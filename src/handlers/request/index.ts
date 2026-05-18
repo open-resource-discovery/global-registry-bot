@@ -151,6 +151,7 @@ import {
   readRepoFileTextAtRef as readRepoFileTextAtRefApplication,
   registryYamlTreeEntryPath as registryYamlTreeEntryPathApplication,
 } from './application/pr-head-changed-file-discovery.js';
+import { readRegistryDocForApproval as readRegistryDocForApprovalApplication } from './application/registry-doc-for-approval.js';
 import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
@@ -2762,15 +2763,10 @@ async function readRegistryDocForApproval(
   pr: PullRequestLike,
   filePath: string
 ): Promise<Record<string, unknown> | null> {
-  const raw = await readPullRequestHeadFileText(context, repoInfo, pr, filePath);
-  if (!raw) return null;
-
-  try {
-    const parsed = YAML.parse(raw) as unknown;
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  return await readRegistryDocForApprovalApplication(context, repoInfo, pr, filePath, {
+    readPullRequestHeadFileText,
+    isPlainObject,
+  });
 }
 
 function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchApprovedPrBranchUpdateCallbacks<
