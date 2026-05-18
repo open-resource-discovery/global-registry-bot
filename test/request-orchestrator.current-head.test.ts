@@ -32,7 +32,18 @@ const loadStaticConfig = jest.fn(async () => ({}));
 const getDocLinksFromConfig = jest.fn(() => '');
 
 const DEFAULT_CONFIG = {
-  workflow: { labels: {}, approvers: [] },
+  workflow: {
+    labels: {
+      authorAction: 'Requester Action',
+      approverAction: 'Review Pending',
+      parentOwnerAction: 'Parent Owner Action',
+      approvalRequested: ['Review Pending'],
+      approvalSuccessful: ['Approved'],
+      approvalRejected: ['Rejected'],
+    },
+    approvers: [],
+  },
+  requests: {},
 } as any;
 
 let requestHandler: any;

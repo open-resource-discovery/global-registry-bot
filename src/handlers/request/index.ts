@@ -319,6 +319,50 @@ const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
 const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 
+const CHANGED_FILES_CONTEXT_CACHE = new WeakMap<object, Map<string, Promise<PullRequestFileLike[]>>>();
+
+function changedFilesCacheKey(repoInfo: RepoInfo, prNumber: number): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}`.toLowerCase();
+}
+
+async function listAllChangedFilesForPrCached(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<PullRequestFileLike[]> {
+  let perContext = CHANGED_FILES_CONTEXT_CACHE.get(context as object);
+
+  if (!perContext) {
+    perContext = new Map<string, Promise<PullRequestFileLike[]>>();
+    CHANGED_FILES_CONTEXT_CACHE.set(context as object, perContext);
+  }
+
+  const key = changedFilesCacheKey(repoInfo, prNumber);
+  const existing = perContext.get(key);
+  if (existing) return await existing;
+
+  const pending = (async (): Promise<PullRequestFileLike[]> => {
+    const out: PullRequestFileLike[] = [];
+    let page = 1;
+
+    while (true) {
+      const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
+      if (!files.length) break;
+
+      out.push(...files);
+
+      if (files.length < 100) break;
+      page += 1;
+      if (page > 20) break;
+    }
+
+    return out;
+  })();
+
+  perContext.set(key, pending);
+  return await pending;
+}
+
 type WorkflowLabelKey =
   | 'global'
   | 'authorAction'
@@ -1948,54 +1992,6 @@ async function ensureReviewLabelsPresentOnIssue(
   });
 }
 
-async function removeReviewPendingLabelsAfterApproval(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  eff: EffectiveConstants
-): Promise<void> {
-  const approvedCfg = toStringTrim(eff.labelOnApproved);
-  const pendingCfg = (eff.reviewRequestedLabels || []).map(toStringTrim).filter(Boolean);
-
-  if (!approvedCfg || !pendingCfg.length) return;
-
-  let labels: string[] = [];
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    return;
-  }
-
-  const approvedKey = normalizeKey(approvedCfg);
-  const hasApproved = labels.some((l) => {
-    const k = normalizeKey(l);
-    return k === approvedKey || k.includes(approvedKey) || approvedKey.includes(k);
-  });
-
-  if (!hasApproved) return;
-
-  const pendingKeys = pendingCfg.map(normalizeKey);
-
-  const toRemove = labels.filter((l) => {
-    const k = normalizeKey(l);
-    return pendingKeys.some((pk) => k === pk || k.includes(pk) || pk.includes(k));
-  });
-
-  for (const label of toRemove) {
-    try {
-      await context.octokit.issues.removeLabel({ ...params, name: label });
-    } catch (e: unknown) {
-      if (getHttpStatus(e) !== 404) {
-        log(
-          context,
-          'warn',
-          { err: e instanceof Error ? e.message : String(e), label },
-          'failed to remove review pending label after approval'
-        );
-      }
-    }
-  }
-}
-
 function collectWorkflowStateLabels(context: BotContext<RequestEvents>): string[] {
   const eff = resolveEffectiveConstants(context);
 
@@ -2320,10 +2316,10 @@ ${leadBlock}${issuesBlock}Closing this request automatically.`;
 async function applyApprovedRequestState(
   context: BotContext<RequestEvents>,
   params: IssueParams,
-  eff: EffectiveConstants
+  _eff: EffectiveConstants
 ): Promise<void> {
-  const approvedLabels = resolveApprovedLabels(context);
   const approvedLabel = resolveApprovedLabel(context);
+  const approvedLabels = resolveApprovedLabels(context);
 
   try {
     if (approvedLabel) {
@@ -2334,8 +2330,6 @@ async function applyApprovedRequestState(
   }
 
   await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
-
-  await removeReviewPendingLabelsAfterApproval(context, params, eff);
 
   try {
     const labelsAfter = await fetchIssueLabels(context, params);
@@ -2590,7 +2584,6 @@ async function addApprovedLabelToPr(
   prNumber: number,
   options: { skipStateCleanup?: boolean } = {}
 ): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
   const approvedLabel = resolveApprovedLabel(context);
   const approvedLabels = resolveApprovedLabels(context);
 
@@ -2611,18 +2604,16 @@ async function addApprovedLabelToPr(
     return;
   }
 
-  await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
-
   // Standalone cross-repo direct PRs must stay PR-only here.
   // Reading the PR as an issue would break the no-linked-issue guarantee.
   if (options.skipStateCleanup) return;
 
-  await removeReviewPendingLabelsAfterApproval(context, params, eff);
+  await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
 
   try {
     const labelsAfter = await fetchIssueLabels(context, params);
 
-    if (labelsMatching(labelsAfter, approvedLabel).length) {
+    if (labelsMatchingAny(labelsAfter, approvedLabels).length) {
       await removeProgressStatusLabels(context, params, labelsAfter);
       await removeRejectedStatusLabel(context, params, labelsAfter);
     }
@@ -3917,6 +3908,10 @@ async function processPullRequestForAutoMerge(
     }
   }
 
+  if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) {
+    return;
+  }
+
   const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
 
   if (issueNumber === null) {
@@ -4488,21 +4483,14 @@ async function listChangedYamlFilesForPr(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<string[]> {
+  const files = await listAllChangedFilesForPrCached(context, repoInfo, prNumber);
   const out: string[] = [];
-  let page = 1;
 
-  while (true) {
-    const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
-    if (!files.length) break;
-
-    for (const file of files) {
-      const filename = isChangedYamlCandidate(file);
-      if (filename && isRegistryEntryPath(context, filename)) out.push(filename);
+  for (const file of files) {
+    const filename = isChangedYamlCandidate(file);
+    if (filename && isRegistryEntryPath(context, filename)) {
+      out.push(filename);
     }
-
-    if (files.length < 100) break;
-    page += 1;
-    if (page > 20) break;
   }
 
   return Array.from(new Set(out));
@@ -4862,21 +4850,7 @@ async function listChangedFilesForPr(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<PullRequestFileLike[]> {
-  const out: PullRequestFileLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
-    if (!files.length) break;
-
-    out.push(...files);
-
-    if (files.length < 100) break;
-    page += 1;
-    if (page > 20) break;
-  }
-
-  return out;
+  return await listAllChangedFilesForPrCached(context, repoInfo, prNumber);
 }
 
 function isLikelyBotManagedRegistryPr(pr: PullRequestLike): boolean {
@@ -5421,6 +5395,8 @@ async function isSequentialDirectRegistryPr(
       },
       'sequential-registry-pr:changed-files-lookup-failed'
     );
+
+    markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, 'changed-files-lookup-failed');
 
     return false;
   }
@@ -8957,7 +8933,7 @@ export default function requestHandler(app: Probot): void {
     const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
     if (!isRequestIssue(context, template, parsedFormData)) return;
 
-    const approvedLabel = resolveApprovedLabel(context);
+    const approvedLabels = resolveApprovedLabels(context);
     const rejectedLabel = resolveRejectedLabel(context);
     const rejectedLabels = resolveRejectedLabels(context);
 
@@ -8968,7 +8944,6 @@ export default function requestHandler(app: Probot): void {
       labels = toLabelNames(issue.labels);
     }
 
-    const approvedLabels = resolveApprovedLabels(context);
     const hasApproved = labelsMatchingAny(labels, approvedLabels).length > 0;
 
     // If approved, keep it clean
@@ -9007,11 +8982,9 @@ export default function requestHandler(app: Probot): void {
     if (labelsMatchingAny(labels, rejectedLabels).length) {
       await removeProgressStatusLabels(context, params, labels);
 
-      if (approvedLabel) {
-        const approvedMatches = labelsMatchingAny(labels, approvedLabels);
-        if (approvedMatches.length) {
-          await removeExactLabelsFromIssue(context, params, approvedMatches);
-        }
+      const approvedMatches = labelsMatchingAny(labels, approvedLabels);
+      if (approvedMatches.length) {
+        await removeExactLabelsFromIssue(context, params, approvedMatches);
       }
     }
   });
@@ -9128,7 +9101,12 @@ export default function requestHandler(app: Probot): void {
         const isManualApprovedAdd =
           action === 'labeled' && labelsMatchingAny([changedLabel], approvedLabels).length > 0;
 
-        if (!isManualApprovedAdd) {
+        const isManualRejectedAdd =
+          action === 'labeled' &&
+          labelsMatchingAny([changedLabel], rejectedLabels).length > 0 &&
+          toStringTrim(issue.state).toLowerCase() !== 'closed';
+
+        if (!isManualApprovedAdd && !isManualRejectedAdd) {
           if (action === 'labeled') {
             await removeExactLabelsFromIssue(context, params, [changedLabel]);
           } else if (action === 'unlabeled') {

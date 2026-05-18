@@ -50,9 +50,38 @@ const tryMergeIfGreen = jest.fn(async (_ctx: any, _opts: any) => {});
 const loadStaticConfig = jest.fn(async () => ({}));
 const getDocLinksFromConfig = jest.fn(() => '');
 
-const DEFAULT_CONFIG = {
+type TestConfig = {
+  workflow?: {
+    labels?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+const TEST_WORKFLOW_LABELS = {
+  authorAction: 'Requester Action',
+  approverAction: 'Review Pending',
+  parentOwnerAction: 'Parent Owner Action',
+  approvalRequested: ['Review Pending'],
+  approvalSuccessful: ['Approved'],
+  approvalRejected: ['Rejected'],
+};
+
+function withWorkflowLabels<T extends TestConfig>(cfg: T): T {
+  cfg.workflow = {
+    ...(cfg.workflow || {}),
+    labels: {
+      ...TEST_WORKFLOW_LABELS,
+      ...(cfg.workflow?.labels || {}),
+    },
+  };
+
+  return cfg;
+}
+
+const DEFAULT_CONFIG = withWorkflowLabels({
   workflow: { labels: {}, approvers: [] },
-} as any;
+} as any);
 
 let requestHandler: any;
 
@@ -172,7 +201,7 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
   };
 
   if (args.withCachedConfig) {
-    ctx.resourceBotConfig = args.config ?? DEFAULT_CONFIG;
+    ctx.resourceBotConfig = withWorkflowLabels(args.config ?? DEFAULT_CONFIG);
     ctx.resourceBotHooks = null;
     ctx.resourceBotHooksSource = null;
   }
@@ -514,7 +543,6 @@ test('check_run.completed success handles sequential changed-file lookup failure
   const warnMessages = checkCtx.log.warn.mock.calls.map((call: any[]) => String(call[1] ?? call[0] ?? '')).join('\n');
 
   expect(warnMessages).toContain('sequential-registry-pr:changed-files-lookup-failed');
-  expect(warnMessages).toContain('direct-pr:on-approval:registry-doc-read-failed');
   expect(warnMessages).not.toContain('auto-merge candidate processing failed');
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });

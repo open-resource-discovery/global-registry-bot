@@ -49,14 +49,58 @@ const tryMergeIfGreen = jest.fn(async (_ctx: any, _opts: any) => {});
 const loadStaticConfig = jest.fn(async () => ({}));
 const getDocLinksFromConfig = jest.fn(() => '');
 
-const DEFAULT_CONFIG = {
+type TestConfig = {
+  workflow?: {
+    labels?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+const TEST_WORKFLOW_LABELS = {
+  authorAction: 'Requester Action',
+  approverAction: 'Review Pending',
+  parentOwnerAction: 'Parent Owner Action',
+  approvalRequested: ['Review Pending'],
+  approvalSuccessful: ['Approved'],
+  approvalRejected: ['Rejected'],
+};
+
+function withWorkflowLabels<T extends TestConfig>(cfg: T): T {
+  cfg.workflow = {
+    ...(cfg.workflow || {}),
+    labels: {
+      ...TEST_WORKFLOW_LABELS,
+      ...(cfg.workflow?.labels || {}),
+    },
+  };
+
+  return cfg;
+}
+
+const DEFAULT_CONFIG = withWorkflowLabels({
   workflow: { labels: {}, approvers: [] },
-} as any;
+} as any);
 
 let requestHandler: any;
 
 function postedBodies(): string {
   return postOnce.mock.calls.map((call) => call[2] ?? '').join('\n');
+}
+
+function reviewLabels(): { name: string }[] {
+  return [{ name: 'Review Pending' }];
+}
+
+function inReview<T extends { labels?: any[] }>(issue: T): T {
+  return {
+    ...issue,
+    labels: [...(Array.isArray(issue.labels) ? issue.labels : []), ...reviewLabels()],
+  };
+}
+
+function expectHandoverPosted(): void {
+  expect(postOnce.mock.calls.some((call) => call[3]?.minimizeTag === 'nsreq:handover')).toBe(true);
 }
 
 function httpErr(status: number): Error & { status: number } {
@@ -174,11 +218,12 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
           },
         }),
       },
+      request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
     },
   };
 
   if (args.withCachedConfig) {
-    ctx.resourceBotConfig = args.config ?? DEFAULT_CONFIG;
+    ctx.resourceBotConfig = withWorkflowLabels(args.config ?? DEFAULT_CONFIG);
     ctx.resourceBotHooks = null;
     ctx.resourceBotHooksSource = null;
   }
@@ -544,7 +589,7 @@ test('issue_comment: approval ignored for self-approve when no approvers configu
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'bob' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'bob' } }),
     comment: { body: 'Approved', user: { login: 'bob' } },
     withCachedConfig: true,
     config: cfg,
@@ -571,7 +616,7 @@ test('issue_comment: approval keyword from config triggers approval detection', 
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: '> quote\n\nShip it', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
@@ -595,7 +640,7 @@ test('issue_comment: approval fails when resource name missing', async () => {
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
@@ -617,7 +662,7 @@ test('issue_comment: approval short-circuits when PR already exists', async () =
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
   });
@@ -661,7 +706,7 @@ test('issue_comment: approval with existing PR only adds hook approvers missing 
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
@@ -682,7 +727,7 @@ test('issue_comment: approval with existing PR only adds hook approvers missing 
         number: 1,
         title: 't',
         body: 'b',
-        labels: [],
+        labels: reviewLabels(),
         user: { login: 'author' },
       },
     };
@@ -707,7 +752,7 @@ test('issue_comment: approval create PR failure -> posts error', async () => {
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
   });
@@ -735,7 +780,7 @@ test('issue_comment: author update comment triggers revalidation errors -> posts
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'updated', user: { login: 'author' } },
     withCachedConfig: true,
   });
@@ -765,7 +810,7 @@ test('issue_comment: author update revalidation maps machine-readable validation
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'updated', user: { login: 'author' } },
     withCachedConfig: true,
   });
@@ -2541,6 +2586,14 @@ describe('parent owner approval gating', () => {
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
     (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return {
+          data: {
+            content: Buffer.from('type: vendor\nname: sap\n', 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return { data: { content: b64(topYaml), encoding: 'base64' } };
       }
@@ -6297,7 +6350,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('<!-- nsreq:snapshot:');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
     expect(posted).toContain('manual review required');
     expect(posted).toContain('<summary>Decision details</summary>');
   });
@@ -6418,7 +6471,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('Manual review required because onApproval did not approve all changed registry files.');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('check_suite.success: standalone direct PR onApproval unknown assigns only hook manual approvers and not approversPool', async () => {
@@ -6687,7 +6740,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -6905,7 +6958,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('<!-- nsreq:snapshot:');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
     expect(posted).toContain('manual review required');
     expect(posted).toContain('<summary>Decision details</summary>');
   });
@@ -6927,14 +6980,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 162,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7024,14 +7077,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 1621,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7126,14 +7179,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 16215,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const sharedPr = {
         number: 16215,
@@ -7243,14 +7296,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 1622,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7339,14 +7392,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 163,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7423,14 +7476,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 1623,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7875,7 +7928,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('<!-- nsreq:snapshot:');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
   test('issues.opened: onApproval unknown manual approvers override assignment pool only', async () => {
     const cfg = {
@@ -7990,7 +8043,7 @@ public
     expect(posted).toContain('manual review required');
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
     expect(posted).toContain('<summary>Decision details</summary>');
   });
 
@@ -8089,7 +8142,7 @@ public
     );
 
     expect(postedBodies()).toContain('manual review required');
-    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issues.opened: handover still auto-adds review labels when label refresh fails', async () => {
@@ -8179,7 +8232,7 @@ public
         call.some((arg: unknown) => String(arg ?? '').includes('failed to ensure labels'))
       )
     ).toBe(false);
-    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issues.opened: handover logs when auto-adding review labels fails with non-404', async () => {
@@ -8270,7 +8323,7 @@ public
         call.some((arg: unknown) => String(arg ?? '').includes('failed to ensure labels'))
       )
     ).toBe(true);
-    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issues.opened: concurrent unknown approvals dedupe the unknown-feedback post', async () => {
@@ -8820,7 +8873,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -8914,7 +8967,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -9028,7 +9081,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -9173,7 +9226,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -9327,7 +9380,7 @@ public
           error: jest.fn(),
           debug: jest.fn(),
         },
-        resourceBotConfig: cfg,
+        resourceBotConfig: withWorkflowLabels(cfg),
         resourceBotHooks: {},
         resourceBotHooksSource: 'test',
       };
@@ -9484,7 +9537,7 @@ public
           error: jest.fn(),
           debug: jest.fn(),
         },
-        resourceBotConfig: cfg,
+        resourceBotConfig: withWorkflowLabels(cfg),
         resourceBotHooks: {},
         resourceBotHooksSource: 'test',
       };
@@ -9717,7 +9770,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('Once reviewed, please comment `Approved` to approve this PR for merge.');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issue_comment.created: standalone direct PR fallback allows any request-type pool approver, not only assigned one', async () => {
@@ -10799,7 +10852,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('Manual review required because onApproval did not approve all changed registry files.');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issue_comment.created: product standalone direct PR approval by request-type pool requester creates approval review and merges', async () => {
@@ -11054,7 +11107,7 @@ public
     const posted = postedBodies();
 
     expect(posted).toContain('manual review required by hook');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('check_suite.failure: registry validate annotations are grouped and posted to matching PR', async () => {
@@ -13813,14 +13866,14 @@ test('issue_comment: already-existing resource retry failure reports stale branc
   requestHandler(app);
 
   const handler = handlers['issue_comment.created'][0];
-  const issue = {
+  const issue = inReview({
     number: 77,
     title: 'Request',
     body: '### Product ID\nproduct-stale',
     labels: [],
     state: 'open',
     user: { login: 'author' },
-  };
+  });
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
     issue,
@@ -14180,6 +14233,14 @@ test('issue_comment: parent-owner approval posts validation fallback errors and 
 
   const openCtx = mkIssuesContext({ issue, action: 'opened' });
   (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    if (path === 'data/vendors/sap.yaml') {
+      return {
+        data: {
+          content: Buffer.from('type: vendor\nname: sap\n', 'utf8').toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
     if (path === 'data/namespaces/sap.css.yaml') {
       return {
         data: { content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -14224,17 +14285,15 @@ describe('request orchestrator edge coverage for defensive branches', () => {
   const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
 
   function productCfg(extraLabels: Record<string, any> = {}) {
-    return {
+    return withWorkflowLabels({
       requests: { product: { folderName: 'resources' } },
       workflow: {
         labels: {
-          approvalRequested: ['Review Pending'],
-          approvalSuccessful: ['Approved'],
           ...extraLabels,
         },
         approvers: ['approver'],
       },
-    } as any;
+    } as any);
   }
 
   test('check_suite.completed failure paginates registry annotations until a partial page', async () => {
@@ -14292,14 +14351,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
-        issue: {
+        issue: inReview({
           number: 902,
           title: 'Direct PR',
           body: 'manual direct pr',
           labels: [],
           user: { login: 'requester' },
           pull_request: {},
-        },
+        }),
         comment: { body: 'Approved', user: { login: 'reviewer1' } },
         sender: { type: 'User', login: 'reviewer1' },
         withCachedConfig: true,
@@ -14356,14 +14415,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
-        issue: {
+        issue: inReview({
           number: 9021,
           title: 'Direct PR ordered rejection',
           body: 'manual direct pr',
           labels: [],
           user: { login: 'requester' },
           pull_request: {},
-        },
+        }),
         comment: { body: 'Approved', user: { login: 'reviewer1' } },
         sender: { type: 'User', login: 'reviewer1' },
         withCachedConfig: true,
