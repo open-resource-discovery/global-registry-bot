@@ -138,6 +138,20 @@ import {
   type RequestValidationPostingCallbacks,
 } from './application/request-validation-posting.js';
 import {
+  buildPullRequestHeadReadCandidates as buildPullRequestHeadReadCandidatesApplication,
+  isChangedYamlCandidate as isChangedYamlCandidateApplication,
+  listChangedYamlFilesForPr as listChangedYamlFilesForPrApplication,
+  listChangedYamlFilesForPrAgainstCurrentBase as listChangedYamlFilesForPrAgainstCurrentBaseApplication,
+  listChangedYamlFilesForPrWithFallback as listChangedYamlFilesForPrWithFallbackApplication,
+  listChangedYamlFilesPage as listChangedYamlFilesPageApplication,
+  type PullRequestHeadReadCandidate,
+  readPullRequestHeadFileText as readPullRequestHeadFileTextApplication,
+  readPullRequestHeadTreeEntries as readPullRequestHeadTreeEntriesApplication,
+  readRecursiveGitTreeEntries as readRecursiveGitTreeEntriesApplication,
+  readRepoFileTextAtRef as readRepoFileTextAtRefApplication,
+  registryYamlTreeEntryPath as registryYamlTreeEntryPathApplication,
+} from './application/pr-head-changed-file-discovery.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -402,10 +416,6 @@ type GitTreeEntryLike = {
   path?: string | null;
   type?: string | null;
   sha?: string | null;
-};
-
-type GitTreeLike = {
-  tree?: GitTreeEntryLike[];
 };
 
 type DirectPrApprovalOptions = {
@@ -2274,11 +2284,10 @@ function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: strin
   return matchRequestTypesForFile(context, filePath).length > 0;
 }
 function isChangedYamlCandidate(file: PullRequestFileLike): string {
-  const filename = normalizeRepoPath(file?.filename);
-  const status = toStringTrim(file?.status).toLowerCase();
-
-  if (!filename || !isYamlPath(filename) || status === 'removed') return '';
-  return filename;
+  return isChangedYamlCandidateApplication(file, {
+    normalizeRepoPath,
+    isYamlPath,
+  });
 }
 
 async function listChangedYamlFilesPage(
@@ -2287,25 +2296,7 @@ async function listChangedYamlFilesPage(
   prNumber: number,
   page: number
 ): Promise<PullRequestFileLike[]> {
-  const res = await (
-    context.octokit.pulls as unknown as {
-      listFiles: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data?: PullRequestFileLike[] }>;
-    }
-  ).listFiles({
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    pull_number: prNumber,
-    per_page: 100,
-    page,
-  });
-
-  return Array.isArray(res?.data) ? res.data : [];
+  return await listChangedYamlFilesPageApplication(context, repoInfo, prNumber, page);
 }
 
 async function listChangedYamlFilesForPr(
@@ -2313,24 +2304,11 @@ async function listChangedYamlFilesForPr(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<string[]> {
-  const out: string[] = [];
-  let page = 1;
-
-  while (true) {
-    const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
-    if (!files.length) break;
-
-    for (const file of files) {
-      const filename = isChangedYamlCandidate(file);
-      if (filename && isRegistryEntryPath(context, filename)) out.push(filename);
-    }
-
-    if (files.length < 100) break;
-    page += 1;
-    if (page > 20) break;
-  }
-
-  return Array.from(new Set(out));
+  return await listChangedYamlFilesForPrApplication(context, repoInfo, prNumber, {
+    listChangedYamlFilesPage,
+    isChangedYamlCandidate,
+    isRegistryEntryPath,
+  });
 }
 
 async function readBranchHeadSha(
@@ -2346,61 +2324,20 @@ async function readRecursiveGitTreeEntries(
   repoInfo: RepoInfo,
   ref: string
 ): Promise<GitTreeEntryLike[]> {
-  const treeSha = toStringTrim(ref);
-  if (!treeSha) return [];
-
-  try {
-    const res = await (
-      context.octokit.git as unknown as {
-        getTree: (args: {
-          owner: string;
-          repo: string;
-          tree_sha: string;
-          recursive?: 'true';
-        }) => Promise<{ data?: GitTreeLike }>;
-      }
-    ).getTree({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      tree_sha: treeSha,
-      recursive: 'true',
-    });
-
-    return Array.isArray(res?.data?.tree) ? res.data.tree : [];
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        ref: treeSha,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'git-tree:read-failed'
-    );
-
-    return [];
-  }
+  return await readRecursiveGitTreeEntriesApplication(context, repoInfo, ref, {
+    getErrorMessage,
+    getHttpStatus,
+    log,
+  });
 }
 
 function registryYamlTreeEntryPath(context: BotContext<RequestEvents>, entry: GitTreeEntryLike): string {
-  const path = normalizeRepoPath(entry?.path);
-  const type = toStringTrim(entry?.type).toLowerCase();
-
-  if (type !== 'blob') return '';
-  if (!path || !isYamlPath(path)) return '';
-  if (!isRegistryEntryPath(context, path)) return '';
-
-  return path;
+  return registryYamlTreeEntryPathApplication(context, entry, {
+    normalizeRepoPath,
+    isYamlPath,
+    isRegistryEntryPath,
+  });
 }
-
-type PullRequestHeadReadCandidate = {
-  repoInfo: RepoInfo;
-  ref: string;
-  source: string;
-};
 
 function sameRepoInfo(a: RepoInfo, b: RepoInfo): boolean {
   return sameRepoInfoPure(a, b);
@@ -2414,42 +2351,14 @@ function isCrossRepositoryPullRequest(pr: PullRequestLike, baseRepoInfo: RepoInf
   return isCrossRepositoryPullRequestPure(pr, baseRepoInfo);
 }
 
-function buildPullRequestHeadReadCandidates(repoInfo: RepoInfo, pr: PullRequestLike): PullRequestHeadReadCandidate[] {
-  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const headSha = toStringTrim(pr.head?.sha);
-  const headRef = toStringTrim(pr.head?.ref);
-  const isCrossRepo = !sameRepoInfo(headRepoInfo, repoInfo);
-
-  const out: PullRequestHeadReadCandidate[] = [];
-  const seen = new Set<string>();
-
-  const add = (candidateRepoInfo: RepoInfo, ref: string, source: string): void => {
-    const normalizedRef = toStringTrim(ref);
-    if (!normalizedRef) return;
-
-    const key = `${candidateRepoInfo.owner}/${candidateRepoInfo.repo}:${normalizedRef}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    out.push({
-      repoInfo: candidateRepoInfo,
-      ref: normalizedRef,
-      source,
-    });
-  };
-
-  add(repoInfo, headSha, 'base-repo:head-sha');
-  add(repoInfo, `refs/pull/${pr.number}/head`, 'base-repo:pull-ref-full');
-  add(repoInfo, `pull/${pr.number}/head`, 'base-repo:pull-ref-short');
-
-  if (!isCrossRepo) {
-    add(repoInfo, headRef, 'base-repo:head-ref');
-  }
-
-  add(headRepoInfo, headSha, 'head-repo:head-sha');
-  add(headRepoInfo, headRef, 'head-repo:head-ref');
-
-  return out;
+function buildPullRequestHeadReadCandidates(
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): PullRequestHeadReadCandidate<RepoInfo>[] {
+  return buildPullRequestHeadReadCandidatesApplication(repoInfo, pr, {
+    resolvePullRequestHeadRepoInfo,
+    sameRepoInfo,
+  });
 }
 
 async function readPullRequestHeadFileText(
@@ -2458,55 +2367,14 @@ async function readPullRequestHeadFileText(
   pr: PullRequestLike,
   path: string
 ): Promise<string | null> {
-  const candidates = buildPullRequestHeadReadCandidates(repoInfo, pr);
-  const normalizedPath = normalizeRepoPath(path);
-
-  for (const candidate of candidates) {
-    const raw = await readRepoFileTextAtRef(context, candidate.repoInfo, normalizedPath, candidate.ref);
-    if (raw === null) continue;
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        path: normalizedPath,
-        source: candidate.source,
-        owner: candidate.repoInfo.owner,
-        repo: candidate.repoInfo.repo,
-        ref: candidate.ref,
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      },
-      'pull-request head file resolved'
-    );
-
-    return raw;
-  }
-
-  log(
-    context,
-    'warn',
-    {
-      prNumber: pr.number,
-      path: normalizedPath,
-      baseOwner: repoInfo.owner,
-      baseRepo: repoInfo.repo,
-      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
-      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
-      headRef: toStringTrim(pr.head?.ref),
-      headSha: toStringTrim(pr.head?.sha),
-      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      candidates: candidates.map((candidate) => ({
-        source: candidate.source,
-        owner: candidate.repoInfo.owner,
-        repo: candidate.repoInfo.repo,
-        ref: candidate.ref,
-      })),
-    },
-    'pull-request head file read failed'
-  );
-
-  return null;
+  return await readPullRequestHeadFileTextApplication(context, repoInfo, pr, path, {
+    normalizeRepoPath,
+    buildPullRequestHeadReadCandidates,
+    readRepoFileTextAtRef,
+    resolvePullRequestHeadRepoInfo,
+    isCrossRepositoryPullRequest,
+    log,
+  });
 }
 
 async function readPullRequestHeadTreeEntries(
@@ -2514,49 +2382,13 @@ async function readPullRequestHeadTreeEntries(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<GitTreeEntryLike[]> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return [];
-
-  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const candidates: PullRequestHeadReadCandidate[] = [
-    {
-      repoInfo,
-      ref: headSha,
-      source: 'base-repo:head-sha',
-    },
-  ];
-
-  if (!sameRepoInfo(headRepoInfo, repoInfo)) {
-    candidates.push({
-      repoInfo: headRepoInfo,
-      ref: headSha,
-      source: 'head-repo:head-sha',
-    });
-  }
-
-  for (const candidate of candidates) {
-    const entries = await readRecursiveGitTreeEntries(context, candidate.repoInfo, candidate.ref);
-    if (!entries.length) continue;
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        source: candidate.source,
-        owner: candidate.repoInfo.owner,
-        repo: candidate.repoInfo.repo,
-        ref: candidate.ref,
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-        entries: entries.length,
-      },
-      'pull-request head tree resolved'
-    );
-
-    return entries;
-  }
-
-  return [];
+  return await readPullRequestHeadTreeEntriesApplication(context, repoInfo, pr, {
+    resolvePullRequestHeadRepoInfo,
+    sameRepoInfo,
+    readRecursiveGitTreeEntries,
+    isCrossRepositoryPullRequest,
+    log,
+  });
 }
 
 async function listChangedYamlFilesForPrAgainstCurrentBase(
@@ -2565,45 +2397,12 @@ async function listChangedYamlFilesForPrAgainstCurrentBase(
   pr: PullRequestLike,
   baseBranch: string
 ): Promise<string[]> {
-  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-  if (!baseRef) return [];
-
-  const baseSha = await readBranchHeadSha(context, repoInfo, baseRef);
-  if (!baseSha) return [];
-
-  const [baseEntries, headEntries] = await Promise.all([
-    readRecursiveGitTreeEntries(context, repoInfo, baseSha),
-    readPullRequestHeadTreeEntries(context, repoInfo, pr),
-  ]);
-
-  const baseByPath = new Map<string, string>();
-
-  for (const entry of baseEntries) {
-    const path = registryYamlTreeEntryPath(context, entry);
-    if (!path) continue;
-
-    const sha = toStringTrim(entry.sha);
-    if (sha) baseByPath.set(path, sha);
-  }
-
-  const changed: string[] = [];
-  const seen = new Set<string>();
-
-  for (const entry of headEntries) {
-    const path = registryYamlTreeEntryPath(context, entry);
-    if (!path || seen.has(path)) continue;
-
-    const headEntrySha = toStringTrim(entry.sha);
-    const baseEntrySha = baseByPath.get(path) || '';
-
-    if (!headEntrySha) continue;
-    if (baseEntrySha && baseEntrySha === headEntrySha) continue;
-
-    seen.add(path);
-    changed.push(path);
-  }
-
-  return changed;
+  return await listChangedYamlFilesForPrAgainstCurrentBaseApplication(context, repoInfo, pr, baseBranch, {
+    readBranchHeadSha,
+    readRecursiveGitTreeEntries,
+    readPullRequestHeadTreeEntries,
+    registryYamlTreeEntryPath,
+  });
 }
 
 async function listChangedYamlFilesForPrWithFallback(
@@ -2612,29 +2411,11 @@ async function listChangedYamlFilesForPrWithFallback(
   pr: PullRequestLike,
   baseBranch?: string
 ): Promise<string[]> {
-  const fromPullFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
-  if (fromPullFiles.length) return fromPullFiles;
-
-  const fallbackBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-  if (!fallbackBaseBranch) return [];
-
-  const fromTreeDiff = await listChangedYamlFilesForPrAgainstCurrentBase(context, repoInfo, pr, fallbackBaseBranch);
-
-  if (fromTreeDiff.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        baseBranch: fallbackBaseBranch,
-        changedRegistryFiles: fromTreeDiff,
-      },
-      'changed-registry-files:fallback-tree-diff'
-    );
-  }
-
-  return fromTreeDiff;
+  return await listChangedYamlFilesForPrWithFallbackApplication(context, repoInfo, pr, baseBranch, {
+    listChangedYamlFilesForPr,
+    listChangedYamlFilesForPrAgainstCurrentBase,
+    log,
+  });
 }
 
 async function isPullRequestBehindCurrentBase(
@@ -2969,30 +2750,10 @@ async function readRepoFileTextAtRef(
   path: string,
   ref: string
 ): Promise<string | null> {
-  const p = normalizeRepoPath(path);
-  const branchRef = toStringTrim(ref);
-  if (!p || !branchRef) return null;
-
-  try {
-    const res = await (
-      context.octokit.repos as unknown as {
-        getContent: (args: { owner: string; repo: string; path: string; ref?: string }) => Promise<{ data?: unknown }>;
-      }
-    ).getContent({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      path: p,
-      ref: branchRef,
-    });
-
-    const data = (res as { data?: unknown }).data;
-    if (Array.isArray(data) || !isRepoContentFile(data)) return null;
-
-    const enc = typeof data.encoding === 'string' ? data.encoding : 'base64';
-    return Buffer.from(String(data.content || ''), enc as BufferEncoding).toString('utf8');
-  } catch {
-    return null;
-  }
+  return await readRepoFileTextAtRefApplication(context, repoInfo, path, ref, {
+    normalizeRepoPath,
+    isRepoContentFile,
+  });
 }
 
 async function readRegistryDocForApproval(
