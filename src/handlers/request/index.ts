@@ -113,7 +113,9 @@ import {
   type DefaultBranchApprovedPrBranchUpdateCallbacks,
 } from './application/default-branch-approved-pr-branch-update.js';
 import {
+  processAuthorUpdateComment as processAuthorUpdateCommentApplication,
   processRequestIssueLifecycle as processRequestIssueLifecycleApplication,
+  type RequestIssueAuthorUpdateCallbacks,
   type RequestIssueLifecycleCallbacks,
 } from './application/request-issue-lifecycle.js';
 import {
@@ -4604,6 +4606,85 @@ function buildRequestIssueLifecycleCallbacks(
   };
 }
 
+function buildRequestIssueAuthorUpdateCallbacks(
+  app: Probot
+): RequestIssueAuthorUpdateCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  ValidateRequestIssueResult
+> {
+  return {
+    validateRequestIssue,
+    parseForm,
+    calcSnapshotHash,
+    checkParentChainExistsInFlatStructure,
+    postOnce,
+    setStateLabel,
+    closeOutdatedRequestPrs,
+    resolveEffectiveRequestType,
+    maybeRequireParentOwnerApproval,
+    log,
+    isDebugEnabled: DBG,
+    maybeRequireSystemContactOwnerApproval,
+    getApprovedParentOwnerLogin,
+    isSubContextRequestType,
+    maybeHandleApprovalDecision: async (
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType,
+      namespace,
+      options
+    ): Promise<ApprovalHandlingResult> =>
+      await maybeHandleApprovalDecision(
+        context,
+        params,
+        issue,
+        template,
+        parsedFormData,
+        requestType,
+        namespace,
+        options as ReturnType<typeof buildApprovalDecisionDispatchOptions>
+      ),
+    buildApprovalDecisionDispatchOptions,
+    finalizeApprovedRequest,
+    resolveManualReviewApproverOverrideFromApprovalHook,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    handoverToCpa: async (context, params, issue, nsType, namespace, labels, options): Promise<void> =>
+      await handoverToCpa(
+        context,
+        params,
+        issue,
+        nsType,
+        namespace,
+        labels,
+        options as ReturnType<typeof buildReviewHandoverOptions>
+      ),
+    buildReviewHandoverOptions: (): Record<string, unknown> =>
+      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+    onParentChainCheckFailed: (error: unknown): void => {
+      (app.log || console).warn?.(
+        { err: error instanceof Error ? error.message : String(error) },
+        'parent chain check failed'
+      );
+    },
+    onCloseOutdatedRequestPrsSkipped: (error: unknown): void => {
+      (app.log || console).warn?.(
+        { err: error instanceof Error ? error.message : String(error) },
+        'closeOutdatedRequestPRs skipped'
+      );
+    },
+    onRevalidationFailed: (error: unknown): void => {
+      (app.log || console).warn?.(`Revalidation failed: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  };
+}
+
 async function processIssueEvent(
   app: Probot,
   context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
@@ -4811,170 +4892,14 @@ async function handleAuthorUpdateComment(
   template: TemplateLike,
   parsedFormData: FormData
 ): Promise<void> {
-  try {
-    const reval = await validateRequestIssue(context, params, issue, {
-      template,
-      formData: parsedFormData,
-    });
-    const {
-      errors: revalErrors,
-      errorsFormattedSingle: revalErrorsFormattedSingle,
-      errorsFormatted: revalErrorsFormatted,
-      namespace,
-      nsType,
-      template: tpl,
-    } = reval;
-
-    if (Array.isArray(revalErrors) && revalErrors.length === 0 && tpl) {
-      const parsedAfterUpdate = parseForm(readIssueBodyForProcessing(issue.body), tpl);
-      const snapshotHash = calcSnapshotHash(parsedAfterUpdate, tpl, readIssueBodyForProcessing(issue.body));
-
-      try {
-        const parentError = await checkParentChainExistsInFlatStructure(
-          context,
-          { owner: params.owner, repo: params.repo },
-          tpl,
-          parsedAfterUpdate,
-          namespace
-        );
-        if (parentError) {
-          await postOnce(
-            context,
-            params,
-            buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
-            {
-              minimizeTag: 'nsreq:validation',
-            }
-          );
-          await setStateLabel(context, params, issue, 'author');
-          return;
-        }
-      } catch (e: unknown) {
-        (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'parent chain check failed');
-      }
-
-      try {
-        await closeOutdatedRequestPrs(context, params, tpl);
-      } catch (e: unknown) {
-        (app.log || console).warn?.(
-          { err: e instanceof Error ? e.message : String(e) },
-          'closeOutdatedRequestPRs skipped'
-        );
-      }
-
-      const effectiveRequestType = resolveEffectiveRequestType(tpl, parsedAfterUpdate);
-
-      const gated = await maybeRequireParentOwnerApproval(context, params, issue, tpl, namespace, effectiveRequestType);
-
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { issue: issue.number, target: namespace, requestType: effectiveRequestType, gated },
-          'parent-approval:gate-result(update)'
-        );
-      }
-
-      if (gated) return;
-
-      const contactGated = await maybeRequireSystemContactOwnerApproval(
-        context,
-        params,
-        issue,
-        parsedAfterUpdate,
-        effectiveRequestType,
-        namespace
-      );
-
-      if (contactGated) return;
-
-      const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, namespace);
-      if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
-        const approvalOutcome = await maybeHandleApprovalDecision(
-          context,
-          params,
-          issue,
-          tpl,
-          parsedAfterUpdate,
-          effectiveRequestType,
-          namespace,
-          buildApprovalDecisionDispatchOptions()
-        );
-
-        if (approvalOutcome !== 'continue') return;
-
-        await finalizeApprovedRequest(context, params, issue, tpl, parsedAfterUpdate, {
-          approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
-        });
-        return;
-      }
-
-      const approvalOutcome = await maybeHandleApprovalDecision(
-        context,
-        params,
-        issue,
-        tpl,
-        parsedAfterUpdate,
-        effectiveRequestType,
-        namespace,
-        buildApprovalDecisionDispatchOptions()
-      );
-
-      if (approvalOutcome !== 'continue') return;
-
-      const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-        context,
-        params,
-        issue,
-        tpl,
-        parsedAfterUpdate,
-        effectiveRequestType
-      );
-
-      const hookApprovers = manualApproversOverride.length
-        ? []
-        : await resolveAdditionalIssueApproversFromApprovalHook(
-            context,
-            params,
-            issue,
-            tpl,
-            parsedAfterUpdate,
-            effectiveRequestType
-          );
-
-      await handoverToCpa(context, params, issue, nsType, namespace, [], {
-        snapshotHash,
-        requestType: effectiveRequestType,
-        extraApprovers: hookApprovers,
-        manualApproversOverride,
-        ...buildReviewHandoverOptions(),
-      });
-      return;
-    }
-
-    const listFallback = (revalErrors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      revalErrorsFormattedSingle?.trim() || revalErrorsFormatted?.trim() || listFallback || 'Unknown validation error.';
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(
-        message,
-        normalizeMachineReadableIssues(
-          (reval.validationIssues || []).map((validationIssue) => ({
-            field: toStringTrim(validationIssue.path) || 'details',
-            message: toStringTrim(validationIssue.message),
-          }))
-        )
-      ),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await setStateLabel(context, params, issue, 'author');
-  } catch (e: unknown) {
-    (app.log || console).warn?.(`Revalidation failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  await processAuthorUpdateCommentApplication(
+    context,
+    params,
+    issue,
+    template,
+    parsedFormData,
+    buildRequestIssueAuthorUpdateCallbacks(app)
+  );
 }
 
 function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestEvents>): string {

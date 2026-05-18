@@ -208,6 +208,118 @@ export type RequestIssueLifecycleCallbacks<
   buildReviewHandoverOptions: () => Record<string, unknown>;
 };
 
+export type RequestIssueAuthorUpdateCallbacks<
+  ContextType,
+  ParamsType extends IssueParamsBase,
+  IssueType extends IssueLikeBase,
+  TemplateType extends TemplateLikeBase,
+  FormDataType extends FormDataBase,
+  ValidateResultType extends ValidateRequestIssueResultBase<TemplateType>,
+> = {
+  validateRequestIssue: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    options?: { template?: TemplateType; formData?: FormDataType }
+  ) => Promise<ValidateResultType>;
+  parseForm: (body: string, template: TemplateType) => FormDataType;
+  calcSnapshotHash: (formData: FormDataType, template: TemplateType, rawBody: string) => string;
+  checkParentChainExistsInFlatStructure: (
+    context: ContextType,
+    repoInfo: { owner: string; repo: string },
+    template: TemplateType,
+    formData: FormDataType,
+    explicitResourceName?: string
+  ) => Promise<string | null>;
+  postOnce: (
+    context: ContextType,
+    params: ParamsType,
+    body: string,
+    options?: { minimizeTag?: string }
+  ) => Promise<void>;
+  setStateLabel: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    state: 'author' | 'review'
+  ) => Promise<void>;
+  closeOutdatedRequestPrs: (
+    context: ContextType,
+    params: ParamsType,
+    template: TemplateType,
+    options?: CloseOutdatedRequestPrsOptions<FormDataType>
+  ) => Promise<void>;
+  resolveEffectiveRequestType: (template: TemplateType, formData: FormDataType) => string;
+  maybeRequireParentOwnerApproval: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    template: TemplateType,
+    validatedNamespace: string,
+    requestType: string
+  ) => Promise<boolean>;
+  log: (context: ContextType, level: LogLevel, obj: unknown, msg: string) => void;
+  isDebugEnabled: boolean;
+  maybeRequireSystemContactOwnerApproval: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    parsedFormData: FormDataType,
+    requestType: string,
+    validatedNamespace: string
+  ) => Promise<boolean>;
+  getApprovedParentOwnerLogin: (issueBody: unknown, target: string) => string;
+  isSubContextRequestType: (requestType: unknown) => boolean;
+  maybeHandleApprovalDecision: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    template: TemplateType,
+    parsedFormData: FormDataType,
+    requestType: string,
+    namespace: string,
+    options: unknown
+  ) => Promise<string>;
+  buildApprovalDecisionDispatchOptions: () => unknown;
+  finalizeApprovedRequest: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    template: TemplateType,
+    parsedFormData: FormDataType,
+    options: FinalizeApprovedRequestOptions
+  ) => Promise<void>;
+  resolveManualReviewApproverOverrideFromApprovalHook: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    template: TemplateType,
+    parsedFormData: FormDataType,
+    requestType?: string
+  ) => Promise<string[]>;
+  resolveAdditionalIssueApproversFromApprovalHook: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    template: TemplateType,
+    parsedFormData: FormDataType,
+    requestType?: string
+  ) => Promise<string[]>;
+  handoverToCpa: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    nsType: string,
+    namespace: string,
+    labels: string[],
+    options: Record<string, unknown>
+  ) => Promise<void>;
+  buildReviewHandoverOptions: () => Record<string, unknown>;
+  onParentChainCheckFailed: (error: unknown) => void;
+  onCloseOutdatedRequestPrsSkipped: (error: unknown) => void;
+  onRevalidationFailed: (error: unknown) => void;
+};
+
 export async function processRequestIssueLifecycle<
   ContextType,
   ParamsType extends IssueParamsBase,
@@ -263,8 +375,7 @@ export async function processRequestIssueLifecycle<
   }
 
   const processedIssueBody = readIssueBodyForProcessing(issue.body);
-  const emptyFormData: FormDataType = {};
-  const parsedFormData = template ? callbacks.parseForm(processedIssueBody, template) : emptyFormData;
+  const parsedFormData = callbacks.parseForm(processedIssueBody, template);
 
   if (!callbacks.isRequestIssue(context, template, parsedFormData)) {
     if (callbacks.isDebugEnabled) {
@@ -450,4 +561,197 @@ export async function processRequestIssueLifecycle<
     manualApproversOverride,
     ...callbacks.buildReviewHandoverOptions(),
   });
+}
+
+export async function processAuthorUpdateComment<
+  ContextType,
+  ParamsType extends IssueParamsBase,
+  IssueType extends IssueLikeBase,
+  TemplateType extends TemplateLikeBase,
+  FormDataType extends FormDataBase,
+  ValidateResultType extends ValidateRequestIssueResultBase<TemplateType>,
+>(
+  context: ContextType,
+  params: ParamsType,
+  issue: IssueType,
+  template: TemplateType,
+  parsedFormData: FormDataType,
+  callbacks: RequestIssueAuthorUpdateCallbacks<
+    ContextType,
+    ParamsType,
+    IssueType,
+    TemplateType,
+    FormDataType,
+    ValidateResultType
+  >
+): Promise<void> {
+  try {
+    const reval = await callbacks.validateRequestIssue(context, params, issue, {
+      template,
+      formData: parsedFormData,
+    });
+    const {
+      errors: revalErrors,
+      errorsFormattedSingle: revalErrorsFormattedSingle,
+      errorsFormatted: revalErrorsFormatted,
+      namespace,
+      nsType,
+      template: validatedTemplate,
+    } = reval;
+
+    if (Array.isArray(revalErrors) && revalErrors.length === 0 && validatedTemplate) {
+      const issueBody = readIssueBodyForProcessing(issue.body);
+      const parsedAfterUpdate = callbacks.parseForm(issueBody, validatedTemplate);
+      const snapshotHash = callbacks.calcSnapshotHash(parsedAfterUpdate, validatedTemplate, issueBody);
+
+      try {
+        const parentError = await callbacks.checkParentChainExistsInFlatStructure(
+          context,
+          { owner: params.owner, repo: params.repo },
+          validatedTemplate,
+          parsedAfterUpdate,
+          namespace
+        );
+        if (parentError) {
+          await callbacks.postOnce(
+            context,
+            params,
+            buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
+            {
+              minimizeTag: 'nsreq:validation',
+            }
+          );
+          await callbacks.setStateLabel(context, params, issue, 'author');
+          return;
+        }
+      } catch (error: unknown) {
+        callbacks.onParentChainCheckFailed(error);
+      }
+
+      try {
+        await callbacks.closeOutdatedRequestPrs(context, params, validatedTemplate);
+      } catch (error: unknown) {
+        callbacks.onCloseOutdatedRequestPrsSkipped(error);
+      }
+
+      const effectiveRequestType = callbacks.resolveEffectiveRequestType(validatedTemplate, parsedAfterUpdate);
+
+      const gated = await callbacks.maybeRequireParentOwnerApproval(
+        context,
+        params,
+        issue,
+        validatedTemplate,
+        namespace,
+        effectiveRequestType
+      );
+
+      if (callbacks.isDebugEnabled) {
+        callbacks.log(
+          context,
+          'debug',
+          { issue: issue.number, target: namespace, requestType: effectiveRequestType, gated },
+          'parent-approval:gate-result(update)'
+        );
+      }
+
+      if (gated) return;
+
+      const contactGated = await callbacks.maybeRequireSystemContactOwnerApproval(
+        context,
+        params,
+        issue,
+        parsedAfterUpdate,
+        effectiveRequestType,
+        namespace
+      );
+
+      if (contactGated) return;
+
+      const parentApprovedBy = callbacks.getApprovedParentOwnerLogin(issue.body, namespace);
+      if (callbacks.isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
+        const approvalOutcome = await callbacks.maybeHandleApprovalDecision(
+          context,
+          params,
+          issue,
+          validatedTemplate,
+          parsedAfterUpdate,
+          effectiveRequestType,
+          namespace,
+          callbacks.buildApprovalDecisionDispatchOptions()
+        );
+
+        if (approvalOutcome !== 'continue') return;
+
+        await callbacks.finalizeApprovedRequest(context, params, issue, validatedTemplate, parsedAfterUpdate, {
+          approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
+        });
+        return;
+      }
+
+      const approvalOutcome = await callbacks.maybeHandleApprovalDecision(
+        context,
+        params,
+        issue,
+        validatedTemplate,
+        parsedAfterUpdate,
+        effectiveRequestType,
+        namespace,
+        callbacks.buildApprovalDecisionDispatchOptions()
+      );
+
+      if (approvalOutcome !== 'continue') return;
+
+      const manualApproversOverride = await callbacks.resolveManualReviewApproverOverrideFromApprovalHook(
+        context,
+        params,
+        issue,
+        validatedTemplate,
+        parsedAfterUpdate,
+        effectiveRequestType
+      );
+
+      const hookApprovers = manualApproversOverride.length
+        ? []
+        : await callbacks.resolveAdditionalIssueApproversFromApprovalHook(
+            context,
+            params,
+            issue,
+            validatedTemplate,
+            parsedAfterUpdate,
+            effectiveRequestType
+          );
+
+      await callbacks.handoverToCpa(context, params, issue, nsType, namespace, [], {
+        snapshotHash,
+        requestType: effectiveRequestType,
+        extraApprovers: hookApprovers,
+        manualApproversOverride,
+        ...callbacks.buildReviewHandoverOptions(),
+      });
+      return;
+    }
+
+    const listFallback = (revalErrors || []).map((entry) => `- ${entry}`).join('\n');
+    const message =
+      revalErrorsFormattedSingle?.trim() || revalErrorsFormatted?.trim() || listFallback || 'Unknown validation error.';
+    await callbacks.postOnce(
+      context,
+      params,
+      buildDetectedIssuesBody(
+        message,
+        normalizeMachineReadableIssues(
+          (reval.validationIssues || []).map((validationIssue) => ({
+            field: toStringTrim(validationIssue.path) || 'details',
+            message: toStringTrim(validationIssue.message),
+          }))
+        )
+      ),
+      {
+        minimizeTag: 'nsreq:validation',
+      }
+    );
+    await callbacks.setStateLabel(context, params, issue, 'author');
+  } catch (error: unknown) {
+    callbacks.onRevalidationFailed(error);
+  }
 }
