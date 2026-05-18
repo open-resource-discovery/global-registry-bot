@@ -319,11 +319,93 @@ const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
 const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 
-// Request lifecycle status labels
-const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
-const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
-const REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION = 'Parent Owner Action';
-const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
+type WorkflowLabelKey =
+  | 'global'
+  | 'authorAction'
+  | 'approverAction'
+  | 'parentOwnerAction'
+  | 'approvalRequested'
+  | 'approvalSuccessful'
+  | 'approvalRejected'
+  | 'autoMergeCandidate';
+
+function readWorkflowLabelsConfig(context: BotContext<RequestEvents>): Record<string, unknown> {
+  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const wf = cfg?.workflow ?? {};
+
+  if (!isPlainObject(wf)) return {};
+
+  const labels = (wf as Record<string, unknown>)['labels'];
+  return isPlainObject(labels) ? labels : {};
+}
+
+function resolveWorkflowLabels(context: BotContext<RequestEvents>, key: WorkflowLabelKey): string[] {
+  const raw = readWorkflowLabelsConfig(context)[key];
+
+  if (Array.isArray(raw)) {
+    return raw.map(toStringTrim).filter(Boolean);
+  }
+
+  const single = toStringTrim(raw);
+  return single ? [single] : [];
+}
+
+function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: WorkflowLabelKey): string {
+  return resolveWorkflowLabels(context, key)[0] || '';
+}
+
+function resolveAuthorActionLabel(context: BotContext<RequestEvents>): string {
+  return resolveWorkflowLabel(context, 'authorAction');
+}
+
+function resolveApproverActionLabel(context: BotContext<RequestEvents>): string {
+  return resolveWorkflowLabel(context, 'approverAction');
+}
+
+function resolveParentOwnerActionLabel(context: BotContext<RequestEvents>): string {
+  return resolveWorkflowLabel(context, 'parentOwnerAction');
+}
+
+function resolveApprovedLabels(context: BotContext<RequestEvents>): string[] {
+  return resolveWorkflowLabels(context, 'approvalSuccessful');
+}
+
+function resolveApprovedLabel(context: BotContext<RequestEvents>): string {
+  return resolveWorkflowLabel(context, 'approvalSuccessful');
+}
+
+function resolveRejectedLabels(context: BotContext<RequestEvents>): string[] {
+  return resolveWorkflowLabels(context, 'approvalRejected');
+}
+
+function resolveRejectedLabel(context: BotContext<RequestEvents>): string {
+  return resolveWorkflowLabel(context, 'approvalRejected');
+}
+
+const normalizeKey = (s: unknown): string => {
+  const base = toStringTrim(s).toLowerCase();
+  return base.replaceAll(/[^\w]+/g, '-').replaceAll(/(?:^-+|-+$)/g, '');
+};
+
+const labelsMatching = (labels: string[], expected: string): string[] => {
+  const expectedKey = normalizeKey(expected);
+  if (!expectedKey) return [];
+
+  return (labels || []).filter((l) => {
+    const k = normalizeKey(l);
+    return k === expectedKey || k.includes(expectedKey) || expectedKey.includes(k);
+  });
+};
+
+function labelsMatchingAny(labels: string[], expectedLabels: string[]): string[] {
+  const out: string[] = [];
+
+  for (const expected of expectedLabels.map(toStringTrim).filter(Boolean)) {
+    out.push(...labelsMatching(labels, expected));
+  }
+
+  return Array.from(new Set(out));
+}
 
 function normalizeSchemaFieldAlias(value: unknown): string {
   const raw = toStringTrim(value);
@@ -981,11 +1063,6 @@ function stripRegistrySuffix(msg: string): string {
   const i = msg.indexOf(' [file=');
   return (i >= 0 ? msg.slice(0, i) : msg).trim();
 }
-
-const normalizeKey = (s: unknown): string => {
-  const base = toStringTrim(s).toLowerCase();
-  return base.replaceAll(/[^\w]+/g, '-').replaceAll(/(?:^-+|-+$)/g, '');
-};
 
 function toSectionTitle(field: string): string {
   const raw = toStringTrim(field);
@@ -1826,10 +1903,11 @@ async function handoverToCpa(
 
   await ensureLabelsPresentOnce(context, params, labelsToAdd);
 
-  await enforceExclusiveWorkflowStateLabels(context, params, [
-    resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING),
-    ...(eff.reviewRequestedLabels || []),
-  ]);
+  await enforceExclusiveWorkflowStateLabels(
+    context,
+    params,
+    [resolveApproverActionLabel(context), ...(eff.reviewRequestedLabels || [])].filter(Boolean)
+  );
 
   if (eff.labelOnApproved) {
     try {
@@ -1918,55 +1996,17 @@ async function removeReviewPendingLabelsAfterApproval(
   }
 }
 
-function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: string, fallback: string): string {
-  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
-  const wf = cfg?.workflow ?? {};
-
-  if (!isPlainObject(wf)) return fallback;
-
-  const labelsCfg = isPlainObject((wf as Record<string, unknown>)['labels'])
-    ? ((wf as Record<string, unknown>)['labels'] as Record<string, unknown>)
-    : {};
-
-  const raw = labelsCfg[key];
-
-  if (Array.isArray(raw)) {
-    return toStringTrim(raw[0]) || fallback;
-  }
-
-  return toStringTrim(raw) || fallback;
-}
-
-function resolveParentOwnerActionLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'parentOwnerAction', REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION);
-}
-
-const labelsMatching = (labels: string[], expected: string): string[] => {
-  const expectedKey = normalizeKey(expected);
-  if (!expectedKey) return [];
-
-  return (labels || []).filter((l) => {
-    const k = normalizeKey(l);
-    return k === expectedKey || k.includes(expectedKey) || expectedKey.includes(k);
-  });
-};
-
 function collectWorkflowStateLabels(context: BotContext<RequestEvents>): string[] {
   const eff = resolveEffectiveConstants(context);
-
-  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
-  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
 
   return Array.from(
     new Set(
       [
-        authorActionLabel,
-        approverActionLabel,
-        parentOwnerActionLabel,
-        approvedLabel,
-        REQUEST_STATUS_LABEL_REJECTED,
+        resolveAuthorActionLabel(context),
+        resolveApproverActionLabel(context),
+        resolveParentOwnerActionLabel(context),
+        ...resolveApprovedLabels(context),
+        ...resolveRejectedLabels(context),
         ...(eff.reviewRequestedLabels || []),
       ]
         .map(toStringTrim)
@@ -2038,6 +2078,11 @@ async function clearParentOwnerActionState(
 async function setParentOwnerActionState(context: BotContext<RequestEvents>, params: IssueParams): Promise<void> {
   const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
 
+  if (!parentOwnerActionLabel) {
+    log(context, 'warn', { issueNumber: params.issue_number }, 'parent-owner-action-state:missing-config-label');
+    return;
+  }
+
   await enforceExclusiveWorkflowStateLabels(context, params, [parentOwnerActionLabel]);
   await ensureLabelsPresentOnce(context, params, [parentOwnerActionLabel]);
 }
@@ -2086,6 +2131,7 @@ async function removeProgressStatusLabels(
   currentLabels?: string[]
 ): Promise<void> {
   let labels = (currentLabels || []).slice();
+
   if (!labels.length) {
     try {
       labels = await fetchIssueLabels(context, params);
@@ -2094,17 +2140,22 @@ async function removeProgressStatusLabels(
     }
   }
 
-  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
-  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
+  const stateLabels = [
+    resolveAuthorActionLabel(context),
+    resolveApproverActionLabel(context),
+    resolveParentOwnerActionLabel(context),
+  ].filter(Boolean);
 
-  const toRemove = new Set<string>([
-    ...labelsMatching(labels, authorActionLabel),
-    ...labelsMatching(labels, approverActionLabel),
-    ...labelsMatching(labels, parentOwnerActionLabel),
-  ]);
+  const toRemove = new Set<string>();
+
+  for (const stateLabel of stateLabels) {
+    for (const match of labelsMatching(labels, stateLabel)) {
+      toRemove.add(match);
+    }
+  }
 
   if (!toRemove.size) return;
+
   await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
 }
 
@@ -2114,6 +2165,7 @@ async function removeRejectedStatusLabel(
   currentLabels?: string[]
 ): Promise<void> {
   let labels = (currentLabels || []).slice();
+
   if (!labels.length) {
     try {
       labels = await fetchIssueLabels(context, params);
@@ -2122,8 +2174,10 @@ async function removeRejectedStatusLabel(
     }
   }
 
-  const toRemove = labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED);
+  const toRemove = labelsMatchingAny(labels, resolveRejectedLabels(context));
+
   if (!toRemove.length) return;
+
   await removeExactLabelsFromIssue(context, params, toRemove);
 }
 
@@ -2268,22 +2322,25 @@ async function applyApprovedRequestState(
   params: IssueParams,
   eff: EffectiveConstants
 ): Promise<void> {
+  const approvedLabels = resolveApprovedLabels(context);
+  const approvedLabel = resolveApprovedLabel(context);
+
   try {
-    if (eff.labelOnApproved) {
-      await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
+    if (approvedLabel) {
+      await context.octokit.issues.addLabels({ ...params, labels: [approvedLabel] });
     }
   } catch {
     // ignore
   }
 
-  await enforceExclusiveWorkflowStateLabels(context, params, [toStringTrim(eff.labelOnApproved) || 'Approved']);
+  await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
 
   await removeReviewPendingLabelsAfterApproval(context, params, eff);
 
   try {
     const labelsAfter = await fetchIssueLabels(context, params);
-    const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-    if (labelsMatching(labelsAfter, approvedLabel).length) {
+
+    if (labelsMatchingAny(labelsAfter, approvedLabels).length) {
       await removeProgressStatusLabels(context, params, labelsAfter);
       await removeRejectedStatusLabel(context, params, labelsAfter);
     }
@@ -2534,7 +2591,9 @@ async function addApprovedLabelToPr(
   options: { skipStateCleanup?: boolean } = {}
 ): Promise<void> {
   const eff = resolveEffectiveConstants(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  const approvedLabel = resolveApprovedLabel(context);
+  const approvedLabels = resolveApprovedLabels(context);
+
   if (!approvedLabel) return;
 
   const params: IssueParams = {
@@ -2552,7 +2611,7 @@ async function addApprovedLabelToPr(
     return;
   }
 
-  await enforceExclusiveWorkflowStateLabels(context, params, [approvedLabel]);
+  await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
 
   // Standalone cross-repo direct PRs must stay PR-only here.
   // Reading the PR as an issue would break the no-linked-issue guarantee.
@@ -2724,9 +2783,8 @@ async function hasApprovedLabelOnPr(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<boolean> {
-  const eff = resolveEffectiveConstants(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-  if (!approvedLabel) return false;
+  const approvedLabels = resolveApprovedLabels(context);
+  if (!approvedLabels.length) return false;
 
   try {
     const labels = await fetchIssueLabels(context, {
@@ -2735,7 +2793,7 @@ async function hasApprovedLabelOnPr(
       issue_number: prNumber,
     });
 
-    return labelsMatching(labels, approvedLabel).length > 0;
+    return labelsMatchingAny(labels, approvedLabels).length > 0;
   } catch {
     return false;
   }
@@ -6341,10 +6399,11 @@ async function handoverStandaloneDirectPrToReview(
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
   await ensureLabelsPresentOnce(context, params, labelsToAdd);
 
-  await enforceExclusiveWorkflowStateLabels(context, params, [
-    resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING),
-    ...(eff.reviewRequestedLabels || []),
-  ]);
+  await enforceExclusiveWorkflowStateLabels(
+    context,
+    params,
+    [resolveApproverActionLabel(context), ...(eff.reviewRequestedLabels || [])].filter(Boolean)
+  );
 
   if (eff.labelOnApproved) {
     try {
@@ -8898,8 +8957,9 @@ export default function requestHandler(app: Probot): void {
     const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
     if (!isRequestIssue(context, template, parsedFormData)) return;
 
-    const eff = resolveEffectiveConstants(context);
-    const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+    const approvedLabel = resolveApprovedLabel(context);
+    const rejectedLabel = resolveRejectedLabel(context);
+    const rejectedLabels = resolveRejectedLabels(context);
 
     let labels: string[] = [];
     try {
@@ -8908,7 +8968,8 @@ export default function requestHandler(app: Probot): void {
       labels = toLabelNames(issue.labels);
     }
 
-    const hasApproved = labelsMatching(labels, approvedLabel).length > 0;
+    const approvedLabels = resolveApprovedLabels(context);
+    const hasApproved = labelsMatchingAny(labels, approvedLabels).length > 0;
 
     // If approved, keep it clean
     if (hasApproved) {
@@ -8918,18 +8979,19 @@ export default function requestHandler(app: Probot): void {
     }
 
     // Closed but not approved -> mark as rejected
-    const hasRejected = labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED).length > 0;
-    if (!hasRejected) {
+    const hasRejected = labelsMatchingAny(labels, rejectedLabels).length > 0;
+
+    if (rejectedLabel && !hasRejected) {
       try {
         await context.octokit.issues.addLabels({
           ...params,
-          labels: [REQUEST_STATUS_LABEL_REJECTED],
+          labels: [rejectedLabel],
         });
       } catch (e: unknown) {
         log(
           context,
           'warn',
-          { err: e instanceof Error ? e.message : String(e), label: REQUEST_STATUS_LABEL_REJECTED },
+          { err: e instanceof Error ? e.message : String(e), label: rejectedLabel },
           'failed to add rejected status label'
         );
       }
@@ -8942,13 +9004,14 @@ export default function requestHandler(app: Probot): void {
       // best effort
     }
 
-    if (labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED).length) {
+    if (labelsMatchingAny(labels, rejectedLabels).length) {
       await removeProgressStatusLabels(context, params, labels);
 
-      // enforce mutual exclusivity
-      const approvedMatches = labelsMatching(labels, approvedLabel);
-      if (approvedMatches.length) {
-        await removeExactLabelsFromIssue(context, params, approvedMatches);
+      if (approvedLabel) {
+        const approvedMatches = labelsMatchingAny(labels, approvedLabels);
+        if (approvedMatches.length) {
+          await removeExactLabelsFromIssue(context, params, approvedMatches);
+        }
       }
     }
   });
@@ -9006,25 +9069,20 @@ export default function requestHandler(app: Probot): void {
 
       const eff = resolveEffectiveConstants(context);
 
-      // Allow manual switching of progress-state labels (authorAction / approverAction).
-      const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
-      const wf = cfg?.workflow ?? {};
-      const labelsCfg =
-        isPlainObject(wf) && isPlainObject((wf as Record<string, unknown>)['labels'])
-          ? ((wf as Record<string, unknown>)['labels'] as Record<string, unknown>)
-          : {};
+      const authorActionLabel = resolveAuthorActionLabel(context);
+      const approverActionLabel = resolveApproverActionLabel(context);
+      const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
 
-      const authorActionLabel = toStringTrim(labelsCfg['authorAction']) || REQUEST_STATUS_LABEL_REQUESTER_ACTION;
-      const approverActionLabel = toStringTrim(labelsCfg['approverAction']) || REQUEST_STATUS_LABEL_REVIEW_PENDING;
+      const approvedLabels = resolveApprovedLabels(context);
 
-      const parentOwnerActionLabel =
-        toStringTrim(labelsCfg['parentOwnerAction']) || REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION;
+      const rejectedLabel = resolveRejectedLabel(context);
+      const rejectedLabels = resolveRejectedLabels(context);
 
-      const authorActionKey = normalizeKey(authorActionLabel);
-      const approverActionKey = normalizeKey(approverActionLabel);
-      const isProgressStateLabel = (k: string): boolean => k === authorActionKey || k === approverActionKey;
+      const progressStateKeys = new Set(
+        [authorActionLabel, approverActionLabel, parentOwnerActionLabel].map(normalizeKey).filter(Boolean)
+      );
 
-      const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+      const isProgressStateLabel = (k: string): boolean => progressStateKeys.has(k);
 
       const lockedKeys = resolveLockedWorkflowLabelKeys(context);
       const changedKey = normalizeKey(changedLabel);
@@ -9052,8 +9110,8 @@ export default function requestHandler(app: Probot): void {
         authorActionLabel,
         approverActionLabel,
         parentOwnerActionLabel,
-        approvedLabel,
-        REQUEST_STATUS_LABEL_REJECTED,
+        ...approvedLabels,
+        ...rejectedLabels,
       ]) {
         const key = normalizeKey(label);
         if (key) managedWorkflowKeys.add(key);
@@ -9067,7 +9125,8 @@ export default function requestHandler(app: Probot): void {
 
       if (changedKey && lockedKeys.has(changedKey) && !isProgressStateLabel(changedKey)) {
         // Let the existing "Approved label" guard handle manual approval attempts.
-        const isManualApprovedAdd = action === 'labeled' && labelsMatching([changedLabel], approvedLabel).length > 0;
+        const isManualApprovedAdd =
+          action === 'labeled' && labelsMatchingAny([changedLabel], approvedLabels).length > 0;
 
         if (!isManualApprovedAdd) {
           if (action === 'labeled') {
@@ -9092,8 +9151,8 @@ export default function requestHandler(app: Probot): void {
       }
 
       // 3) Manual "Approved" label => rollback
-      if (action === 'labeled' && labelsMatching([changedLabel], approvedLabel).length) {
-        const approvedMatches = labelsMatching(labels, approvedLabel);
+      if (action === 'labeled' && labelsMatchingAny([changedLabel], approvedLabels).length) {
+        const approvedMatches = labelsMatchingAny(labels, approvedLabels);
         await removeExactLabelsFromIssue(context, params, approvedMatches);
 
         // Best effort: keep existing progress label
@@ -9113,16 +9172,16 @@ export default function requestHandler(app: Probot): void {
       // 4) Manual "Rejected" on open issues => rollback
       if (
         action === 'labeled' &&
-        labelsMatching([changedLabel], REQUEST_STATUS_LABEL_REJECTED).length &&
+        labelsMatchingAny([changedLabel], rejectedLabels).length &&
         toStringTrim(issue.state).toLowerCase() !== 'closed'
       ) {
-        const rejectedMatches = labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED);
+        const rejectedMatches = labelsMatchingAny(labels, rejectedLabels);
         await removeExactLabelsFromIssue(context, params, rejectedMatches);
 
         await postOnce(
           context,
           params,
-          'Rejected label change reverted. Rejected is set automatically when a request is closed without approval.',
+          `Label "${changedLabel}" change reverted. Rejected state is managed automatically when a request is closed without approval.`,
           { minimizeTag: 'nsreq:label-guard' }
         );
         return;
@@ -9137,7 +9196,7 @@ export default function requestHandler(app: Probot): void {
           // ignore
         }
 
-        const hasApproved = labelsMatching(latest, approvedLabel).length > 0;
+        const hasApproved = labelsMatchingAny(latest, approvedLabels).length > 0;
 
         if (hasApproved) {
           await removeRejectedStatusLabel(context, params, latest);
@@ -9145,12 +9204,13 @@ export default function requestHandler(app: Probot): void {
           return;
         }
 
-        const hasRejected = labelsMatching(latest, REQUEST_STATUS_LABEL_REJECTED).length > 0;
-        if (!hasRejected) {
+        const hasRejected = labelsMatchingAny(latest, rejectedLabels).length > 0;
+
+        if (rejectedLabel && !hasRejected) {
           try {
             await context.octokit.issues.addLabels({
               ...params,
-              labels: [REQUEST_STATUS_LABEL_REJECTED],
+              labels: [rejectedLabel],
             });
           } catch {
             // ignore
@@ -9166,7 +9226,7 @@ export default function requestHandler(app: Probot): void {
         await removeProgressStatusLabels(context, params, latest);
 
         // mutual exclusivity
-        const approvedMatches = labelsMatching(latest, approvedLabel);
+        const approvedMatches = labelsMatchingAny(latest, approvedLabels);
         if (approvedMatches.length) {
           await removeExactLabelsFromIssue(context, params, approvedMatches);
         }
