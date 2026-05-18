@@ -29,6 +29,10 @@ type RequestEvents =
   | 'issues.unlabeled'
   | 'issue_comment.created'
   | 'issue_comment.edited'
+  | 'pull_request.opened'
+  | 'pull_request.synchronize'
+  | 'pull_request.reopened'
+  | 'pull_request.ready_for_review'
   | 'check_suite.completed'
   | 'check_run.completed'
   | 'status'
@@ -314,6 +318,12 @@ const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
 const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
+
+// Request lifecycle status labels
+const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
+const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
+const REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION = 'Parent Owner Action';
+const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
 
 function normalizeSchemaFieldAlias(value: unknown): string {
   const raw = toStringTrim(value);
@@ -790,6 +800,20 @@ type CheckSuiteLike = {
   head_sha?: string | null;
   head_branch?: string | null;
   pull_requests?: CheckSuitePullRequestRef[] | null;
+};
+
+type WorkflowRunPullRequestRef = {
+  number?: number | null;
+};
+
+type WorkflowRunLike = {
+  id?: number | null;
+  name?: string | null;
+  path?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+  head_sha?: string | null;
+  pull_requests?: WorkflowRunPullRequestRef[] | null;
 };
 
 function readCheckSuiteFromPayload(payload: unknown): CheckSuiteLike | null {
@@ -1755,9 +1779,7 @@ function buildReviewHandoverBody(
 
 ---
 
-${instruction}${docsSection}${snapshotMarker}
-
-<!-- nsreq:handover -->`;
+${instruction}${docsSection}${snapshotMarker}`;
 }
 
 async function handoverToCpa(
@@ -1803,6 +1825,11 @@ async function handoverToCpa(
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
 
   await ensureLabelsPresentOnce(context, params, labelsToAdd);
+
+  await enforceExclusiveWorkflowStateLabels(context, params, [
+    resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING),
+    ...(eff.reviewRequestedLabels || []),
+  ]);
 
   if (eff.labelOnApproved) {
     try {
@@ -1891,12 +1918,6 @@ async function removeReviewPendingLabelsAfterApproval(
   }
 }
 
-// Request lifecycle status labels
-const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
-const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
-const REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION = 'Parent Owner Action';
-const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
-
 function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: string, fallback: string): string {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
   const wf = cfg?.workflow ?? {};
@@ -1930,6 +1951,68 @@ const labelsMatching = (labels: string[], expected: string): string[] => {
   });
 };
 
+function collectWorkflowStateLabels(context: BotContext<RequestEvents>): string[] {
+  const eff = resolveEffectiveConstants(context);
+
+  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
+  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
+  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
+  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+
+  return Array.from(
+    new Set(
+      [
+        authorActionLabel,
+        approverActionLabel,
+        parentOwnerActionLabel,
+        approvedLabel,
+        REQUEST_STATUS_LABEL_REJECTED,
+        ...(eff.reviewRequestedLabels || []),
+      ]
+        .map(toStringTrim)
+        .filter(Boolean)
+    )
+  );
+}
+
+async function enforceExclusiveWorkflowStateLabels(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  keepLabels: string[],
+  currentLabels?: string[]
+): Promise<void> {
+  const keepKeys = new Set((keepLabels || []).map(normalizeKey).filter(Boolean));
+  if (!keepKeys.size) return;
+
+  let labels = (currentLabels || []).slice();
+
+  if (!labels.length) {
+    try {
+      labels = await fetchIssueLabels(context, params);
+    } catch {
+      return;
+    }
+  }
+
+  const toRemove = new Set<string>();
+
+  for (const stateLabel of collectWorkflowStateLabels(context)) {
+    const stateKey = normalizeKey(stateLabel);
+    if (!stateKey || keepKeys.has(stateKey)) continue;
+
+    for (const match of labelsMatching(labels, stateLabel)) {
+      const matchKey = normalizeKey(match);
+      if (matchKey && !keepKeys.has(matchKey)) {
+        toRemove.add(match);
+      }
+    }
+  }
+
+  if (!toRemove.size) return;
+
+  await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
+}
+
 async function clearParentOwnerActionState(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1953,40 +2036,9 @@ async function clearParentOwnerActionState(
 }
 
 async function setParentOwnerActionState(context: BotContext<RequestEvents>, params: IssueParams): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-
   const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-  const authorActionLabel = resolveWorkflowLabel(context, 'authorAction', REQUEST_STATUS_LABEL_REQUESTER_ACTION);
-  const approverActionLabel = resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
 
-  let labels: string[] = [];
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    labels = [];
-  }
-
-  const toRemove = new Set<string>();
-
-  for (const label of [
-    authorActionLabel,
-    approverActionLabel,
-    approvedLabel,
-    REQUEST_STATUS_LABEL_REJECTED,
-    ...(eff.reviewRequestedLabels || []),
-  ]) {
-    for (const match of labelsMatching(labels, label)) {
-      if (normalizeKey(match) !== normalizeKey(parentOwnerActionLabel)) {
-        toRemove.add(match);
-      }
-    }
-  }
-
-  if (toRemove.size) {
-    await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
-  }
-
+  await enforceExclusiveWorkflowStateLabels(context, params, [parentOwnerActionLabel]);
   await ensureLabelsPresentOnce(context, params, [parentOwnerActionLabel]);
 }
 
@@ -2223,6 +2275,8 @@ async function applyApprovedRequestState(
   } catch {
     // ignore
   }
+
+  await enforceExclusiveWorkflowStateLabels(context, params, [toStringTrim(eff.labelOnApproved) || 'Approved']);
 
   await removeReviewPendingLabelsAfterApproval(context, params, eff);
 
@@ -2497,6 +2551,8 @@ async function addApprovedLabelToPr(
   } catch {
     return;
   }
+
+  await enforceExclusiveWorkflowStateLabels(context, params, [approvedLabel]);
 
   // Standalone cross-repo direct PRs must stay PR-only here.
   // Reading the PR as an issue would break the no-linked-issue guarantee.
@@ -3806,6 +3862,11 @@ async function processPullRequestForAutoMerge(
   const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
 
   if (issueNumber === null) {
+    const noopClosed = await maybeCloseNoopRegistryPullRequest(context, repoInfo, pr, 'auto-merge:no-op-check');
+    if (noopClosed) return;
+  }
+
+  if (issueNumber === null) {
     const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
     const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
       baseBranch: toStringTrim(freshPr.base?.ref),
@@ -4738,6 +4799,287 @@ async function listChangedYamlFilesForPrWithFallback(
   return fromTreeDiff;
 }
 
+async function listChangedFilesForPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<PullRequestFileLike[]> {
+  const out: PullRequestFileLike[] = [];
+  let page = 1;
+
+  while (true) {
+    const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
+    if (!files.length) break;
+
+    out.push(...files);
+
+    if (files.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+
+  return out;
+}
+
+function isLikelyBotManagedRegistryPr(pr: PullRequestLike): boolean {
+  const title = toStringTrim(pr.title).toLowerCase();
+  const body = toStringTrim(pr.body).toLowerCase();
+  const author = normalizeLogin(pr.user?.login).toLowerCase();
+
+  return (
+    author.includes('bot') ||
+    author.includes('serviceuser') ||
+    title.includes('namespace') ||
+    body.includes('this pr registers')
+  );
+}
+
+async function maybeCloseNoopRegistryPullRequest(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<boolean> {
+  const files = await listChangedFilesForPr(context, repoInfo, pr.number);
+
+  if (files.length > 0) return false;
+  if (!isLikelyBotManagedRegistryPr(pr)) return false;
+
+  await postOnce(
+    context,
+    { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
+    `This PR has no changed files and appears to be a duplicate/no-op registry PR. Closing it automatically.`,
+    { minimizeTag: 'nsreq:no-op-pr' }
+  );
+
+  try {
+    await context.octokit.pulls.update({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pull_number: pr.number,
+      state: 'closed',
+    });
+
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        reason,
+      },
+      'direct-pr:no-op-closed'
+    );
+
+    return true;
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+        reason,
+      },
+      'direct-pr:no-op-close-failed'
+    );
+
+    return false;
+  }
+}
+
+function isSafeRegistryWorkflowApprovalFile(context: BotContext<RequestEvents>, file: PullRequestFileLike): boolean {
+  const filename = normalizeRepoPath(file?.filename);
+  const status = toStringTrim(file?.status).toLowerCase();
+
+  if (!filename) return false;
+  if (status === 'removed') return false;
+  if (!isYamlPath(filename)) return false;
+  if (!isRegistryEntryPath(context, filename)) return false;
+
+  return true;
+}
+
+async function isSafeRegistryOnlyPullRequest(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<boolean> {
+  const files = await listChangedFilesForPr(context, repoInfo, pr.number);
+  if (!files.length) return false;
+
+  return files.every((file) => isSafeRegistryWorkflowApprovalFile(context, file));
+}
+
+function isWorkflowRunWaitingForApproval(run: WorkflowRunLike): boolean {
+  const status = toStringTrim(run?.status).toLowerCase();
+  const conclusion = toStringTrim(run?.conclusion).toLowerCase();
+
+  return status === 'waiting' || conclusion === 'action_required';
+}
+
+function workflowRunTargetsPullRequest(run: WorkflowRunLike, pr: PullRequestLike): boolean {
+  const headSha = toStringTrim(pr.head?.sha);
+  const runHeadSha = toStringTrim(run?.head_sha);
+
+  if (headSha && runHeadSha && headSha === runHeadSha) return true;
+
+  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
+  return prs.some((item) => item?.number === pr.number);
+}
+
+async function listWorkflowRunsForPullRequestHead(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): Promise<WorkflowRunLike[]> {
+  const headSha = toStringTrim(pr.head?.sha);
+  if (!headSha) return [];
+
+  try {
+    const client = context.octokit as unknown as {
+      request: (route: string, args: Record<string, unknown>) => Promise<{ data?: unknown }>;
+    };
+
+    const res = await client.request('GET /repos/{owner}/{repo}/actions/runs', {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      head_sha: headSha,
+      per_page: 100,
+    });
+
+    const data = isPlainObject(res?.data) ? res.data : {};
+    const runs = Array.isArray(data['workflow_runs']) ? data['workflow_runs'] : [];
+
+    return (runs as WorkflowRunLike[]).filter((run) => workflowRunTargetsPullRequest(run, pr));
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        prNumber: pr.number,
+        headSha,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'workflow-approval:runs-read-failed'
+    );
+
+    return [];
+  }
+}
+
+async function approveWorkflowRun(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  runId: number
+): Promise<boolean> {
+  try {
+    const client = context.octokit as unknown as {
+      request: (route: string, args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await client.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve', {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      run_id: runId,
+    });
+
+    return true;
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        runId,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+      },
+      'workflow-approval:approve-run-failed'
+    );
+
+    return false;
+  }
+}
+
+async function maybeApprovePendingWorkflowRunsForRegistryPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<boolean> {
+  if (!isPullRequestOpen(pr)) return false;
+  if (pr.draft === true) return false;
+
+  const safeRegistryOnly = await isSafeRegistryOnlyPullRequest(context, repoInfo, pr);
+  if (!safeRegistryOnly) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        reason,
+      },
+      'workflow-approval:skip-not-safe-registry-only-pr'
+    );
+
+    return false;
+  }
+
+  const runs = await listWorkflowRunsForPullRequestHead(context, repoInfo, pr);
+  const waitingRuns = runs.filter(isWorkflowRunWaitingForApproval);
+
+  if (!waitingRuns.length) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        runs: runs.map((run) => ({
+          id: run.id,
+          name: toStringTrim(run.name),
+          status: toStringTrim(run.status),
+          conclusion: toStringTrim(run.conclusion),
+        })),
+        reason,
+      },
+      'workflow-approval:no-waiting-runs'
+    );
+
+    return false;
+  }
+
+  let approvedAny = false;
+
+  for (const run of waitingRuns) {
+    const runId = typeof run.id === 'number' && Number.isFinite(run.id) ? run.id : 0;
+    if (!runId) continue;
+
+    const approved = await approveWorkflowRun(context, repoInfo, runId);
+    approvedAny = approvedAny || approved;
+
+    log(
+      context,
+      approved ? 'info' : 'warn',
+      {
+        prNumber: pr.number,
+        runId,
+        runName: toStringTrim(run.name),
+        headSha: toStringTrim(pr.head?.sha),
+        reason,
+      },
+      approved ? 'workflow-approval:run-approved' : 'workflow-approval:run-approval-failed'
+    );
+  }
+
+  return approvedAny;
+}
+
 async function isPullRequestBehindCurrentBase(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5172,6 +5514,8 @@ async function collectSequentialDirectRegistryPrCandidates(
       );
       continue;
     }
+
+    await maybeApprovePendingWorkflowRunsForRegistryPr(context, repoInfo, pr, `${reason}:approve-pending-workflow`);
 
     const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
     const freshHeadSha = toStringTrim(freshPr.head?.sha);
@@ -5996,6 +6340,11 @@ async function handoverStandaloneDirectPrToReview(
 
   const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
   await ensureLabelsPresentOnce(context, params, labelsToAdd);
+
+  await enforceExclusiveWorkflowStateLabels(context, params, [
+    resolveWorkflowLabel(context, 'approverAction', REQUEST_STATUS_LABEL_REVIEW_PENDING),
+    ...(eff.reviewRequestedLabels || []),
+  ]);
 
   if (eff.labelOnApproved) {
     try {
@@ -9226,6 +9575,36 @@ export default function requestHandler(app: Probot): void {
       await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
     }
   });
+
+  app.on(
+    ['pull_request.opened', 'pull_request.synchronize', 'pull_request.reopened', 'pull_request.ready_for_review'],
+    async (
+      context: BotContext<
+        'pull_request.opened' | 'pull_request.synchronize' | 'pull_request.reopened' | 'pull_request.ready_for_review'
+      >
+    ): Promise<void> => {
+      await getStaticConfig(context);
+
+      const payload = context.payload as unknown;
+      const repoInfo = readRepoInfoFromPayload(payload);
+
+      if (!repoInfo) return;
+
+      const prRaw = isPlainObject(payload) ? payload['pull_request'] : null;
+      if (!isPlainObject(prRaw)) return;
+
+      const pr = prRaw as unknown as PullRequestLike;
+
+      if (!isPullRequestOpen(pr)) return;
+
+      await maybeApprovePendingWorkflowRunsForRegistryPr(
+        context,
+        repoInfo,
+        pr,
+        `pull-request:${toStringTrim((payload as Record<string, unknown>)['action']) || 'event'}`
+      );
+    }
+  );
 
   app.on(
     ['check_suite.completed', 'check_run.completed'],
