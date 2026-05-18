@@ -117,6 +117,10 @@ import {
   type RequestIssueLifecycleCallbacks,
 } from './application/request-issue-lifecycle.js';
 import {
+  closeOutdatedRequestPrs as closeOutdatedRequestPrsApplication,
+  type OutdatedRequestPrCleanupCallbacks,
+} from './application/outdated-request-pr-cleanup.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -5036,94 +5040,37 @@ async function normalizeIssueTitle(
 
 async function closeOutdatedRequestPrs(
   context: BotContext<RequestEvents>,
-  { owner, repo, issue_number }: IssueParams,
+  params: IssueParams,
   template: TemplateLike,
   options: { parsedFormData?: FormData; currentHash?: string; acceptedHashes?: string[] } = {}
 ): Promise<void> {
-  const ensureFormAndHash = async (): Promise<{
-    parsedFormData: FormData;
-    currentHash: string;
-    acceptedHashes: string[];
-  }> => {
-    const { parsedFormData: givenForm, currentHash: givenHash, acceptedHashes: givenAcceptedHashes } = options;
-
-    if (givenForm && givenHash) {
-      const acceptedHashes = Array.from(
-        new Set((givenAcceptedHashes || [givenHash]).map((value) => toStringTrim(value)).filter(Boolean))
-      );
-
-      return {
-        parsedFormData: givenForm,
-        currentHash: givenHash,
-        acceptedHashes: acceptedHashes.length ? acceptedHashes : [givenHash],
-      };
-    }
-
-    const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
-    const issue = data as unknown as IssueLike;
-    const bodyStr = readIssueBodyForProcessing(issue.body);
-    const form = parseForm(bodyStr, template);
-    const acceptedHashes = buildCompatibleRequestSnapshotHashes(issue.body, form, template);
-    const currentHash = acceptedHashes[0] || calcSnapshotHash(form, template, bodyStr);
-
-    return {
-      parsedFormData: form,
-      currentHash,
-      acceptedHashes,
-    };
-  };
-
-  const closePr = async (prNum: number, ref: string): Promise<void> => {
-    try {
-      await context.octokit.pulls.update({ owner, repo, pull_number: prNum, state: 'closed' });
-    } catch {
-      /* empty */
-    }
-    try {
-      await context.octokit.git.deleteRef({ owner, repo, ref: `heads/${ref}` });
-    } catch {
-      /* empty */
-    }
-  };
-
-  const { currentHash, acceptedHashes } = await ensureFormAndHash();
-  const acceptedHashSet = new Set((acceptedHashes || []).map((value) => toStringTrim(value)).filter(Boolean));
-
-  if (currentHash) acceptedHashSet.add(currentHash);
-
-  const prs = await findOpenIssuePrs(context, { owner, repo }, issue_number);
-  if (!prs.length) return;
-
-  const eff = resolveEffectiveConstants(context);
-  const onApproved = eff.labelOnApproved;
-  const closed: number[] = [];
-
-  for (const pr of prs) {
-    const prHash = extractHashFromPrBody(toStringTrim(pr.body));
-
-    if (!prHash) continue;
-    if (acceptedHashSet.has(prHash)) continue;
-
-    await closePr(pr.number, pr.head.ref);
-    closed.push(pr.number);
-  }
-
-  if (!closed.length) return;
-
-  const list = closed.map((n) => `#${n}`).join(', ');
-  await postOnce(
+  await closeOutdatedRequestPrsApplication(
     context,
-    { owner, repo, issue_number },
-    `Form updated → closing outdated PR(s): ${list}. Please re-approve to open a new PR.`,
-    { minimizeTag: 'nsreq:pr-outdated' }
+    params,
+    template,
+    options,
+    buildOutdatedRequestPrCleanupCallbacks()
   );
+}
 
-  if (!onApproved) return;
-  try {
-    await context.octokit.issues.removeLabel({ owner, repo, issue_number, name: onApproved });
-  } catch {
-    /* empty */
-  }
+function buildOutdatedRequestPrCleanupCallbacks(): OutdatedRequestPrCleanupCallbacks<
+  BotContext<RequestEvents>,
+  IssueLike,
+  PullRequestLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants
+> {
+  return {
+    parseForm,
+    readIssueBodyForProcessing,
+    buildCompatibleRequestSnapshotHashes,
+    calcSnapshotHash,
+    extractHashFromPrBody,
+    findOpenIssuePrs,
+    resolveEffectiveConstants,
+    postOnce,
+  };
 }
 
 function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
