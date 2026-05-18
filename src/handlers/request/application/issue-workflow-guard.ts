@@ -1,6 +1,11 @@
+import { buildRoutingLockBody, readRoutingLockExpected } from '../domain/routing-lock-marker.js';
 import { toStringTrim } from '../domain/login-utils.js';
 
-type IssueParamsBase = { owner: string; repo: string; issue_number: number };
+type IssueParamsBase = {
+  owner: string;
+  repo: string;
+  issue_number: number;
+};
 
 type IssueLikeBase = {
   body?: string | null;
@@ -16,13 +21,24 @@ type FormDataBase = Record<string, string>;
 
 type EffectiveConstantsBase = {
   labelOnApproved?: string | null;
-  approverUsernames?: string[];
-  approverPoolUsernames?: string[];
+  approverUsernames: string[];
+  approverPoolUsernames: string[];
 };
+
+type PostOnceOptionsBase = {
+  minimizeTag?: string;
+};
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 type WorkflowLabelKey = 'authorAction' | 'approverAction' | 'parentOwnerAction';
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+const REQUEST_STATUS_LABEL_REQUESTER_ACTION = 'Requester Action';
+const REQUEST_STATUS_LABEL_REVIEW_PENDING = 'Review Pending';
+const REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION = 'Parent Owner Action';
+const REQUEST_STATUS_LABEL_REJECTED = 'Rejected';
+
+const ROUTING_LOCK_NOTICE_INFLIGHT = new Map<string, Promise<void>>();
 
 export type IssueWorkflowGuardCallbacks<
   ContextType,
@@ -32,7 +48,20 @@ export type IssueWorkflowGuardCallbacks<
   FormDataType extends FormDataBase,
   EffectiveConstantsType extends EffectiveConstantsBase,
 > = {
-  hasIssueFormInputs: (issue: IssueType | null | undefined) => boolean;
+  tryLoadTemplateForLabels: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    labels: string[]
+  ) => Promise<TemplateType | null>;
+  normalizeKey: (value: unknown) => string;
+  postOnce: (context: ContextType, params: ParamsType, body: string, options?: PostOnceOptionsBase) => Promise<void>;
+  updateIssueBody: (context: ContextType, params: ParamsType, body: string) => Promise<void>;
+  fetchIssueLabels: (context: ContextType, params: ParamsType) => Promise<string[]>;
+  toLabelNames: (labels: unknown) => string[];
+  removeExactLabelsFromIssue: (context: ContextType, params: ParamsType, labels: string[]) => Promise<void>;
+  addLabels: (context: ContextType, params: ParamsType, labels: string[]) => Promise<void>;
+  labelsMatching: (labels: string[], expected: string) => string[];
   loadTemplateWithLabelRefresh: (context: ContextType, params: ParamsType, issue: IssueType) => Promise<TemplateType>;
   parseForm: (body: string, template: TemplateType) => FormDataType;
   createEmptyFormData: () => FormDataType;
@@ -43,36 +72,8 @@ export type IssueWorkflowGuardCallbacks<
     parsedFormData: FormDataType
   ) => boolean;
   resolveEffectiveConstants: (context: ContextType) => EffectiveConstantsType;
-  toLabelNames: (labels: unknown) => string[];
-  fetchIssueLabels: (context: ContextType, params: ParamsType) => Promise<string[]>;
-  labelsMatching: (labels: string[], expected: string) => string[];
-  removeRejectedStatusLabel: (context: ContextType, params: ParamsType, currentLabels?: string[]) => Promise<void>;
-  removeProgressStatusLabels: (context: ContextType, params: ParamsType, currentLabels?: string[]) => Promise<void>;
-  removeExactLabelsFromIssue: (context: ContextType, params: ParamsType, labelsToRemove: string[]) => Promise<void>;
-  addLabels: (context: ContextType, params: ParamsType, labels: string[]) => Promise<void>;
-  postOnce: (
-    context: ContextType,
-    params: ParamsType,
-    body: string,
-    options?: { minimizeTag?: string }
-  ) => Promise<void>;
-  updateIssueBody: (context: ContextType, params: ParamsType, body: string) => Promise<void>;
-  setStateLabel: (
-    context: ContextType,
-    params: ParamsType,
-    issue: IssueType,
-    state: 'author' | 'review'
-  ) => Promise<void>;
-  readRoutingLockExpected: (issueBody: unknown) => string;
-  buildRoutingLockBody: (issueBody: unknown, expectedLabel: string) => string;
-  normalizeKey: (value: unknown) => string;
-  tryLoadTemplateForLabels: (
-    context: ContextType,
-    params: ParamsType,
-    issue: IssueType,
-    labels: string[]
-  ) => Promise<TemplateType | null>;
   resolveLockedWorkflowLabelKeys: (context: ContextType) => Set<string>;
+  resolveWorkflowLabel: (context: ContextType, key: WorkflowLabelKey, fallback: string) => string;
   resolveEffectiveRequestType: (template: TemplateType, formData: FormDataType) => string;
   resolveApproverRoutingForRequestType: (
     context: ContextType,
@@ -85,13 +86,19 @@ export type IssueWorkflowGuardCallbacks<
   };
   uniqLogins: (values: string[]) => string[];
   isConfiguredApprover: (login: string | undefined | null, allowedApprovers: string[]) => boolean;
-  resolveWorkflowLabel: (context: ContextType, key: WorkflowLabelKey, fallback: string) => string;
+  setStateLabel: (
+    context: ContextType,
+    params: ParamsType,
+    issue: IssueType,
+    state: 'author' | 'review'
+  ) => Promise<void>;
+  removeRejectedStatusLabel: (context: ContextType, params: ParamsType, currentLabels?: string[]) => Promise<void>;
+  removeProgressStatusLabels: (context: ContextType, params: ParamsType, currentLabels?: string[]) => Promise<void>;
   log: (context: ContextType, level: LogLevel, obj: unknown, msg: string) => void;
+  getErrorMessage: (error: unknown) => string;
 };
 
-const ROUTING_LOCK_NOTICE_INFLIGHT = new Map<string, Promise<void>>();
-
-function routingNoticeKey<ParamsType extends IssueParamsBase>(params: ParamsType): string {
+function routingNoticeKey(params: IssueParamsBase): string {
   return `${params.owner}/${params.repo}#${params.issue_number}`;
 }
 
@@ -191,7 +198,7 @@ async function detectRoutingLabels<
     EffectiveConstantsType
   >
 ): Promise<string[]> {
-  const uniqueLabels: string[] = [];
+  const uniq: string[] = [];
   const seen = new Set<string>();
 
   for (const label of labels) {
@@ -199,11 +206,11 @@ async function detectRoutingLabels<
     const key = callbacks.normalizeKey(name);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    uniqueLabels.push(name);
+    uniq.push(name);
   }
 
   const routing: string[] = [];
-  for (const label of uniqueLabels) {
+  for (const label of uniq) {
     const template = await callbacks.tryLoadTemplateForLabels(context, params, issue, [label]);
     if (template) routing.push(label);
   }
@@ -260,10 +267,10 @@ export async function ensureRoutingLockMarker<
   const expected = toStringTrim(expectedLabel);
   if (!expected) return false;
 
-  const current = callbacks.readRoutingLockExpected(issue.body);
+  const current = readRoutingLockExpected(issue.body);
   if (callbacks.normalizeKey(current) === callbacks.normalizeKey(expected)) return false;
 
-  const nextBody = callbacks.buildRoutingLockBody(issue.body, expected);
+  const nextBody = buildRoutingLockBody(issue.body, expected);
 
   try {
     await callbacks.updateIssueBody(context, params, nextBody);
@@ -341,7 +348,7 @@ export async function enforceRoutingLabelLock<
   return changed;
 }
 
-export async function handleClosedIssueWorkflow<
+export async function handleClosedIssueWorkflowGuard<
   ContextType,
   ParamsType extends IssueParamsBase,
   IssueType extends IssueLikeBase,
@@ -359,13 +366,8 @@ export async function handleClosedIssueWorkflow<
     TemplateType,
     FormDataType,
     EffectiveConstantsType
-  >,
-  rejectedLabel: string
+  >
 ): Promise<void> {
-  if (!process.env.JEST_WORKER_ID) {
-    if (!callbacks.hasIssueFormInputs(issue)) return;
-  }
-
   let template: TemplateType;
   try {
     template = await callbacks.loadTemplateWithLabelRefresh(context, params, issue);
@@ -378,8 +380,8 @@ export async function handleClosedIssueWorkflow<
     : callbacks.createEmptyFormData();
   if (!callbacks.isRequestIssue(context, template, parsedFormData)) return;
 
-  const eff = callbacks.resolveEffectiveConstants(context);
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  const effectiveConstants = callbacks.resolveEffectiveConstants(context);
+  const approvedLabel = toStringTrim(effectiveConstants.labelOnApproved) || 'Approved';
 
   let labels: string[] = [];
   try {
@@ -395,15 +397,15 @@ export async function handleClosedIssueWorkflow<
     return;
   }
 
-  const hasRejected = callbacks.labelsMatching(labels, rejectedLabel).length > 0;
+  const hasRejected = callbacks.labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED).length > 0;
   if (!hasRejected) {
     try {
-      await callbacks.addLabels(context, params, [rejectedLabel]);
+      await callbacks.addLabels(context, params, [REQUEST_STATUS_LABEL_REJECTED]);
     } catch (error: unknown) {
       callbacks.log(
         context,
         'warn',
-        { err: error instanceof Error ? error.message : String(error), label: rejectedLabel },
+        { err: callbacks.getErrorMessage(error), label: REQUEST_STATUS_LABEL_REJECTED },
         'failed to add rejected status label'
       );
     }
@@ -415,7 +417,7 @@ export async function handleClosedIssueWorkflow<
     // best effort
   }
 
-  if (callbacks.labelsMatching(labels, rejectedLabel).length) {
+  if (callbacks.labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED).length) {
     await callbacks.removeProgressStatusLabels(context, params, labels);
 
     const approvedMatches = callbacks.labelsMatching(labels, approvedLabel);
@@ -425,7 +427,7 @@ export async function handleClosedIssueWorkflow<
   }
 }
 
-export async function handleIssueLabelWorkflow<
+export async function handleIssueLabelChangeWorkflowGuard<
   ContextType,
   ParamsType extends IssueParamsBase,
   IssueType extends IssueLikeBase,
@@ -436,9 +438,9 @@ export async function handleIssueLabelWorkflow<
   context: ContextType,
   params: ParamsType,
   issue: IssueType,
-  sender: SenderType,
   action: string,
   changedLabel: string,
+  senderLogin: string | undefined | null,
   callbacks: IssueWorkflowGuardCallbacks<
     ContextType,
     ParamsType,
@@ -446,21 +448,11 @@ export async function handleIssueLabelWorkflow<
     TemplateType,
     FormDataType,
     EffectiveConstantsType
-  >,
-  labels: {
-    requesterAction: string;
-    reviewPending: string;
-    parentOwnerAction: string;
-    rejected: string;
-  }
+  >
 ): Promise<void> {
-  if (!process.env.JEST_WORKER_ID) {
-    if (!callbacks.hasIssueFormInputs(issue)) return;
-  }
+  let labels = callbacks.toLabelNames(issue.labels);
 
-  let currentLabels = callbacks.toLabelNames(issue.labels);
-
-  const expectedRouting = callbacks.readRoutingLockExpected(issue.body);
+  const expectedRouting = readRoutingLockExpected(issue.body);
   const hasRoutingLock = Boolean(expectedRouting);
 
   if (expectedRouting) {
@@ -469,7 +461,7 @@ export async function handleIssueLabelWorkflow<
     });
     if (enforced) {
       try {
-        currentLabels = await callbacks.fetchIssueLabels(context, params);
+        labels = await callbacks.fetchIssueLabels(context, params);
       } catch {
         // ignore
       }
@@ -490,16 +482,28 @@ export async function handleIssueLabelWorkflow<
 
   if (!hasRoutingLock && !callbacks.isRequestIssue(context, template, parsedFormData)) return;
 
-  const eff = callbacks.resolveEffectiveConstants(context);
-  const authorActionLabel = callbacks.resolveWorkflowLabel(context, 'authorAction', labels.requesterAction);
-  const approverActionLabel = callbacks.resolveWorkflowLabel(context, 'approverAction', labels.reviewPending);
-  const parentOwnerActionLabel = callbacks.resolveWorkflowLabel(context, 'parentOwnerAction', labels.parentOwnerAction);
+  const effectiveConstants = callbacks.resolveEffectiveConstants(context);
+  const authorActionLabel = callbacks.resolveWorkflowLabel(
+    context,
+    'authorAction',
+    REQUEST_STATUS_LABEL_REQUESTER_ACTION
+  );
+  const approverActionLabel = callbacks.resolveWorkflowLabel(
+    context,
+    'approverAction',
+    REQUEST_STATUS_LABEL_REVIEW_PENDING
+  );
+  const parentOwnerActionLabel = callbacks.resolveWorkflowLabel(
+    context,
+    'parentOwnerAction',
+    REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION
+  );
 
   const authorActionKey = callbacks.normalizeKey(authorActionLabel);
   const approverActionKey = callbacks.normalizeKey(approverActionLabel);
   const isProgressStateLabel = (key: string): boolean => key === authorActionKey || key === approverActionKey;
 
-  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  const approvedLabel = toStringTrim(effectiveConstants.labelOnApproved) || 'Approved';
   const lockedKeys = callbacks.resolveLockedWorkflowLabelKeys(context);
   const changedKey = callbacks.normalizeKey(changedLabel);
 
@@ -511,18 +515,18 @@ export async function handleIssueLabelWorkflow<
     ? callbacks.resolveApproverRoutingForRequestType(
         context,
         effectiveRequestType,
-        eff.approverUsernames || [],
-        eff.approverPoolUsernames || []
+        effectiveConstants.approverUsernames,
+        effectiveConstants.approverPoolUsernames
       )
     : {
         approvalUsernames: callbacks.uniqLogins([
-          ...(eff.approverUsernames || []),
-          ...(eff.approverPoolUsernames || []),
+          ...(effectiveConstants.approverUsernames || []),
+          ...(effectiveConstants.approverPoolUsernames || []),
         ]),
-        autoAssigneePoolUsernames: callbacks.uniqLogins(eff.approverPoolUsernames || []),
+        autoAssigneePoolUsernames: callbacks.uniqLogins(effectiveConstants.approverPoolUsernames || []),
       };
 
-  const senderIsConfiguredApprover = callbacks.isConfiguredApprover(sender?.login, approverRouting.approvalUsernames);
+  const senderIsConfiguredApprover = callbacks.isConfiguredApprover(senderLogin, approverRouting.approvalUsernames);
 
   const managedWorkflowKeys = new Set<string>(Array.from(lockedKeys));
   for (const label of [
@@ -530,7 +534,7 @@ export async function handleIssueLabelWorkflow<
     approverActionLabel,
     parentOwnerActionLabel,
     approvedLabel,
-    labels.rejected,
+    REQUEST_STATUS_LABEL_REJECTED,
   ]) {
     const key = callbacks.normalizeKey(label);
     if (key) managedWorkflowKeys.add(key);
@@ -567,11 +571,11 @@ export async function handleIssueLabelWorkflow<
   }
 
   if (action === 'labeled' && callbacks.labelsMatching([changedLabel], approvedLabel).length) {
-    const approvedMatches = callbacks.labelsMatching(currentLabels, approvedLabel);
+    const approvedMatches = callbacks.labelsMatching(labels, approvedLabel);
     await callbacks.removeExactLabelsFromIssue(context, params, approvedMatches);
 
-    const hasAuthor = callbacks.labelsMatching(currentLabels, authorActionLabel).length > 0;
-    const hasReview = callbacks.labelsMatching(currentLabels, approverActionLabel).length > 0;
+    const hasAuthor = callbacks.labelsMatching(labels, authorActionLabel).length > 0;
+    const hasReview = callbacks.labelsMatching(labels, approverActionLabel).length > 0;
     await callbacks.setStateLabel(context, params, issue, hasAuthor ? 'author' : hasReview ? 'review' : 'review');
 
     await callbacks.postOnce(
@@ -585,10 +589,10 @@ export async function handleIssueLabelWorkflow<
 
   if (
     action === 'labeled' &&
-    callbacks.labelsMatching([changedLabel], labels.rejected).length &&
+    callbacks.labelsMatching([changedLabel], REQUEST_STATUS_LABEL_REJECTED).length &&
     toStringTrim(issue.state).toLowerCase() !== 'closed'
   ) {
-    const rejectedMatches = callbacks.labelsMatching(currentLabels, labels.rejected);
+    const rejectedMatches = callbacks.labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED);
     await callbacks.removeExactLabelsFromIssue(context, params, rejectedMatches);
 
     await callbacks.postOnce(
@@ -601,7 +605,7 @@ export async function handleIssueLabelWorkflow<
   }
 
   if (toStringTrim(issue.state).toLowerCase() === 'closed') {
-    let latest = currentLabels;
+    let latest = labels;
     try {
       latest = await callbacks.fetchIssueLabels(context, params);
     } catch {
@@ -615,10 +619,10 @@ export async function handleIssueLabelWorkflow<
       return;
     }
 
-    const hasRejected = callbacks.labelsMatching(latest, labels.rejected).length > 0;
+    const hasRejected = callbacks.labelsMatching(latest, REQUEST_STATUS_LABEL_REJECTED).length > 0;
     if (!hasRejected) {
       try {
-        await callbacks.addLabels(context, params, [labels.rejected]);
+        await callbacks.addLabels(context, params, [REQUEST_STATUS_LABEL_REJECTED]);
       } catch {
         // ignore
       }

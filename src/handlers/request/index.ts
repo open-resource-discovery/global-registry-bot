@@ -181,8 +181,8 @@ import {
   detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
   enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
   ensureRoutingLockMarker as ensureRoutingLockMarkerApplication,
-  handleClosedIssueWorkflow as handleClosedIssueWorkflowApplication,
-  handleIssueLabelWorkflow as handleIssueLabelWorkflowApplication,
+  handleClosedIssueWorkflowGuard as handleClosedIssueWorkflowGuardApplication,
+  handleIssueLabelChangeWorkflowGuard as handleIssueLabelChangeWorkflowGuardApplication,
   type IssueWorkflowGuardCallbacks,
 } from './application/issue-workflow-guard.js';
 import {
@@ -219,7 +219,6 @@ import {
 } from './domain/login-utils.js';
 import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
 import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
-import { buildRoutingLockBody, readRoutingLockExpected } from './domain/routing-lock-marker.js';
 import {
   buildContactApprovalBody,
   buildParentApprovalBody,
@@ -5212,81 +5211,66 @@ function buildIssueWorkflowGuardCallbacks(): IssueWorkflowGuardCallbacks<
   IssueLike,
   TemplateLike,
   FormData,
-  SenderLike,
   EffectiveConstants
 > {
   return {
-    hasIssueFormInputs,
+    tryLoadTemplateForLabels,
+    normalizeKey,
+    postOnce,
+    updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
+      await context.octokit.issues.update({ ...params, body });
+    },
+    fetchIssueLabels,
+    toLabelNames,
+    removeExactLabelsFromIssue,
+    addLabels: async (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]): Promise<void> => {
+      await context.octokit.issues.addLabels({ ...params, labels });
+    },
+    labelsMatching,
     loadTemplateWithLabelRefresh,
     parseForm,
     createEmptyFormData: (): FormData => ({}),
     readIssueBodyForProcessing,
     isRequestIssue,
     resolveEffectiveConstants,
-    toLabelNames,
-    fetchIssueLabels,
-    labelsMatching,
-    removeRejectedStatusLabel,
-    removeProgressStatusLabels,
-    removeExactLabelsFromIssue,
-    addLabels: async (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]): Promise<void> => {
-      await context.octokit.issues.addLabels({ ...params, labels });
-    },
-    postOnce,
-    updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
-      await context.octokit.issues.update({ ...params, body });
-    },
-    setStateLabel,
-    readRoutingLockExpected,
-    buildRoutingLockBody,
-    normalizeKey,
-    tryLoadTemplateForLabels,
     resolveLockedWorkflowLabelKeys,
+    resolveWorkflowLabel,
     resolveEffectiveRequestType,
     resolveApproverRoutingForRequestType,
     uniqLogins,
     isConfiguredApprover,
-    resolveWorkflowLabel,
+    setStateLabel,
+    removeRejectedStatusLabel,
+    removeProgressStatusLabels,
     log,
+    getErrorMessage,
   };
 }
 
 async function handleClosedIssueWorkflowGuard(
-  context: BotContext<'issues.closed'>,
+  context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike
 ): Promise<void> {
-  await handleClosedIssueWorkflowApplication(
-    context,
-    params,
-    issue,
-    buildIssueWorkflowGuardCallbacks(),
-    REQUEST_STATUS_LABEL_REJECTED
-  );
+  await handleClosedIssueWorkflowGuardApplication(context, params, issue, buildIssueWorkflowGuardCallbacks());
 }
 
-async function handleIssueLabelWorkflowGuard(
-  context: BotContext<'issues.labeled' | 'issues.unlabeled'>,
+async function handleIssueLabelChangeWorkflowGuard(
+  context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
-  sender: SenderLike,
   action: string,
-  changedLabel: string
+  changedLabel: string,
+  senderLogin: string | undefined | null
 ): Promise<void> {
-  await handleIssueLabelWorkflowApplication(
+  await handleIssueLabelChangeWorkflowGuardApplication(
     context,
     params,
     issue,
-    sender,
     action,
     changedLabel,
-    buildIssueWorkflowGuardCallbacks(),
-    {
-      requesterAction: REQUEST_STATUS_LABEL_REQUESTER_ACTION,
-      reviewPending: REQUEST_STATUS_LABEL_REVIEW_PENDING,
-      parentOwnerAction: REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION,
-      rejected: REQUEST_STATUS_LABEL_REJECTED,
-    }
+    senderLogin,
+    buildIssueWorkflowGuardCallbacks()
   );
 }
 
@@ -5662,6 +5646,10 @@ export default function requestHandler(app: Probot): void {
 
     const issue = context.payload.issue as unknown as IssueLike;
 
+    if (!process.env.JEST_WORKER_ID) {
+      if (!hasIssueFormInputs(issue)) return;
+    }
+
     const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
     const params: IssueParams = { owner, repo, issue_number: issueNumber };
     await handleClosedIssueWorkflowGuard(context, params, issue);
@@ -5676,6 +5664,10 @@ export default function requestHandler(app: Probot): void {
       if (isBotSender(sender)) return; // prevent loops
 
       const issue = context.payload.issue as unknown as IssueLike;
+
+      if (!process.env.JEST_WORKER_ID) {
+        if (!hasIssueFormInputs(issue)) return;
+      }
       const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
 
       const changedLabel = readPayloadLabelName(context.payload as unknown);
@@ -5683,7 +5675,7 @@ export default function requestHandler(app: Probot): void {
 
       const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
       const params: IssueParams = { owner, repo, issue_number: issueNumber };
-      await handleIssueLabelWorkflowGuard(context, params, issue, sender, action, changedLabel);
+      await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, sender?.login);
     }
   );
 
