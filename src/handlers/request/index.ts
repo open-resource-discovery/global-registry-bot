@@ -170,6 +170,10 @@ import {
   type DirectPrLinkedIssueApprovalCallbacks,
 } from './application/direct-pr-linked-issue-approval.js';
 import {
+  handleDirectPrApprovalComment as handleDirectPrApprovalCommentApplication,
+  type DirectPrApprovalCommentHandlingCallbacks,
+} from './application/direct-pr-approval-comment-handling.js';
+import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
 } from './application/approved-request-finalization.js';
@@ -3915,72 +3919,49 @@ function buildStandaloneDirectPrApprovalCallbacks(): StandaloneDirectPrApprovalC
   };
 }
 
+function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommentHandlingCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  PullRequestLike,
+  IssueLike,
+  EffectiveConstants
+> {
+  return {
+    resolveEffectiveConstants,
+    buildIssueParams: (repoInfo: RepoInfo, pr: PullRequestLike) => ({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: pr.number,
+    }),
+    prAsIssueLike,
+    ensureReviewLabelsPresentOnIssue,
+    resolveDirectPrRequestTypes,
+    resolveAllowedApproversForRequestTypes,
+    evaluateDirectPrOnApproval,
+    postApprovalRejectedOnce,
+    isAuthorizedApprover,
+    ensureAutomatedApprovalReviewForCurrentHead,
+    isCrossRepositoryPullRequest,
+    tryMergeApprovedPrOrUpdateBranch,
+    postOnce,
+    log,
+  };
+}
+
 async function handleDirectPrApprovalComment(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   commenter: string
 ): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
-  const prIssue = prAsIssueLike(pr);
-
-  const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, prIssue, eff);
-  if (!reviewOk) {
-    await postOnce(
-      context,
-      params,
-      'Approval ignored: direct PR is not in review state. Please wait until validation has routed it to review.',
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-    return;
-  }
-
-  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
-    baseBranch: toStringTrim(pr.base?.ref),
-  });
-
-  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
-
-  const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
-    baseBranch: toStringTrim(pr.base?.ref),
-  });
-
-  if (approvalDecision.status === 'rejected') {
-    await postApprovalRejectedOnce(context, params, approvalDecision);
-    return;
-  }
-
-  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
-
-  const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
-
-  if (!okApprover) {
-    await postOnce(
-      context,
-      params,
-      `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-    return;
-  }
-
-  const approved = await ensureAutomatedApprovalReviewForCurrentHead(
+  await handleDirectPrApprovalCommentApplication(
     context,
     repoInfo,
     pr,
-    {
-      status: 'approved',
-      comment: `Approved by @${commenter}`,
-    },
-    {
-      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
-    }
+    commenter,
+    buildDirectPrApprovalCommentHandlingCallbacks()
   );
-
-  if (!approved) return;
-
-  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'direct-pr-manual-approval');
 }
 
 async function maybeHandleStandaloneDirectPrApproval(
