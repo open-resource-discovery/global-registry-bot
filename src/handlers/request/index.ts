@@ -178,6 +178,14 @@ import {
   type PullRequestAutoMergeEntryCallbacks,
 } from './application/pull-request-auto-merge-entry.js';
 import {
+  detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
+  enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
+  ensureRoutingLockMarker as ensureRoutingLockMarkerApplication,
+  handleClosedIssueWorkflow as handleClosedIssueWorkflowApplication,
+  handleIssueLabelWorkflow as handleIssueLabelWorkflowApplication,
+  type IssueWorkflowGuardCallbacks,
+} from './application/issue-workflow-guard.js';
+import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
 } from './application/approved-request-finalization.js';
@@ -5140,53 +5148,6 @@ async function handleParentOwnerApprovalIfNeeded(
   );
 }
 
-const ROUTING_LOCK_NOTICE_INFLIGHT = new Map<string, Promise<void>>();
-
-function routingNoticeKey(params: IssueParams): string {
-  return `${params.owner}/${params.repo}#${params.issue_number}`;
-}
-
-async function postRoutingLockNoticeOnce(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  expected: string
-): Promise<void> {
-  const key = routingNoticeKey(params);
-  const existing = ROUTING_LOCK_NOTICE_INFLIGHT.get(key);
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const p = Promise.resolve()
-    .then(async (): Promise<void> => {
-      await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
-        minimizeTag: 'nsreq:routing-label-lock',
-      });
-    })
-    .finally(() => {
-      ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
-    });
-
-  ROUTING_LOCK_NOTICE_INFLIGHT.set(key, p);
-  await p;
-}
-
-async function isRoutingLabelName(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  labelName: unknown
-): Promise<boolean> {
-  const name = toStringTrim(labelName);
-  if (!name) return false;
-  try {
-    return Boolean(await tryLoadTemplateForLabels(context, params, issue, [name]));
-  } catch {
-    return false;
-  }
-}
-
 function buildCompatibleRequestSnapshotHashes(
   issueBody: unknown,
   parsedFormData: FormData,
@@ -5204,38 +5165,13 @@ function buildCompatibleRequestSnapshotHashes(
   );
 }
 
-async function detectRoutingLabels(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  labels: string[]
-): Promise<string[]> {
-  const uniq: string[] = [];
-  const seen = new Set<string>();
-  for (const l of labels) {
-    const name = toStringTrim(l);
-    const key = normalizeKey(name);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(name);
-  }
-
-  const routing: string[] = [];
-  for (const l of uniq) {
-    const tpl = await tryLoadTemplateForLabels(context, params, issue, [l]);
-    if (tpl) routing.push(l);
-  }
-  return routing;
-}
-
 async function detectSingleRoutingLabel(
   context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
   labels: string[]
 ): Promise<string> {
-  const routing = await detectRoutingLabels(context, params, issue, labels);
-  return routing.length === 1 ? routing[0] : '';
+  return await detectSingleRoutingLabelApplication(context, params, issue, labels, buildIssueWorkflowGuardCallbacks());
 }
 
 async function ensureRoutingLockMarker(
@@ -5244,20 +5180,13 @@ async function ensureRoutingLockMarker(
   issue: IssueLike,
   expectedLabel: string
 ): Promise<boolean> {
-  const expected = toStringTrim(expectedLabel);
-  if (!expected) return false;
-
-  const current = readRoutingLockExpected(issue.body);
-  if (normalizeKey(current) === normalizeKey(expected)) return false;
-
-  const nextBody = buildRoutingLockBody(issue.body, expected);
-
-  try {
-    await context.octokit.issues.update({ ...params, body: nextBody });
-    return true;
-  } catch {
-    return false;
-  }
+  return await ensureRoutingLockMarkerApplication(
+    context,
+    params,
+    issue,
+    expectedLabel,
+    buildIssueWorkflowGuardCallbacks()
+  );
 }
 
 async function enforceRoutingLabelLock(
@@ -5267,53 +5196,98 @@ async function enforceRoutingLabelLock(
   expectedLabel: string,
   opts?: { changedLabel?: string }
 ): Promise<boolean> {
-  const expected = toStringTrim(expectedLabel);
-  const expectedKey = normalizeKey(expected);
-  if (!expectedKey) return false;
+  return await enforceRoutingLabelLockApplication(
+    context,
+    params,
+    issue,
+    expectedLabel,
+    buildIssueWorkflowGuardCallbacks(),
+    opts
+  );
+}
 
-  let labels: string[] = [];
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    labels = toLabelNames(issue.labels);
-  }
+function buildIssueWorkflowGuardCallbacks(): IssueWorkflowGuardCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  SenderLike,
+  EffectiveConstants
+> {
+  return {
+    hasIssueFormInputs,
+    loadTemplateWithLabelRefresh,
+    parseForm,
+    createEmptyFormData: (): FormData => ({}),
+    readIssueBodyForProcessing,
+    isRequestIssue,
+    resolveEffectiveConstants,
+    toLabelNames,
+    fetchIssueLabels,
+    labelsMatching,
+    removeRejectedStatusLabel,
+    removeProgressStatusLabels,
+    removeExactLabelsFromIssue,
+    addLabels: async (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]): Promise<void> => {
+      await context.octokit.issues.addLabels({ ...params, labels });
+    },
+    postOnce,
+    updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
+      await context.octokit.issues.update({ ...params, body });
+    },
+    setStateLabel,
+    readRoutingLockExpected,
+    buildRoutingLockBody,
+    normalizeKey,
+    tryLoadTemplateForLabels,
+    resolveLockedWorkflowLabelKeys,
+    resolveEffectiveRequestType,
+    resolveApproverRoutingForRequestType,
+    uniqLogins,
+    isConfiguredApprover,
+    resolveWorkflowLabel,
+    log,
+  };
+}
 
-  const routingLabels = await detectRoutingLabels(context, params, issue, labels);
-  const toRemove = routingLabels.filter((l) => normalizeKey(l) !== expectedKey);
+async function handleClosedIssueWorkflowGuard(
+  context: BotContext<'issues.closed'>,
+  params: IssueParams,
+  issue: IssueLike
+): Promise<void> {
+  await handleClosedIssueWorkflowApplication(
+    context,
+    params,
+    issue,
+    buildIssueWorkflowGuardCallbacks(),
+    REQUEST_STATUS_LABEL_REJECTED
+  );
+}
 
-  const hasExpected = labels.some((l) => normalizeKey(l) === expectedKey);
-
-  let changed = false;
-
-  if (toRemove.length) {
-    await removeExactLabelsFromIssue(context, params, toRemove);
-    changed = true;
-  }
-
-  if (!hasExpected) {
-    try {
-      await context.octokit.issues.addLabels({ ...params, labels: [expected] });
-      changed = true;
-    } catch {
-      // ignore label add errors
+async function handleIssueLabelWorkflowGuard(
+  context: BotContext<'issues.labeled' | 'issues.unlabeled'>,
+  params: IssueParams,
+  issue: IssueLike,
+  sender: SenderLike,
+  action: string,
+  changedLabel: string
+): Promise<void> {
+  await handleIssueLabelWorkflowApplication(
+    context,
+    params,
+    issue,
+    sender,
+    action,
+    changedLabel,
+    buildIssueWorkflowGuardCallbacks(),
+    {
+      requesterAction: REQUEST_STATUS_LABEL_REQUESTER_ACTION,
+      reviewPending: REQUEST_STATUS_LABEL_REVIEW_PENDING,
+      parentOwnerAction: REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION,
+      rejected: REQUEST_STATUS_LABEL_REJECTED,
     }
-  }
-
-  if (changed) {
-    const touchedLabel = toStringTrim(opts?.changedLabel);
-
-    // Only notify on routing-label events - avoid spamming on unrelated label changes.
-    const shouldNotify =
-      !touchedLabel ||
-      normalizeKey(touchedLabel) === expectedKey ||
-      (await isRoutingLabelName(context, params, issue, touchedLabel));
-
-    if (shouldNotify) {
-      await postRoutingLockNoticeOnce(context, params, expected);
-    }
-  }
-
-  return changed;
+  );
 }
 
 async function normalizeIssueTitle(
@@ -5688,77 +5662,9 @@ export default function requestHandler(app: Probot): void {
 
     const issue = context.payload.issue as unknown as IssueLike;
 
-    if (!process.env.JEST_WORKER_ID) {
-      if (!hasIssueFormInputs(issue)) return;
-    }
-
     const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
     const params: IssueParams = { owner, repo, issue_number: issueNumber };
-
-    let template: TemplateLike;
-    try {
-      template = await loadTemplateWithLabelRefresh(context, params, issue);
-    } catch {
-      // Not a request issue
-      return;
-    }
-
-    const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-    if (!isRequestIssue(context, template, parsedFormData)) return;
-
-    const eff = resolveEffectiveConstants(context);
-    const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-
-    let labels: string[] = [];
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      labels = toLabelNames(issue.labels);
-    }
-
-    const hasApproved = labelsMatching(labels, approvedLabel).length > 0;
-
-    // If approved, keep it clean
-    if (hasApproved) {
-      await removeRejectedStatusLabel(context, params, labels);
-      await removeProgressStatusLabels(context, params, labels);
-      return;
-    }
-
-    // Closed but not approved -> mark as rejected
-    const hasRejected = labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED).length > 0;
-    if (!hasRejected) {
-      try {
-        await context.octokit.issues.addLabels({
-          ...params,
-          labels: [REQUEST_STATUS_LABEL_REJECTED],
-        });
-      } catch (e: unknown) {
-        log(
-          context,
-          'warn',
-          { err: e instanceof Error ? e.message : String(e), label: REQUEST_STATUS_LABEL_REJECTED },
-          'failed to add rejected status label'
-        );
-      }
-    }
-
-    // Clean up progress status labels once Rejected is present.
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      // best effort
-    }
-
-    if (labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED).length) {
-      await removeProgressStatusLabels(context, params, labels);
-
-      // enforce mutual exclusivity
-      const approvedMatches = labelsMatching(labels, approvedLabel);
-      if (approvedMatches.length) {
-        await removeExactLabelsFromIssue(context, params, approvedMatches);
-      }
-    }
+    await handleClosedIssueWorkflowGuard(context, params, issue);
   });
 
   app.on(
@@ -5770,10 +5676,6 @@ export default function requestHandler(app: Probot): void {
       if (isBotSender(sender)) return; // prevent loops
 
       const issue = context.payload.issue as unknown as IssueLike;
-
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) return;
-      }
       const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
 
       const changedLabel = readPayloadLabelName(context.payload as unknown);
@@ -5781,205 +5683,7 @@ export default function requestHandler(app: Probot): void {
 
       const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
       const params: IssueParams = { owner, repo, issue_number: issueNumber };
-
-      let labels = toLabelNames(issue.labels);
-
-      const expectedRouting = readRoutingLockExpected(issue.body);
-      const hasRoutingLock = Boolean(expectedRouting);
-
-      // Enforce routing label lock. This closes swap/multi-label bypasses.
-      if (expectedRouting) {
-        const enforced = await enforceRoutingLabelLock(context, params, issue, expectedRouting, { changedLabel });
-        if (enforced) {
-          try {
-            labels = await fetchIssueLabels(context, params);
-          } catch {
-            // ignore
-          }
-        }
-      }
-
-      // 2) Load template
-      let template: TemplateLike | null = null;
-      let parsedFormData: FormData = {};
-
-      try {
-        template = await loadTemplateWithLabelRefresh(context, params, issue);
-        parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-      } catch {
-        if (!hasRoutingLock) return;
-      }
-
-      if (!hasRoutingLock && !isRequestIssue(context, template, parsedFormData)) return;
-
-      const eff = resolveEffectiveConstants(context);
-
-      // Allow manual switching of progress-state labels (authorAction / approverAction).
-      const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
-      const wf = cfg?.workflow ?? {};
-      const labelsCfg =
-        isPlainObject(wf) && isPlainObject((wf as Record<string, unknown>)['labels'])
-          ? ((wf as Record<string, unknown>)['labels'] as Record<string, unknown>)
-          : {};
-
-      const authorActionLabel = toStringTrim(labelsCfg['authorAction']) || REQUEST_STATUS_LABEL_REQUESTER_ACTION;
-      const approverActionLabel = toStringTrim(labelsCfg['approverAction']) || REQUEST_STATUS_LABEL_REVIEW_PENDING;
-
-      const parentOwnerActionLabel =
-        toStringTrim(labelsCfg['parentOwnerAction']) || REQUEST_STATUS_LABEL_PARENT_OWNER_ACTION;
-
-      const authorActionKey = normalizeKey(authorActionLabel);
-      const approverActionKey = normalizeKey(approverActionLabel);
-      const isProgressStateLabel = (k: string): boolean => k === authorActionKey || k === approverActionKey;
-
-      const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
-
-      const lockedKeys = resolveLockedWorkflowLabelKeys(context);
-      const changedKey = normalizeKey(changedLabel);
-
-      const parentOwnerActionKey = normalizeKey(parentOwnerActionLabel);
-      if (parentOwnerActionKey) lockedKeys.add(parentOwnerActionKey);
-
-      const effectiveRequestType = template ? resolveEffectiveRequestType(template, parsedFormData) : '';
-      const approverRouting = effectiveRequestType
-        ? resolveApproverRoutingForRequestType(
-            context,
-            effectiveRequestType,
-            eff.approverUsernames,
-            eff.approverPoolUsernames
-          )
-        : {
-            approvalUsernames: uniqLogins([...(eff.approverUsernames || []), ...(eff.approverPoolUsernames || [])]),
-            autoAssigneePoolUsernames: uniqLogins(eff.approverPoolUsernames || []),
-          };
-
-      const senderIsConfiguredApprover = isConfiguredApprover(sender?.login, approverRouting.approvalUsernames);
-
-      const managedWorkflowKeys = new Set<string>(Array.from(lockedKeys));
-      for (const label of [
-        authorActionLabel,
-        approverActionLabel,
-        parentOwnerActionLabel,
-        approvedLabel,
-        REQUEST_STATUS_LABEL_REJECTED,
-      ]) {
-        const key = normalizeKey(label);
-        if (key) managedWorkflowKeys.add(key);
-      }
-
-      // Configured approvers may manage workflow labels manually
-      // Keep routing-label lock logic above intact
-      if (senderIsConfiguredApprover && changedKey && managedWorkflowKeys.has(changedKey)) {
-        return;
-      }
-
-      if (changedKey && lockedKeys.has(changedKey) && !isProgressStateLabel(changedKey)) {
-        // Let the existing "Approved label" guard handle manual approval attempts.
-        const isManualApprovedAdd = action === 'labeled' && labelsMatching([changedLabel], approvedLabel).length > 0;
-
-        if (!isManualApprovedAdd) {
-          if (action === 'labeled') {
-            await removeExactLabelsFromIssue(context, params, [changedLabel]);
-          } else if (action === 'unlabeled') {
-            try {
-              await context.octokit.issues.addLabels({ ...params, labels: [changedLabel] });
-            } catch {
-              // ignore label add errors
-            }
-          }
-
-          await postOnce(
-            context,
-            params,
-            `Label "${changedLabel}" was reverted. Workflow labels from config are managed by the bot and cannot be changed manually.`,
-            { minimizeTag: 'nsreq:workflow-label-lock' }
-          );
-
-          return;
-        }
-      }
-
-      // 3) Manual "Approved" label => rollback
-      if (action === 'labeled' && labelsMatching([changedLabel], approvedLabel).length) {
-        const approvedMatches = labelsMatching(labels, approvedLabel);
-        await removeExactLabelsFromIssue(context, params, approvedMatches);
-
-        // Best effort: keep existing progress label
-        const hasAuthor = labelsMatching(labels, authorActionLabel).length > 0;
-        const hasReview = labelsMatching(labels, approverActionLabel).length > 0;
-        await setStateLabel(context, params, issue, hasAuthor ? 'author' : hasReview ? 'review' : 'review');
-
-        await postOnce(
-          context,
-          params,
-          'Approved label change reverted. Please comment "Approved" to approve a request.',
-          { minimizeTag: 'nsreq:label-guard' }
-        );
-        return;
-      }
-
-      // 4) Manual "Rejected" on open issues => rollback
-      if (
-        action === 'labeled' &&
-        labelsMatching([changedLabel], REQUEST_STATUS_LABEL_REJECTED).length &&
-        toStringTrim(issue.state).toLowerCase() !== 'closed'
-      ) {
-        const rejectedMatches = labelsMatching(labels, REQUEST_STATUS_LABEL_REJECTED);
-        await removeExactLabelsFromIssue(context, params, rejectedMatches);
-
-        await postOnce(
-          context,
-          params,
-          'Rejected label change reverted. Rejected is set automatically when a request is closed without approval.',
-          { minimizeTag: 'nsreq:label-guard' }
-        );
-        return;
-      }
-
-      // 5) Closed issues: enforce terminal state (Approved vs Rejected) + cleanup
-      if (toStringTrim(issue.state).toLowerCase() === 'closed') {
-        let latest = labels;
-        try {
-          latest = await fetchIssueLabels(context, params);
-        } catch {
-          // ignore
-        }
-
-        const hasApproved = labelsMatching(latest, approvedLabel).length > 0;
-
-        if (hasApproved) {
-          await removeRejectedStatusLabel(context, params, latest);
-          await removeProgressStatusLabels(context, params, latest);
-          return;
-        }
-
-        const hasRejected = labelsMatching(latest, REQUEST_STATUS_LABEL_REJECTED).length > 0;
-        if (!hasRejected) {
-          try {
-            await context.octokit.issues.addLabels({
-              ...params,
-              labels: [REQUEST_STATUS_LABEL_REJECTED],
-            });
-          } catch {
-            // ignore
-          }
-        }
-
-        try {
-          latest = await fetchIssueLabels(context, params);
-        } catch {
-          // ignore
-        }
-
-        await removeProgressStatusLabels(context, params, latest);
-
-        // mutual exclusivity
-        const approvedMatches = labelsMatching(latest, approvedLabel);
-        if (approvedMatches.length) {
-          await removeExactLabelsFromIssue(context, params, approvedMatches);
-        }
-        return;
-      }
+      await handleIssueLabelWorkflowGuard(context, params, issue, sender, action, changedLabel);
     }
   );
 
