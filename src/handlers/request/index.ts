@@ -15,7 +15,6 @@ import {
   buildDetectedIssuesBody,
   buildMachineReadableMetadataBlock,
   normalizeMachineReadableIssues,
-  singleMachineReadableIssue,
   type MachineReadableIssue,
 } from './domain/machine-readable.js';
 import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
@@ -154,6 +153,10 @@ import { handoverToCpa } from './application/review-handover.js';
 import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
+import {
+  handleApprovalComment as handleApprovalCommentApplication,
+  type ApprovalCommentHandlingCallbacks,
+} from './application/approval-comment-handling.js';
 import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
@@ -4725,6 +4728,32 @@ async function resolveManualReviewApproverOverrideFromApprovalHook(
   }
 }
 
+function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants,
+  ValidateRequestIssueResult
+> {
+  return {
+    resolveEffectiveConstants,
+    resolveEffectiveRequestType,
+    resolveApproversForRequestType,
+    ensureReviewLabelsPresentOnIssue,
+    postOnce,
+    uniqLogins,
+    isAuthorizedApprover,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    validateRequestIssue,
+    setStateLabel,
+    checkParentChainExistsInFlatStructure,
+    log,
+    finalizeApprovedRequest,
+  };
+}
+
 async function handleApprovalComment(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -4733,116 +4762,15 @@ async function handleApprovalComment(
   parsedFormData: FormData,
   commenter: string
 ): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const requestType = resolveEffectiveRequestType(template, parsedFormData);
-
-  const configuredApprovers = resolveApproversForRequestType(
+  await handleApprovalCommentApplication(
     context,
-    requestType,
-    eff.approverUsernames,
-    eff.approverPoolUsernames
-  );
-
-  const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, issue, eff);
-  if (!reviewOk) {
-    await postOnce(
-      context,
-      params,
-      'Approval ignored: request is not in review state. Please resolve validation issues and let the bot route it back to review first.',
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-    return;
-  }
-
-  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
-  let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
-
-  if (!okApprover) {
-    const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
-      context,
-      params,
-      issue,
-      template,
-      parsedFormData,
-      requestType
-    );
-
-    allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
-    okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
-  }
-  if (!okApprover) {
-    const hasConfiguredApprovers = allowedApprovers.length > 0;
-    const reason = hasConfiguredApprovers
-      ? `Approval ignored: commenter ${commenter} is not an allowed approver for this request type.`
-      : `Approval ignored: commenter ${commenter} is not allowed to self-approve this request.`;
-
-    await postOnce(context, params, reason, { minimizeTag: 'nsreq:approval-info' });
-    return;
-  }
-
-  const reval = await validateRequestIssue(context, params, issue, {
+    params,
+    issue,
     template,
-    formData: parsedFormData,
-  });
-
-  if (reval.errors?.length) {
-    const listFallback = (reval.errors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      reval.errorsFormattedSingle?.trim() ||
-      reval.errorsFormatted?.trim() ||
-      listFallback ||
-      'Unknown validation error.';
-
-    const normalizedIssues = (reval.validationIssues || []).map((issue) => ({
-      field: toStringTrim(issue.path) || 'details',
-      message: toStringTrim(issue.message),
-    }));
-
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(message, normalizeMachineReadableIssues(normalizedIssues)),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await setStateLabel(context, params, issue, 'author');
-    return;
-  }
-
-  try {
-    const parentError = await checkParentChainExistsInFlatStructure(
-      context,
-      { owner: params.owner, repo: params.repo },
-      reval.template || template,
-      parsedFormData,
-      reval.namespace
-    );
-
-    if (parentError) {
-      await postOnce(
-        context,
-        params,
-        buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
-        {
-          minimizeTag: 'nsreq:validation',
-        }
-      );
-      await setStateLabel(context, params, issue, 'author');
-      return;
-    }
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      { err: e instanceof Error ? e.message : String(e) },
-      'parent chain check failed during approval'
-    );
-  }
-
-  await finalizeApprovedRequest(context, params, issue, template, parsedFormData, {
-    approvalPrefix: `Approved by @${commenter}`,
-  });
+    parsedFormData,
+    commenter,
+    buildApprovalCommentHandlingCallbacks()
+  );
 }
 
 async function handleAuthorUpdateComment(
