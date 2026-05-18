@@ -174,6 +174,10 @@ import {
   type DirectPrApprovalCommentHandlingCallbacks,
 } from './application/direct-pr-approval-comment-handling.js';
 import {
+  processPullRequestForAutoMerge as processPullRequestForAutoMergeApplication,
+  type PullRequestAutoMergeEntryCallbacks,
+} from './application/pull-request-auto-merge-entry.js';
+import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
 } from './application/approved-request-finalization.js';
@@ -2586,159 +2590,49 @@ async function processPullRequestForAutoMerge(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<void> {
-  const prBaseBranch = toStringTrim(pr.base?.ref);
+  await processPullRequestForAutoMergeApplication(context, repoInfo, pr, buildPullRequestAutoMergeEntryCallbacks());
+}
 
-  if (await isSequentialDirectRegistryPr(context, repoInfo, pr, prBaseBranch)) {
-    if (await shouldDeferSequentialDirectRegistryPrProcessing(context, repoInfo, pr)) {
-      return;
-    }
-  }
-
-  const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
-
-  if (issueNumber === null) {
-    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
-      baseBranch: toStringTrim(freshPr.base?.ref),
-    });
-
-    if (standaloneOutcome !== 'approved') return;
-
-    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
-    return;
-  }
-
-  const params: IssueParams = {
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    issue_number: issueNumber,
+function buildPullRequestAutoMergeEntryCallbacks(): PullRequestAutoMergeEntryCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  PullRequestLike
+> {
+  return {
+    isSequentialDirectRegistryPr,
+    shouldDeferSequentialDirectRegistryPrProcessing,
+    parseLinkedIssueNumberFromPr,
+    readFreshPullRequest,
+    maybeHandleStandaloneDirectPrApproval,
+    tryMergeApprovedPrOrUpdateBranch,
+    buildIssueParams: (repoInfo: RepoInfo, issueNumber: number) => ({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: issueNumber,
+    }),
+    readLinkedIssue: async (context: BotContext<RequestEvents>, params: IssueParams): Promise<IssueLike> => {
+      const res = await context.octokit.issues.get(params);
+      return res.data as unknown as IssueLike;
+    },
+    log,
+    getErrorMessage,
+    getHttpStatus,
+    isCrossRepositoryPullRequest,
+    hasIssueFormInputs,
+    loadTemplateWithLabelRefresh,
+    parseForm,
+    readIssueBodyForProcessing,
+    isRequestIssue,
+    buildCompatibleRequestSnapshotHashes,
+    calcSnapshotHash,
+    extractHashFromPrBody,
+    closeOutdatedRequestPrs,
+    maybeHandleDirectPrApprovalForMerge,
   };
-
-  let issue: IssueLike;
-  try {
-    const res = await context.octokit.issues.get(params);
-    issue = res.data as unknown as IssueLike;
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        issueNumber,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      },
-      'direct-pr:linked-issue-read-failed-fallback-standalone'
-    );
-
-    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
-      baseBranch: toStringTrim(freshPr.base?.ref),
-    });
-
-    if (standaloneOutcome !== 'approved') return;
-
-    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
-    return;
-  }
-
-  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        issueNumber,
-      },
-      'direct-pr:linked-issue-not-request-form-fallback-standalone'
-    );
-
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
-    if (standaloneOutcome !== 'approved') return;
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  let template: TemplateLike;
-  try {
-    template = await loadTemplateWithLabelRefresh(context, params, issue);
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        issueNumber,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'direct-pr:linked-issue-template-load-failed-fallback-standalone'
-    );
-
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
-    if (standaloneOutcome !== 'approved') return;
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-  if (!isRequestIssue(context, template, parsedFormData)) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        issueNumber,
-        parsedKeys: Object.keys(parsedFormData || {}),
-      },
-      'direct-pr:linked-issue-not-request-issue-fallback-standalone'
-    );
-
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
-    if (standaloneOutcome !== 'approved') return;
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  const body = toStringTrim(pr.body);
-  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
-  const currentHash =
-    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
-  const prHash = extractHashFromPrBody(body);
-
-  if (prHash) {
-    if (!snapshotHashes.includes(prHash)) {
-      await closeOutdatedRequestPrs(context, params, template, {
-        parsedFormData,
-        currentHash,
-        acceptedHashes: snapshotHashes,
-      });
-      return;
-    }
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  const directPrOutcome = await maybeHandleDirectPrApprovalForMerge(
-    context,
-    repoInfo,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    pr
-  );
-
-  if (directPrOutcome !== 'approved') return;
-
-  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
 }
 
 function isApprovalConfigChangePath(filePath: string): boolean {
