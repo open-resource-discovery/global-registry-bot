@@ -12,7 +12,6 @@ import {
 } from './pr/snapshot.js';
 import { createRequestPr as createRequestPRRaw } from './pr/create.js';
 import {
-  buildDetectedIssuesBody,
   buildMachineReadableMetadataBlock,
   normalizeMachineReadableIssues,
   type MachineReadableIssue,
@@ -157,6 +156,11 @@ import {
   handleApprovalComment as handleApprovalCommentApplication,
   type ApprovalCommentHandlingCallbacks,
 } from './application/approval-comment-handling.js';
+import {
+  handleParentOwnerApprovalIfNeeded as handleParentOwnerApprovalIfNeededApplication,
+  handleSystemContactOwnerApprovalIfNeeded as handleSystemContactOwnerApprovalIfNeededApplication,
+  type OwnerApprovalCommentHandlingCallbacks,
+} from './application/owner-approval-comment-handling.js';
 import {
   finalizeApprovedRequest as finalizeApprovedRequestApplication,
   type ApprovedRequestFinalizationCallbacks,
@@ -4754,6 +4758,88 @@ function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbac
   };
 }
 
+function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandlingCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  ValidateRequestIssueResult,
+  ContactApprovalMeta,
+  ParentApprovalMeta
+> {
+  return {
+    readContactApprovalMeta,
+    readParentApprovalMeta,
+    normalizeLogin,
+    uniqLogins,
+    normalizeKey,
+    postOnce,
+    validateRequestIssue,
+    setStateLabel,
+    parseForm,
+    calcSnapshotHash,
+    resolveEffectiveRequestType,
+    ensureContactApprovalMarker,
+    ensureParentApprovalMarker,
+    buildApprovedContactApprovalMeta: ({ target, owners, approvedBy, approvedAt }): ContactApprovalMeta => ({
+      v: 1,
+      target: toStringTrim(target),
+      owners: uniqLogins(owners || []),
+      approvedBy: normalizeLogin(approvedBy),
+      approvedAt: toStringTrim(approvedAt),
+    }),
+    buildApprovedParentApprovalMeta: ({ parent, target, owners, approvedBy, approvedAt }): ParentApprovalMeta => ({
+      v: 1,
+      parent: toStringTrim(parent),
+      target: toStringTrim(target),
+      owners: uniqLogins(owners || []),
+      approvedBy: normalizeLogin(approvedBy),
+      approvedAt: toStringTrim(approvedAt),
+    }),
+    maybeHandleApprovalDecision: async (
+      context,
+      params,
+      issue,
+      template,
+      parsedFormData,
+      requestType,
+      namespace,
+      options
+    ): Promise<ApprovalHandlingResult> =>
+      await maybeHandleApprovalDecision(
+        context,
+        params,
+        issue,
+        template,
+        parsedFormData,
+        requestType,
+        namespace,
+        options as ReturnType<typeof buildApprovalDecisionDispatchOptions>
+      ),
+    buildApprovalDecisionDispatchOptions,
+    resolveManualReviewApproverOverrideFromApprovalHook,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    handoverToCpa: async (context, params, issue, nsType, namespace, labels, options): Promise<void> =>
+      await handoverToCpa(
+        context,
+        params,
+        issue,
+        nsType,
+        namespace,
+        labels,
+        options as ReturnType<typeof buildReviewHandoverOptions>
+      ),
+    buildReviewHandoverOptions: (): Record<string, unknown> =>
+      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+    setParentOwnerActionState,
+    assignParentOwnersForApproval,
+    clearParentOwnerActionState,
+    isSubContextRequestType,
+    finalizeApprovedRequest,
+  };
+}
+
 async function handleApprovalComment(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -5077,112 +5163,15 @@ async function handleSystemContactOwnerApprovalIfNeeded(
   parsedFormData: FormData,
   commenter: string
 ): Promise<boolean> {
-  const meta = readContactApprovalMeta(issue.body);
-  if (!meta) return false;
-  if (normalizeLogin(meta.approvedBy)) return false;
-
-  const commenterLogin = normalizeLogin(commenter);
-  const owners = uniqLogins(meta.owners || []);
-  const isOwner = owners.some((owner) => owner.toLowerCase() === commenterLogin.toLowerCase());
-  const tagBase = `nsreq:contact-approval:${normalizeKey(meta.target)}`;
-
-  if (!isOwner) {
-    const mentions = owners.map((owner) => `@${owner}`).join(' ');
-    await postOnce(
-      context,
-      params,
-      `Approval ignored: this request requires contact owner approval for \`${meta.target}\` first.
-
-${mentions}`,
-      { minimizeTag: `${tagBase}:pending` }
-    );
-    return true;
-  }
-
-  const reval = await validateRequestIssue(context, params, issue, {
+  return await handleSystemContactOwnerApprovalIfNeededApplication(
+    context,
+    params,
+    issue,
     template,
-    formData: parsedFormData,
-  });
-
-  if (reval.errors?.length) {
-    const listFallback = (reval.errors || []).map((error) => `- ${error}`).join('\n');
-    const message =
-      reval.errorsFormattedSingle?.trim() ||
-      reval.errorsFormatted?.trim() ||
-      listFallback ||
-      'Unknown validation error.';
-
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(
-        message,
-        normalizeMachineReadableIssues(
-          (reval.validationIssues || []).map((validationIssue) => ({
-            field: toStringTrim(validationIssue.path) || 'details',
-            message: toStringTrim(validationIssue.message),
-          }))
-        )
-      ),
-      { minimizeTag: 'nsreq:validation' }
-    );
-    await setStateLabel(context, params, issue, 'author');
-    return true;
-  }
-
-  const tpl = reval.template || template;
-  const bodyStr = readIssueBodyForProcessing(issue.body);
-  const parsedNow = parseForm(bodyStr, tpl);
-  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
-  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
-
-  await ensureContactApprovalMarker(context, params, issue, {
-    v: 1,
-    target: meta.target,
-    owners,
-    approvedBy: commenterLogin,
-    approvedAt: new Date().toISOString(),
-  });
-
-  const approvalOutcome = await maybeHandleApprovalDecision(
-    context,
-    params,
-    issue,
-    tpl,
-    parsedNow,
-    effRt,
-    reval.namespace,
-    buildApprovalDecisionDispatchOptions()
+    parsedFormData,
+    commenter,
+    buildOwnerApprovalCommentHandlingCallbacks()
   );
-
-  if (approvalOutcome !== 'continue') return true;
-
-  await postOnce(context, params, `Contact owner approved by @${commenterLogin}. Continuing with standard review.`, {
-    minimizeTag: `${tagBase}:approved`,
-  });
-
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    tpl,
-    parsedNow,
-    effRt
-  );
-
-  const hookApprovers = manualApproversOverride.length
-    ? []
-    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
-
-  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
-    snapshotHash,
-    requestType: effRt,
-    extraApprovers: hookApprovers,
-    manualApproversOverride,
-    ...buildReviewHandoverOptions(),
-  });
-
-  return true;
 }
 
 async function ensureParentApprovalMarker(
@@ -5335,124 +5324,15 @@ async function handleParentOwnerApprovalIfNeeded(
   parsedFormData: FormData,
   commenter: string
 ): Promise<boolean> {
-  const meta = readParentApprovalMeta(issue.body);
-  if (!meta) return false;
-  if (normalizeLogin(meta.approvedBy)) return false;
-
-  const commenterLogin = normalizeLogin(commenter);
-  const owners = uniqLogins(meta.owners || []);
-  const isOwner = owners.some((o) => o.toLowerCase() === commenterLogin.toLowerCase());
-
-  const tagBase = `nsreq:parent-approval:${normalizeKey(meta.parent)}:${normalizeKey(meta.target)}`;
-
-  if (!isOwner) {
-    await setParentOwnerActionState(context, params);
-    await assignParentOwnersForApproval(context, params, owners);
-
-    const mentions = owners.map((o) => `@${o}`).join(' ');
-    await postOnce(
-      context,
-      params,
-      `Approval ignored: this request requires parent owner approval for \`${meta.parent}\` first.
-
-${mentions}`,
-      { minimizeTag: `${tagBase}:pending` }
-    );
-    return true;
-  }
-
-  const reval = await validateRequestIssue(context, params, issue, { template, formData: parsedFormData });
-  if (reval.errors?.length) {
-    const listFallback = (reval.errors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      reval.errorsFormattedSingle?.trim() ||
-      reval.errorsFormatted?.trim() ||
-      listFallback ||
-      'Unknown validation error.';
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(
-        message,
-        normalizeMachineReadableIssues(
-          (reval.validationIssues || []).map((validationIssue) => ({
-            field: toStringTrim(validationIssue.path) || 'details',
-            message: toStringTrim(validationIssue.message),
-          }))
-        )
-      ),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await clearParentOwnerActionState(context, params);
-    await setStateLabel(context, params, issue, 'author');
-    return true;
-  }
-
-  const tpl = reval.template || template;
-  const bodyStr = readIssueBodyForProcessing(issue.body);
-  const parsedNow = parseForm(bodyStr, tpl);
-  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
-  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
-
-  await ensureParentApprovalMarker(context, params, issue, {
-    v: 1,
-    parent: meta.parent,
-    target: meta.target,
-    owners,
-    approvedBy: commenterLogin,
-    approvedAt: new Date().toISOString(),
-  });
-
-  await clearParentOwnerActionState(context, params);
-
-  const approvalOutcome = await maybeHandleApprovalDecision(
+  return await handleParentOwnerApprovalIfNeededApplication(
     context,
     params,
     issue,
-    tpl,
-    parsedNow,
-    effRt,
-    reval.namespace,
-    buildApprovalDecisionDispatchOptions()
+    template,
+    parsedFormData,
+    commenter,
+    buildOwnerApprovalCommentHandlingCallbacks()
   );
-
-  if (approvalOutcome !== 'continue') return true;
-
-  if (isSubContextRequestType(effRt)) {
-    await finalizeApprovedRequest(context, params, issue, tpl, parsedNow, {
-      approvalPrefix: `Approved by parent namespace owner @${commenterLogin}`,
-    });
-    return true;
-  }
-
-  await postOnce(context, params, `Parent namespace approved by @${commenterLogin}. Continuing with standard review.`, {
-    minimizeTag: `${tagBase}:approved`,
-  });
-
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    tpl,
-    parsedNow,
-    effRt
-  );
-
-  const hookApprovers = manualApproversOverride.length
-    ? []
-    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
-
-  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
-    snapshotHash,
-    requestType: effRt,
-    extraApprovers: hookApprovers,
-    manualApproversOverride,
-    ...buildReviewHandoverOptions(),
-  });
-
-  return true;
 }
 
 const ROUTING_LOCK_NOTICE_INFLIGHT = new Map<string, Promise<void>>();
