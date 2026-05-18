@@ -121,6 +121,10 @@ import {
   type OutdatedRequestPrCleanupCallbacks,
 } from './application/outdated-request-pr-cleanup.js';
 import {
+  createRequestPrWithRecovery as createRequestPrWithRecoveryApplication,
+  type RequestPrCreationRecoveryCallbacks,
+} from './application/request-pr-creation-recovery.js';
+import {
   clearSequentialRegistryPrActive,
   getSequentialRegistryPrActive,
   isSequentialRegistryPrHeadSkipped,
@@ -3981,10 +3985,6 @@ function buildSafeResourceSlug(resourceName: unknown): string {
     .replace(/-+/g, '-');
 }
 
-function resolveStructuredRootForTemplate(template: TemplateLike): string {
-  return toStringTrim(template?._meta?.root).replace(/^\/+/, '').replace(/\/+$/, '');
-}
-
 function renderConfiguredRequestBranchName(
   context: BotContext<RequestEvents>,
   issue: IssueLike,
@@ -4001,172 +4001,6 @@ function renderConfiguredRequestBranchName(
     .replace('{issue}', String(issue.number || ''));
 }
 
-function extractCreatePrFailureMessage(error: unknown): string {
-  const raw = (error instanceof Error ? error.message : String(error)).trim();
-  const withoutUrl = raw.replace(/\s*-\s*https?:\/\/\S+$/i, '').trim();
-
-  const marker = 'Validation Failed:';
-  const idx = withoutUrl.indexOf(marker);
-
-  if (idx >= 0) {
-    const tail = withoutUrl.slice(idx + marker.length).trim();
-
-    try {
-      const parsed = JSON.parse(tail) as Record<string, unknown>;
-      const msg = toStringTrim(parsed['message']);
-      if (msg) return msg;
-    } catch {
-      // ignore
-    }
-
-    return tail || withoutUrl;
-  }
-
-  return withoutUrl;
-}
-
-function parseNoCommitsHeadBranchFromCreatePrError(error: unknown): string {
-  const raw = extractCreatePrFailureMessage(error);
-  const m = /No commits between [^ ]+ and ([^"\s]+)/i.exec(raw);
-  return m?.[1] ? toStringTrim(m[1]).replace(/^refs\/heads\//, '') : '';
-}
-
-function isResourceAlreadyExistsDuringPrCreation(error: unknown): boolean {
-  const msg = extractCreatePrFailureMessage(error);
-  return /Resource ['"`][^'"`]+['"`] already exists at /i.test(msg);
-}
-
-async function registryResourceExistsOnDefaultBranch(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  template: TemplateLike,
-  resourceName: string
-): Promise<boolean> {
-  const structRoot = resolveStructuredRootForTemplate(template);
-  if (!structRoot || !resourceName) return false;
-
-  for (const ext of ['yaml', 'yml']) {
-    try {
-      await context.octokit.repos.getContent({
-        owner: params.owner,
-        repo: params.repo,
-        path: `${structRoot}/${resourceName}.${ext}`,
-      });
-      return true;
-    } catch (e: unknown) {
-      if (getHttpStatus(e) === 404) continue;
-      throw e;
-    }
-  }
-
-  return false;
-}
-
-async function deleteBranchRefIfPresent(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  branchName: string
-): Promise<void> {
-  const branch = toStringTrim(branchName).replace(/^refs\/heads\//, '');
-  if (!branch) return;
-
-  try {
-    await context.octokit.git.deleteRef({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      ref: `heads/${branch}`,
-    });
-  } catch (e: unknown) {
-    if (getHttpStatus(e) !== 404) throw e;
-  }
-}
-
-function formatCreateRequestFailureForUser(error: unknown, branchName = '', resourceName = ''): string {
-  const msg = extractCreatePrFailureMessage(error);
-  const parsedBranch = parseNoCommitsHeadBranchFromCreatePrError(error) || toStringTrim(branchName);
-
-  if (/^No commits between\b/i.test(msg)) {
-    const suffix = parsedBranch ? ` '${parsedBranch}'` : '';
-    return `Failed to create PR automatically: stale request branch${suffix} blocked PR creation. Please retry approval.`;
-  }
-
-  if (isResourceAlreadyExistsDuringPrCreation(error)) {
-    const suffix = resourceName ? ` '${resourceName}'` : '';
-    return `Failed to create PR automatically: a stale request branch already contains${suffix}. Please retry approval.`;
-  }
-
-  return `Failed to create PR automatically: ${msg}`;
-}
-
-async function runCreateRequestPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike
-): Promise<{ number: number }> {
-  return await createRequestPr(context, repoInfo, issue, parsedFormData, { template });
-}
-
-async function retryCreatePrAfterBranchCleanup(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  branchName: string,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike
-): Promise<{ number: number }> {
-  await deleteBranchRefIfPresent(context, repoInfo, branchName);
-  return await runCreateRequestPr(context, repoInfo, issue, parsedFormData, template);
-}
-
-async function handleNoCommitsCreatePrFailure(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  branchName: string,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike,
-  resourceName: string
-): Promise<{ number: number }> {
-  try {
-    return await retryCreatePrAfterBranchCleanup(context, repoInfo, branchName, issue, parsedFormData, template);
-  } catch (retryError: unknown) {
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
-  }
-}
-
-async function handleAlreadyExistsCreatePrFailure(
-  context: BotContext<RequestEvents>,
-  args: {
-    params: IssueParams;
-    repoInfo: RepoInfo;
-    issue: IssueLike;
-    parsedFormData: FormData;
-    template: TemplateLike;
-    resourceName: string;
-    branchName: string;
-  }
-): Promise<{ number: number }> {
-  const { params, repoInfo, issue, parsedFormData, template, resourceName, branchName } = args;
-
-  try {
-    const existsOnDefaultBranch = await registryResourceExistsOnDefaultBranch(context, params, template, resourceName);
-
-    if (existsOnDefaultBranch) {
-      throw new Error(`Failed to create PR automatically: Resource '${resourceName}' already exists in the registry.`);
-    }
-
-    return await retryCreatePrAfterBranchCleanup(context, repoInfo, branchName, issue, parsedFormData, template);
-  } catch (retryError: unknown) {
-    if (retryError instanceof Error && retryError.message.startsWith('Failed to create PR automatically:')) {
-      throw retryError;
-    }
-
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
-  }
-}
-
 async function createRequestPrWithRecovery(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -4175,41 +4009,35 @@ async function createRequestPrWithRecovery(
   template: TemplateLike,
   resourceName: string
 ): Promise<{ number: number }> {
-  const repoInfo: RepoInfo = { owner: params.owner, repo: params.repo };
-  const fallbackBranchName = renderConfiguredRequestBranchName(context, issue, resourceName);
+  return await createRequestPrWithRecoveryApplication(
+    context,
+    params,
+    issue,
+    parsedFormData,
+    template,
+    resourceName,
+    buildRequestPrCreationRecoveryCallbacks()
+  );
+}
 
-  try {
-    return await runCreateRequestPr(context, repoInfo, issue, parsedFormData, template);
-  } catch (error: unknown) {
-    const staleNoCommitsBranch = parseNoCommitsHeadBranchFromCreatePrError(error) || fallbackBranchName;
-    const failureMessage = extractCreatePrFailureMessage(error);
-
-    if (/^No commits between\b/i.test(failureMessage)) {
-      return await handleNoCommitsCreatePrFailure(
-        context,
-        repoInfo,
-        staleNoCommitsBranch,
-        issue,
-        parsedFormData,
-        template,
-        resourceName
-      );
-    }
-
-    if (isResourceAlreadyExistsDuringPrCreation(error)) {
-      return await handleAlreadyExistsCreatePrFailure(context, {
-        params,
-        repoInfo,
-        issue,
-        parsedFormData,
-        template,
-        resourceName,
-        branchName: fallbackBranchName,
-      });
-    }
-
-    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName));
-  }
+function buildRequestPrCreationRecoveryCallbacks(): RequestPrCreationRecoveryCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueLike,
+  TemplateLike,
+  FormData
+> {
+  return {
+    createRequestPr: async (
+      context: BotContext<RequestEvents>,
+      repoInfo: RepoInfo,
+      issue: IssueLike,
+      parsedFormData: FormData,
+      options: { template: TemplateLike }
+    ): Promise<{ number: number }> => await createRequestPr(context, repoInfo, issue, parsedFormData, options),
+    getHttpStatus,
+    renderConfiguredRequestBranchName,
+  };
 }
 
 function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {
@@ -5055,7 +4883,6 @@ async function closeOutdatedRequestPrs(
 
 function buildOutdatedRequestPrCleanupCallbacks(): OutdatedRequestPrCleanupCallbacks<
   BotContext<RequestEvents>,
-  IssueLike,
   PullRequestLike,
   TemplateLike,
   FormData,
