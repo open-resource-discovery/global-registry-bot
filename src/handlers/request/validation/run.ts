@@ -7,7 +7,6 @@ import { loadSecrets } from '../../../utils/secrets.js';
 import { createHookApi as createHookApiRaw } from './hook-api.js';
 import Ajv2020Module from 'ajv/dist/2020.js';
 import type { ValidateFunction } from 'ajv';
-import { runHookInWorker } from './hook-pool.js';
 import {
   buildFormDataForHookValidationFromCandidate,
   normalizeFormDataForHookValidation,
@@ -18,6 +17,7 @@ import {
 import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
 import { runRegistryCustomValidateRuntime } from './hook-registry-custom-validate-runtime.js';
+import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
@@ -1507,107 +1507,28 @@ export async function validateRequestIssue(
           rawIdOrNs
         );
 
-        // Worker path: hooks is just a descriptor (raw code + hash)
-        if (isHookDescriptor(hooks)) {
-          const nameVal = candidate['name'];
-
-          const args: CustomValidateArgs = {
-            requestType,
-            resourceName: rawIdOrNs || (typeof nameVal === 'string' ? nameVal : ''),
-            candidate,
-            form: normalizedFormData,
-            api: null,
-            config: hookWorkerConfig,
-            ...customValidateContextArgs,
-            log: undefined,
-          };
-
-          // Prefer the new entrypoint name first
-          const fnsToTry = ['onValidate', 'customValidate'] as const;
-
-          for (const fn of fnsToTry) {
-            const res = await runHookInWorker(
-              {
-                owner,
-                repo,
-                path: hooks.__path,
-                hash: hooks.__hash,
-                code: hooks.__code,
-                fn,
-                args,
-                allowedHosts,
-                secrets: workerSecrets,
-              },
-              { timeoutMs: 8000 }
-            );
-
-            // Optional: forward worker logs into main logger
-            if (res.logs?.length && context.log?.info) {
-              for (const l of res.logs) {
-                const msg = l.msg || `hook:${fn}`;
-                if (l.level === 'error') context.log.error?.(l.obj, msg);
-                else if (l.level === 'warn') context.log.warn?.(l.obj, msg);
-                else if (l.level === 'debug') context.log.debug?.(l.obj, msg);
-                else context.log.info?.(l.obj, msg);
-              }
-            }
-
-            const hookErr = getStringProp(res.value, '__hookError');
-            if (hookErr) {
-              context.log?.warn?.({ err: hookErr, fn }, 'resource-bot hook validation failed');
-              // if the function existed, do not fall back
-              if (res.found) break;
-              continue;
-            }
-
-            const msgs = normalizeHookErrors(res.value);
-            if (msgs.length) {
-              buckets.rules.push(...msgs);
-              errors.push(...msgs);
-            }
-
-            // IMPORTANT: stop if the function existed
-            if (res.found) break;
-          }
-
-          return;
-        }
-
-        // Legacy path
-        const validateHook =
-          typeof hooks.onValidate === 'function'
-            ? hooks.onValidate
-            : typeof hooks.customValidate === 'function'
-              ? hooks.customValidate
-              : null;
-
-        if (!validateHook) return;
-
-        try {
-          const nameVal = candidate['name'];
-
-          const extra = await validateHook({
-            requestType,
-            resourceName: rawIdOrNs || (typeof nameVal === 'string' ? nameVal : ''),
-            candidate,
-            form: normalizedFormData,
-            api: hookApi,
-            config: hookRuntimeConfig,
-            ...customValidateContextArgs,
-            log: getHookLogger(context.log),
-          });
-
-          const msgs = normalizeHookErrors(extra);
-          if (msgs.length) {
-            buckets.rules.push(...msgs);
-            errors.push(...msgs);
-          }
-        } catch (err: unknown) {
-          context.log?.warn?.(
-            { err: err instanceof Error ? err.message : String(err) },
-            'resource-bot hooks custom validation failed'
-          );
-        }
+        await runValidationHookRuntime({
+          hooks,
+          owner,
+          repo,
+          requestType,
+          rawIdOrNs,
+          candidate,
+          normalizedFormData,
+          customValidateContextArgs,
+          hookApi,
+          hookWorkerConfig,
+          hookRuntimeConfig,
+          allowedHosts,
+          workerSecrets,
+          log: context.log,
+          isHookDescriptor,
+          getStringProp,
+          normalizeHookErrors,
+          getHookLogger,
+          rulesBucket: buckets.rules,
+          errors,
+        });
       };
 
       const valid = validate(candidate);
