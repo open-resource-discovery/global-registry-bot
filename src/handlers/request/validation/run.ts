@@ -15,6 +15,7 @@ import {
   resolvePrimaryIdFromCandidate,
   resolvePrimaryIdFromTemplate,
 } from './form-schema-projection.js';
+import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
@@ -511,53 +512,6 @@ function normalizeHookErrors(value: unknown): string[] {
   return out;
 }
 
-function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
-  if (value === true) return { status: 'approved' };
-  if (value === false || value === undefined || value === null) return {};
-
-  const token = toStringSafe(value).toLowerCase();
-  if (token === 'approved' || token === 'rejected' || token === 'unknown') {
-    return { status: token as ApprovalHookStatus };
-  }
-
-  if (!isPlainObject(value)) return {};
-
-  const approvers = toLoginArray(value['approvers']);
-
-  if (value['approved'] === true) {
-    const comment = toStringSafe(value['comment']);
-    const message = toStringSafe(value['message']);
-
-    return {
-      status: 'approved',
-      ...(comment ? { comment } : {}),
-      ...(message ? { message } : {}),
-      ...(approvers.length ? { approvers } : {}),
-    };
-  }
-
-  const status = toStringSafe(value['status']).toLowerCase();
-  const path = toStringSafe(value['path']);
-  const reason = toStringSafe(value['reason']);
-  const comment = toStringSafe(value['comment']);
-  const message = toStringSafe(value['message']);
-  const errors = normalizeApprovalHookErrors(value['errors'] ?? value['error']);
-
-  if (status === 'approved' || status === 'rejected' || status === 'unknown') {
-    return {
-      status: status as ApprovalHookStatus,
-      ...(path ? { path } : {}),
-      ...(reason ? { reason } : {}),
-      ...(comment ? { comment } : {}),
-      ...(message ? { message } : {}),
-      ...(approvers.length ? { approvers } : {}),
-      ...(errors.length ? { errors } : {}),
-    };
-  }
-
-  return {};
-}
-
 function approvalIssueLabelName(value: unknown): string {
   if (typeof value === 'string') return toStringSafe(value);
   if (isPlainObject(value)) return toStringSafe(value['name']);
@@ -752,97 +706,8 @@ async function buildCustomValidateContextArgs(
   };
 }
 
-function normalizeApprovalHookErrors(value: unknown): readonly {
-  field?: string;
-  message?: string;
-}[] {
-  if (!Array.isArray(value)) return [];
-
-  const out: { field?: string; message?: string }[] = [];
-  const seen = new Set<string>();
-
-  for (const item of value) {
-    if (!isPlainObject(item)) continue;
-
-    const field = toStringSafe(item['field']);
-    const message = toStringSafe(item['message']);
-    if (!message) continue;
-
-    const key = `${field}\u0000${message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    out.push({
-      ...(field ? { field } : {}),
-      message,
-    });
-  }
-
-  return out;
-}
-
 function normalizeLoginValue(value: unknown): string {
   return toStringSafe(value).replace(/^@+/, '').trim();
-}
-
-function uniqLogins(values: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const value of values || []) {
-    const login = normalizeLoginValue(value);
-    if (!login) continue;
-
-    const key = login.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(login);
-  }
-
-  return out;
-}
-
-function toLoginArray(value: unknown): string[] {
-  return Array.isArray(value) ? uniqLogins(value.map((item) => normalizeLoginValue(item)).filter(Boolean)) : [];
-}
-
-function getApprovalHookApprovers(context: ValidationContext, requestType: string): string[] {
-  const cfg = context.resourceBotConfig ?? {};
-  const workflow = isPlainObject(cfg['workflow']) ? cfg['workflow'] : {};
-
-  const fallbackApprovers = uniqLogins([
-    ...toLoginArray(workflow['approvers']),
-    ...toLoginArray(workflow['approversPool']),
-  ]);
-
-  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
-  const entry = isPlainObject(reqs[requestType]) ? reqs[requestType] : null;
-
-  if (!entry) return fallbackApprovers;
-
-  const hasOwnApprovers = Array.isArray(entry['approvers']);
-  const hasOwnApproversPool = Array.isArray(entry['approversPool']);
-
-  if (!hasOwnApprovers && !hasOwnApproversPool) return fallbackApprovers;
-
-  return uniqLogins([...toLoginArray(entry['approvers']), ...toLoginArray(entry['approversPool'])]);
-}
-
-function buildApprovalHookData(
-  args: {
-    namespace?: string | null;
-    resourceName?: string | null;
-    formData: FormData;
-  },
-  namespace: string,
-  resourceName: string
-): Readonly<Record<string, unknown>> {
-  return {
-    ...args.formData,
-    name: resourceName || namespace,
-    identifier: toStringSafe(args.formData['identifier']) || resourceName || namespace,
-    namespace: toStringSafe(args.formData['namespace']) || namespace || resourceName,
-  };
 }
 
 function getValueAtInstancePath(obj: unknown, instancePath: unknown): unknown {
@@ -1869,160 +1734,6 @@ export async function validateRequestIssue(
   });
 }
 
-function logApprovalHookMessages(
-  context: ValidationContext,
-  logs: { level: 'debug' | 'info' | 'warn' | 'error'; obj: unknown; msg?: string }[] | undefined
-): void {
-  if (!logs?.length) return;
-
-  for (const entry of logs) {
-    const msg = entry.msg || 'hook:onApproval';
-    if (entry.level === 'error') context.log?.error?.(entry.obj, msg);
-    else if (entry.level === 'warn') context.log?.warn?.(entry.obj, msg);
-    else if (entry.level === 'debug') context.log?.debug?.(entry.obj, msg);
-    else context.log?.info?.(entry.obj, msg);
-  }
-}
-
-function getApprovalAllowedHosts(context: ValidationContext): string[] {
-  return Array.isArray(context.resourceBotConfig?.hooks?.allowedHosts)
-    ? context.resourceBotConfig.hooks.allowedHosts
-    : [];
-}
-
-function resolveApprovalNamespace(args: {
-  namespace?: string | null;
-  resourceName?: string | null;
-  formData: FormData;
-}): string {
-  return (
-    toStringSafe(args.namespace) ||
-    toStringSafe(args.formData['namespace']) ||
-    toStringSafe(args.formData['identifier']) ||
-    toStringSafe(args.resourceName)
-  );
-}
-
-function resolveApprovalResourceName(
-  args: {
-    namespace?: string | null;
-    resourceName?: string | null;
-    formData: FormData;
-  },
-  namespace: string
-): string {
-  return (
-    toStringSafe(args.resourceName) ||
-    toStringSafe(args.formData['identifier']) ||
-    toStringSafe(args.formData['namespace']) ||
-    namespace
-  );
-}
-
-function buildApprovalHookArgs(
-  context: ValidationContext,
-  args: {
-    requestType: string;
-    namespace?: string | null;
-    resourceName?: string | null;
-    formData: FormData;
-    issue: IssueLike;
-    requestAuthorId?: string | null;
-  }
-): OnApprovalArgs {
-  const namespace = resolveApprovalNamespace(args);
-  const resourceName = resolveApprovalResourceName(args, namespace);
-
-  const hasExplicitRequestAuthorId = args.requestAuthorId !== undefined && args.requestAuthorId !== null;
-  const requesterId = hasExplicitRequestAuthorId
-    ? toStringSafe(args.requestAuthorId)
-    : toStringSafe(args.issue?.user?.login);
-
-  return {
-    requestType: toStringSafe(args.requestType),
-    namespace,
-    resourceName,
-    form: args.formData,
-    data: buildApprovalHookData(args, namespace, resourceName),
-    requestAuthor: {
-      id: requesterId,
-      email: '',
-    },
-    config: {
-      raw: isPlainObject(context.resourceBotConfig) ? context.resourceBotConfig : {},
-      approvers: getApprovalHookApprovers(context, toStringSafe(args.requestType)),
-    },
-    issue: {
-      number: typeof args.issue?.number === 'number' ? args.issue.number : 0,
-      title: toStringSafe(args.issue?.title),
-      body: toStringSafe(args.issue?.body),
-      state: toStringSafe(args.issue?.state),
-      author: requesterId,
-      labels: toApprovalIssueLabelNames(args.issue?.labels),
-    },
-    log: undefined,
-  };
-}
-
-async function runApprovalHookDescriptor(
-  context: ValidationContext,
-  repoInfo: { owner: string; repo: string },
-  hooks: HookDescriptor,
-  hookArgs: OnApprovalArgs,
-  allowedHosts: string[]
-): Promise<ApprovalHookDecision> {
-  const workerSecrets = pickHookSecretsForWorker(coreSecrets.HOOK_SECRETS || {});
-  const res = await runHookInWorker(
-    {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      path: hooks.__path,
-      hash: hooks.__hash,
-      code: hooks.__code,
-      fn: 'onApproval',
-      args: hookArgs,
-      allowedHosts,
-      secrets: workerSecrets,
-    },
-    { timeoutMs: 8000 }
-  );
-
-  logApprovalHookMessages(context, res.logs);
-
-  const hookErr = getStringProp(res.value, '__hookError');
-  if (hookErr) {
-    context.log?.warn?.({ err: hookErr }, 'resource-bot hooks.onApproval failed');
-    return {};
-  }
-
-  if (!res.found) return {};
-  return normalizeApprovalHookResult(res.value);
-}
-
-async function runApprovalHookInProcess(
-  context: ValidationContext,
-  hooks: ResourceBotHooks,
-  hookArgs: OnApprovalArgs
-): Promise<ApprovalHookDecision> {
-  const onApprovalHook = hooks.onApproval;
-  if (typeof onApprovalHook !== 'function') return {};
-
-  try {
-    const ret = await onApprovalHook({
-      ...hookArgs,
-      log: getHookLogger(context.log),
-    });
-
-    return normalizeApprovalHookResult(ret);
-  } catch (err: unknown) {
-    context.log?.warn?.(
-      { err: err instanceof Error ? err.message : String(err) },
-      'resource-bot hooks.onApproval failed'
-    );
-    return {};
-  }
-}
-
 export async function runApprovalHook(
   context: ValidationContext,
   repoInfo: { owner: string; repo: string },
@@ -2037,17 +1748,9 @@ export async function runApprovalHook(
 ): Promise<ApprovalHookDecision> {
   await ensureStaticConfigLoaded(context);
 
-  const hooks = getResourceBotHooks(context);
-  if (!hooks) return {};
-
-  const allowedHosts = getApprovalAllowedHosts(context);
-  const hookArgs = buildApprovalHookArgs(context, args);
-
-  if (isHookDescriptor(hooks)) {
-    return runApprovalHookDescriptor(context, repoInfo, hooks, hookArgs, allowedHosts);
-  }
-
-  return runApprovalHookInProcess(context, hooks, hookArgs);
+  return runApprovalHookRuntime(context, repoInfo, args, {
+    hookSecrets: coreSecrets.HOOK_SECRETS || {},
+  });
 }
 
 // CI helper: run the same onValidate hook pipeline the bot uses,
