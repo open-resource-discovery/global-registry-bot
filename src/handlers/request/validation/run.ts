@@ -16,6 +16,7 @@ import {
   resolvePrimaryIdFromTemplate,
 } from './form-schema-projection.js';
 import { runApprovalHookRuntime } from './hook-approval-runtime.js';
+import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
@@ -1361,81 +1362,23 @@ export async function validateRequestIssue(
   // hooks.beforeValidate
   const hooks = getResourceBotHooks(context);
   if (hooks) {
-    // Worker path: hooks is a descriptor (raw code + hash)
-    if (isHookDescriptor(hooks)) {
-      const beforeValidateArgs: BeforeValidateArgs = {
-        requestType,
-        form: formData,
-        api: null,
-        config: hookWorkerConfig,
-        log: undefined,
-      };
-      const res = await runHookInWorker(
-        {
-          owner,
-          repo,
-          path: hooks.__path,
-          hash: hooks.__hash,
-          code: hooks.__code,
-          fn: 'beforeValidate',
-          args: beforeValidateArgs,
-          allowedHosts,
-          secrets: workerSecrets,
-        },
-        { timeoutMs: 8000 }
-      );
-
-      // forward worker logs into main logger
-      if (res.logs.length) {
-        for (const l of res.logs) {
-          const msg = l.msg || 'hook:beforeValidate';
-          if (l.level === 'error') context.log?.error?.(l.obj, msg);
-          else if (l.level === 'warn') context.log?.warn?.(l.obj, msg);
-          else if (l.level === 'debug') context.log?.debug?.(l.obj, msg);
-          else context.log?.info?.(l.obj, msg);
-        }
-      }
-
-      // if worker returned a hook error, only warn
-      const hookErr = getStringProp(res.value, '__hookError');
-      if (hookErr) {
-        context.log?.warn?.({ err: hookErr }, 'resource-bot hooks.beforeValidate failed');
-      }
-
-      // Apply in-worker mutations back onto the main-thread formData
-      const workerForm = getObjectProp(res.value, 'form');
-      if (workerForm) {
-        const dst = formData as Record<string, string>;
-
-        // clear existing keys
-        for (const k of Object.keys(dst)) delete dst[k];
-
-        // repopulate
-        for (const [k, v] of Object.entries(workerForm)) {
-          if (v === null || v === undefined) continue;
-
-          if (typeof v === 'string') dst[k] = v;
-          else if (typeof v === 'number' || typeof v === 'boolean') dst[k] = String(v);
-          else dst[k] = String(v);
-        }
-      }
-    } else if (typeof hooks.beforeValidate === 'function') {
-      // Legacy in-process path
-      try {
-        await hooks.beforeValidate({
-          requestType,
-          form: formData,
-          api: hookApi,
-          config: hookRuntimeConfig,
-          log: getHookLogger(context.log),
-        });
-      } catch (err: unknown) {
-        context.log?.warn?.(
-          { err: err instanceof Error ? err.message : String(err) },
-          'resource-bot hooks.beforeValidate failed'
-        );
-      }
-    }
+    await runBeforeValidateHookRuntime({
+      hooks,
+      owner,
+      repo,
+      requestType,
+      formData,
+      allowedHosts,
+      workerSecrets,
+      hookWorkerConfig,
+      hookRuntimeConfig,
+      hookApi,
+      log: context.log,
+      isHookDescriptor,
+      getHookLogger,
+      getStringProp,
+      getObjectProp,
+    });
   }
 
   // 5) Required field check from template
