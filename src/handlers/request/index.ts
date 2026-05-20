@@ -319,6 +319,13 @@ const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
 const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
 const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 
+const WORKFLOW_APPROVAL_RETRY_INFLIGHT = new Map<string, NodeJS.Timeout>();
+const WORKFLOW_APPROVAL_RETRY_DELAYS_MS = [10_000, 30_000];
+
+function workflowApprovalRetryKey(repoInfo: RepoInfo, pr: PullRequestLike, attempt: number): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}:${attempt}`.toLowerCase();
+}
+
 const CHANGED_FILES_CONTEXT_CACHE = new WeakMap<object, Map<string, Promise<PullRequestFileLike[]>>>();
 
 function changedFilesCacheKey(repoInfo: RepoInfo, prNumber: number): string {
@@ -5112,6 +5119,117 @@ async function maybeApprovePendingWorkflowRunsForRegistryPr(
   return approvedAny;
 }
 
+function scheduleWorkflowApprovalRetry(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string,
+  attempt = 0
+): void {
+  const delay = WORKFLOW_APPROVAL_RETRY_DELAYS_MS[attempt];
+  if (delay === undefined) return;
+
+  const key = workflowApprovalRetryKey(repoInfo, pr, attempt);
+  if (WORKFLOW_APPROVAL_RETRY_INFLIGHT.has(key)) return;
+
+  const originalHeadSha = toStringTrim(pr.head?.sha);
+
+  const timer = setTimeout(() => {
+    WORKFLOW_APPROVAL_RETRY_INFLIGHT.delete(key);
+
+    void (async (): Promise<void> => {
+      const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
+      const freshHeadSha = toStringTrim(freshPr.head?.sha);
+
+      if (!isPullRequestOpen(freshPr)) return;
+      if (originalHeadSha && freshHeadSha && originalHeadSha !== freshHeadSha) return;
+
+      const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(
+        context,
+        repoInfo,
+        freshPr,
+        `${reason}:retry-${attempt + 1}`
+      );
+
+      if (!approved) {
+        scheduleWorkflowApprovalRetry(context, repoInfo, freshPr, reason, attempt + 1);
+      }
+    })().catch((error: unknown) => {
+      log(
+        context,
+        'warn',
+        {
+          prNumber: pr.number,
+          err: getErrorMessage(error),
+          status: getHttpStatus(error),
+          reason,
+          attempt: attempt + 1,
+        },
+        'workflow-approval:retry-failed'
+      );
+    });
+  }, delay);
+
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+
+  WORKFLOW_APPROVAL_RETRY_INFLIGHT.set(key, timer);
+
+  log(
+    context,
+    'info',
+    {
+      prNumber: pr.number,
+      headSha: originalHeadSha,
+      delayMs: delay,
+      attempt: attempt + 1,
+      reason,
+    },
+    'workflow-approval:retry-scheduled'
+  );
+}
+
+async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<boolean> {
+  const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(context, repoInfo, pr, reason);
+
+  if (!approved) {
+    scheduleWorkflowApprovalRetry(context, repoInfo, pr, reason);
+  }
+
+  return approved;
+}
+
+async function maybeApprovePendingWorkflowRunsForPrNumbers(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumbers: number[],
+  headSha: string,
+  reason: string
+): Promise<boolean> {
+  const sha = toStringTrim(headSha);
+  const uniquePrNumbers = Array.from(new Set((prNumbers || []).filter((n) => Number.isFinite(n))));
+
+  for (const prNumber of uniquePrNumbers) {
+    const pr = await readFreshPullRequest(context, repoInfo, prNumber);
+    if (!pr || !isPullRequestOpen(pr)) continue;
+
+    const prHeadSha = toStringTrim(pr.head?.sha);
+    if (sha && prHeadSha && prHeadSha !== sha) continue;
+
+    const approved = await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(context, repoInfo, pr, reason);
+
+    if (approved) return true;
+  }
+
+  return false;
+}
+
 async function isPullRequestBehindCurrentBase(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5549,7 +5667,12 @@ async function collectSequentialDirectRegistryPrCandidates(
       continue;
     }
 
-    await maybeApprovePendingWorkflowRunsForRegistryPr(context, repoInfo, pr, `${reason}:approve-pending-workflow`);
+    await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
+      context,
+      repoInfo,
+      pr,
+      `${reason}:approve-pending-workflow`
+    );
 
     const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
     const freshHeadSha = toStringTrim(freshPr.head?.sha);
@@ -5617,6 +5740,53 @@ async function collectSequentialDirectRegistryPrCandidates(
   return candidates;
 }
 
+async function isLikelyAutoApprovableStandaloneDirectPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  baseBranch: string,
+  reason: string
+): Promise<boolean> {
+  if (parseLinkedIssueNumberFromPr(pr, repoInfo) !== null) return false;
+
+  try {
+    const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, { baseBranch });
+
+    if (decision.status === 'approved') {
+      log(
+        context,
+        'info',
+        {
+          prNumber: pr.number,
+          headSha: toStringTrim(pr.head?.sha),
+          reason,
+        },
+        'sequential-registry-pr:auto-approvable-candidate'
+      );
+
+      return true;
+    }
+
+    return await hasAllowedStandaloneDirectPrApprovalForCurrentHead(context, repoInfo, pr, decision, {
+      baseBranch,
+    });
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+        reason,
+      },
+      'sequential-registry-pr:auto-approval-priority-check-failed'
+    );
+
+    return false;
+  }
+}
+
 async function runOneSequentialDirectRegistryPrMaintenance(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5671,6 +5841,12 @@ async function runOneSequentialDirectRegistryPrMaintenance(
       markSequentialRegistryPrHeadSkipped(context, repoInfo, candidate.freshPr, 'branch-update-request-failed');
     }
 
+    const greenCandidates: {
+      candidate: SequentialRegistryPrCandidate;
+      autoApprovable: boolean;
+      headSha: string;
+    }[] = [];
+
     for (const candidate of candidates.filter((item) => !item.mustUpdate)) {
       const headSha = toStringTrim(candidate.freshPr.head?.sha);
       const greenResult = headSha
@@ -5705,7 +5881,42 @@ async function runOneSequentialDirectRegistryPrMaintenance(
         continue;
       }
 
-      await processPullRequestForAutoMerge(context, repoInfo, candidate.freshPr);
+      const autoApprovable = await isLikelyAutoApprovableStandaloneDirectPr(
+        context,
+        repoInfo,
+        candidate.freshPr,
+        baseBranch,
+        reason
+      );
+
+      greenCandidates.push({
+        candidate,
+        autoApprovable,
+        headSha,
+      });
+    }
+
+    greenCandidates.sort((left, right) => {
+      if (left.autoApprovable !== right.autoApprovable) return left.autoApprovable ? -1 : 1;
+      return right.candidate.freshPr.number - left.candidate.freshPr.number;
+    });
+
+    const selected = greenCandidates[0];
+
+    if (selected) {
+      log(
+        context,
+        'info',
+        {
+          prNumber: selected.candidate.freshPr.number,
+          headSha: selected.headSha,
+          autoApprovable: selected.autoApprovable,
+          reason,
+        },
+        'sequential-registry-pr:selected-green-candidate'
+      );
+
+      await processPullRequestForAutoMerge(context, repoInfo, selected.candidate.freshPr);
       return { updated: false, processed: true, blockedByActive: false };
     }
 
@@ -9635,7 +9846,7 @@ export default function requestHandler(app: Probot): void {
 
       if (!isPullRequestOpen(pr)) return;
 
-      await maybeApprovePendingWorkflowRunsForRegistryPr(
+      await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
         context,
         repoInfo,
         pr,
@@ -9716,6 +9927,18 @@ export default function requestHandler(app: Probot): void {
         if (conclusion && conclusion !== 'success') {
           if (isBlockingCheckConclusion(conclusion)) {
             await getStaticConfig(context);
+
+            if (conclusion === 'action_required') {
+              const approvedWorkflow = await maybeApprovePendingWorkflowRunsForPrNumbers(
+                context,
+                repoInfo,
+                prNumbers,
+                headShaStr,
+                `check-run:${conclusion}`
+              );
+
+              if (approvedWorkflow) return;
+            }
 
             await handleBlockingRegistryHeadConclusion(
               context,
@@ -9798,6 +10021,18 @@ export default function requestHandler(app: Probot): void {
 
       if (isBlockingCheckConclusion(conclusion)) {
         await getStaticConfig(context);
+
+        if (conclusion === 'action_required') {
+          const approvedWorkflow = await maybeApprovePendingWorkflowRunsForPrNumbers(
+            context,
+            { owner: ownerLogin, repo: repoName },
+            prNumbers,
+            headShaStr,
+            `check-suite:${conclusion}`
+          );
+
+          if (approvedWorkflow) return;
+        }
 
         await handleBlockingRegistryHeadConclusion(
           context,
