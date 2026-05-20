@@ -507,7 +507,7 @@ export function runApprovalHookRuntime(
   }
 ): Promise<ApprovalHookDecision> {
   const hooks = getResourceBotHooks(context);
-  if (!hooks) return {};
+  if (!hooks) return Promise.resolve({});
 
   const allowedHosts = getApprovalAllowedHosts(context);
   const hookArgs = buildApprovalHookArgs(context, args);
