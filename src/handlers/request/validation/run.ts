@@ -17,6 +17,7 @@ import {
 } from './form-schema-projection.js';
 import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
+import { runRegistryCustomValidateRuntime } from './hook-registry-custom-validate-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
@@ -1722,117 +1723,28 @@ export async function runCustomValidateForRegistryCandidate(
   const hookWorkerConfig = buildHookWorkerConfig(coreSecrets.HOOK_SECRETS || {});
   const hookRuntimeConfig = buildHookRuntimeConfig(coreSecrets.HOOK_SECRETS || {});
 
-  const form =
-    args.formData && isPlainObject(args.formData)
-      ? normalizeFormDataForHookValidation(args.requestType, args.formData, args.schema, null)
-      : await buildFormDataForHookValidationFromCandidate(args.requestType, args.schema, args.candidate);
-
-  const normalizedResourceName = toStringSafe(form.identifier) || toStringSafe(form.namespace);
-  const inferredResourceName = resolvePrimaryIdFromCandidate(args.candidate, args.schema);
-
-  const resourceName =
-    normalizedResourceName ||
-    inferredResourceName ||
-    toStringSafe(args.resourceName) ||
-    toStringSafe(getRecordProp(args.candidate, 'product-id')) ||
-    toStringSafe(getRecordProp(args.candidate, 'productId')) ||
-    toStringSafe(getRecordProp(args.candidate, 'id')) ||
-    toStringSafe(getRecordProp(args.candidate, 'name')) ||
-    toStringSafe(getRecordProp(args.candidate, 'identifier')) ||
-    toStringSafe(getRecordProp(args.candidate, 'namespace')) ||
-    toStringSafe(getRecordProp(args.candidate, 'vendor'));
-
-  const onValidateHook = hooks.onValidate;
-  const isLegacyHook = typeof onValidateHook === 'function';
-
-  if (isLegacyHook) {
-    // Legacy hooks object
-    try {
-      const extra = await onValidateHook({
-        requestType: args.requestType,
-        resourceName,
-        candidate: args.candidate,
-        form,
-        api: createHookApi(context, {
-          secrets: coreSecrets.HOOK_SECRETS || {},
-          allowedHosts,
-        }),
-        config: hookRuntimeConfig,
-        requestAuthor: { id: '' },
-        issue: {
-          number: 0,
-          title: '',
-          body: '',
-          state: '',
-          author: '',
-          labels: [],
-        },
-        parentResourceName: '',
-        parentCandidate: null,
-        parentOwners: [],
-        log: getHookLogger(context.log),
-      });
-
-      return normalizeHookErrors(extra);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return [`Hook onValidate failed: ${msg}`];
-    }
-  }
-
-  // Descriptor-based hooks
-  if (isHookDescriptor(hooks)) {
-    const workerSecrets = pickHookSecretsForWorker(coreSecrets.HOOK_SECRETS || {});
-    const hookArgs: CustomValidateArgs = {
-      requestType: args.requestType,
-      resourceName,
-      candidate: args.candidate,
-      form,
-      api: null,
-      config: hookWorkerConfig,
-      requestAuthor: { id: '' },
-      issue: {
-        number: 0,
-        title: '',
-        body: '',
-        state: '',
-        author: '',
-        labels: [],
-      },
-      parentResourceName: '',
-      parentCandidate: null,
-      parentOwners: [],
-      log: undefined,
-    };
-
-    const res = await runHookInWorker(
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        path: hooks.__path,
-        hash: hooks.__hash,
-        code: hooks.__code,
-        fn: 'onValidate',
-        args: hookArgs,
-        allowedHosts,
-        secrets: workerSecrets,
-      },
-      { timeoutMs: 8000 }
-    );
-
-    if (res.logs?.length && context.log?.info) {
-      for (const l of res.logs) {
-        const msg = l.msg || 'hook:onValidate';
-        if (l.level === 'error') context.log.error?.(l.obj, msg);
-        else if (l.level === 'warn') context.log.warn?.(l.obj, msg);
-        else if (l.level === 'debug') context.log.debug?.(l.obj, msg);
-        else context.log.info?.(l.obj, msg);
-      }
-    }
-
-    const msgs = normalizeHookErrors(res.value);
-    return msgs.length ? msgs : [];
-  }
-
-  return [];
+  return runRegistryCustomValidateRuntime({
+    context,
+    hooks,
+    repoInfo,
+    requestType: args.requestType,
+    schema: args.schema,
+    candidate: args.candidate,
+    resourceName: args.resourceName,
+    formData: args.formData,
+    allowedHosts,
+    hookSecrets: coreSecrets.HOOK_SECRETS || {},
+    hookWorkerConfig,
+    hookRuntimeConfig,
+    isHookDescriptor,
+    getHookLogger,
+    normalizeHookErrors,
+    buildFormDataForHookValidationFromCandidate,
+    normalizeFormDataForHookValidation,
+    resolvePrimaryIdFromCandidate,
+    getRecordProp,
+    toStringSafe,
+    pickHookSecretsForWorker,
+    createHookApi,
+  });
 }
