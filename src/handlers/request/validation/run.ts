@@ -1,6 +1,5 @@
 import { parseForm as parseFormRaw, loadTemplate as loadTemplateRaw } from '../template.js';
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadStaticConfig, type RegistryBotHooks as StaticRegistryBotHooks } from '../../../config.js';
 import { loadSecrets } from '../../../utils/secrets.js';
@@ -17,6 +16,7 @@ import {
 import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
 import { runRegistryCustomValidateRuntime } from './hook-registry-custom-validate-runtime.js';
+import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import addFormatsModule from 'ajv-formats';
@@ -820,7 +820,6 @@ const getResourceBotHooks = (context: ValidationContext): ResourceBotHooks | nul
 // AJV init + caches
 const SCHEMA_CACHE = new Map<string, ValidateFunction<unknown>>();
 const AJV_CACHE = new Map<string, AjvInstance>();
-const REPO_SCHEMA_CACHE = new Map<string, unknown>();
 
 function initAjvInstance(ajv: AjvInstance, context: ValidationContext): void {
   // ajv-formats + ajv-errors are applied to the instance
@@ -1030,108 +1029,6 @@ function getOrCreateValidator(
   }
 
   return { validate, ajvKey };
-}
-
-// Schema loading
-async function loadSchemaLocal(schemaPath: unknown): Promise<unknown> {
-  const want = toStringSafe(schemaPath) || 'namespace.schema.json';
-  const cleanedWant = want.replace(/^\.?\//, '');
-
-  const srcDir = resolve(dirName, '../../..');
-  const projectRoot = resolve(srcDir, '..');
-
-  const candidates: string[] = [
-    cleanedWant,
-    `./${cleanedWant}`,
-    `../${cleanedWant}`,
-    `../../${cleanedWant}`,
-    `../../../${cleanedWant}`,
-    resolve(srcDir, 'schemas', cleanedWant),
-    resolve(projectRoot, 'src', 'schemas', cleanedWant),
-    resolve(process.cwd(), 'src', 'schemas', cleanedWant),
-    resolve(process.cwd(), cleanedWant),
-  ];
-
-  const errors: string[] = [];
-  for (const cand of candidates) {
-    const abs = resolve(dirName, cand);
-    try {
-      const buf = await readFile(abs, 'utf8');
-      return JSON.parse(buf);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      errors.push(`'${cand}': ${msg}`);
-    }
-  }
-
-  throw new Error(`Failed to load schema (tried: ${candidates.join(', ')}). Errors: ${errors.join(' | ')}`);
-}
-
-async function loadSchemaFromRepoOrLocal(
-  context: ValidationContext,
-  owner: string,
-  repo: string,
-  schemaPath: unknown
-): Promise<unknown> {
-  const raw = toStringSafe(schemaPath);
-  if (!raw) return null;
-
-  const octokit = context?.octokit;
-  const searchPaths = ['.github/registry-bot/request-schemas', 'schema', '.'];
-
-  const addCandidate = (set: Set<string>, p: unknown): void => {
-    const cleaned = toStringSafe(p).replace(/^\/+/, '');
-    if (cleaned) set.add(cleaned);
-  };
-
-  const cacheRepoKeyBase = octokit && owner && repo ? `${String(owner)}/${String(repo)}` : '';
-
-  if (octokit && owner && repo) {
-    const candidates = new Set<string>();
-
-    if (raw.startsWith('/')) {
-      // Explicit repo-absolute path
-      addCandidate(candidates, raw);
-    } else {
-      const cleaned = raw.replace(/^\.?\//, '');
-
-      const isRepoRelativeConfigPath = cleaned.startsWith(`${CONFIG_BASE_DIR}/`) || cleaned.startsWith('.github/');
-
-      if (isRepoRelativeConfigPath) {
-        // Already a repo-relative path -> use as-is only
-        addCandidate(candidates, cleaned);
-      } else {
-        // Relative short path -> search through known schema locations
-        addCandidate(candidates, `${CONFIG_BASE_DIR}/${cleaned}`);
-        for (const base of searchPaths) {
-          addCandidate(candidates, `${base.replace(/^\.?\//, '')}/${cleaned}`);
-        }
-        addCandidate(candidates, cleaned);
-      }
-    }
-
-    for (const p of candidates) {
-      const cacheKey = cacheRepoKeyBase ? `${cacheRepoKeyBase}:${p}` : '';
-      if (cacheKey && REPO_SCHEMA_CACHE.has(cacheKey)) return REPO_SCHEMA_CACHE.get(cacheKey);
-
-      try {
-        const res = await octokit.repos.getContent({ owner, repo, path: p });
-        const data = res.data;
-
-        if (!Array.isArray(data) && isRepoContentFile(data)) {
-          const text = Buffer.from(data.content, (data.encoding || 'base64') as BufferEncoding).toString('utf8');
-          const obj = JSON.parse(text);
-          if (cacheKey) REPO_SCHEMA_CACHE.set(cacheKey, obj);
-          return obj;
-        }
-      } catch (e: unknown) {
-        if (getHttpStatus(e) === 404) continue;
-        break;
-      }
-    }
-  }
-
-  return loadSchemaLocal(raw);
 }
 
 // Registry root resolution
@@ -1397,7 +1294,17 @@ export async function validateRequestIssue(
 
   // 6) Resolve primary identifier
   const schemaPathForId = String(template?._meta?.schema || '').trim();
-  const schemaObjForId = await loadSchemaFromRepoOrLocal(context, owner, repo, schemaPathForId);
+  const schemaObjForId = await loadSchemaFromRepoOrLocal({
+    context,
+    owner,
+    repo,
+    schemaPath: schemaPathForId,
+    dirName,
+    configBaseDir: CONFIG_BASE_DIR,
+    getHttpStatus,
+    isRepoContentFile,
+    toStringSafe,
+  });
   let schemaObjForValidation: unknown = schemaObjForId;
 
   const rawResolved = resolvePrimaryIdFromTemplate(template, formData, schemaObjForId) || '';
@@ -1464,7 +1371,17 @@ export async function validateRequestIssue(
         );
       }
 
-      const schemaObj = await loadSchemaFromRepoOrLocal(context, owner, repo, schemaPath);
+      const schemaObj = await loadSchemaFromRepoOrLocal({
+        context,
+        owner,
+        repo,
+        schemaPath,
+        dirName,
+        configBaseDir: CONFIG_BASE_DIR,
+        getHttpStatus,
+        isRepoContentFile,
+        toStringSafe,
+      });
       if (!schemaObj) throw new Error(`Schema not found for path: ${schemaPath}`);
       schemaObjForValidation = schemaObj;
 
