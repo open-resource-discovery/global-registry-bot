@@ -8497,6 +8497,20 @@ async function maybeRequireParentOwnerApproval(
 
   const { parent, owners } = await resolveParentOwnerLoginsForTarget(context, params, template, target, requestType);
 
+  log(
+    context,
+    'info',
+    {
+      issueNumber: issue.number,
+      requester,
+      parent,
+      target,
+      owners,
+      requestType,
+    },
+    'parent-approval:owners-resolved'
+  );
+
   if (!parent || owners.length === 0) {
     await ensureParentApprovalMarker(context, params, issue, null);
     await clearParentOwnerActionState(context, params);
@@ -8509,10 +8523,23 @@ async function maybeRequireParentOwnerApproval(
         context,
         'debug',
         { issue: issue.number, requester, parent, target, owners },
-        'parent-approval:skip (requester is parent owner)'
+        'parent-approval:auto-approved (requester is parent owner)'
       );
     }
-    await ensureParentApprovalMarker(context, params, issue, null);
+
+    if (isSubContextRequestType(requestType)) {
+      await ensureParentApprovalMarker(context, params, issue, {
+        v: 1,
+        parent,
+        target,
+        owners,
+        approvedBy: requester,
+        approvedAt: new Date().toISOString(),
+      });
+    } else {
+      await ensureParentApprovalMarker(context, params, issue, null);
+    }
+
     await clearParentOwnerActionState(context, params);
     return false;
   }

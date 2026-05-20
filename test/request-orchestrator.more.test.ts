@@ -2097,7 +2097,7 @@ describe('parent owner approval gating', () => {
     expect(ensureAssigneesOnce).not.toHaveBeenCalled();
   });
 
-  test('does not gate when the requester is already an owner of the parent namespace', async () => {
+  test('issues.opened: subcontext requester who owns parent namespace creates PR without CPA review', async () => {
     const { app, handlers: h } = mkApp();
     requestHandler(app);
 
@@ -2112,7 +2112,11 @@ describe('parent owner approval gating', () => {
     };
 
     const tpl = {
-      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
       title: 'Sub-Context Namespace',
       labels: ['Sub-Context Namespace'],
       body: [],
@@ -2131,25 +2135,144 @@ describe('parent owner approval gating', () => {
       formData: { identifier: target, description: 'x' },
     });
 
+    findOpenIssuePrs.mockResolvedValue([]);
+    createRequestPr.mockResolvedValue({ number: 777 });
+
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    const parentYaml = `contacts:\n  - "@barOwner"\n`;
 
     (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
+
       if (path === 'data/namespaces/sap.css.yaml') {
-        return { data: { content: b64(parentYaml), encoding: 'base64' } };
+        return {
+          data: {
+            content: b64('contacts:\n  - "@barOwner"\n'),
+            encoding: 'base64',
+          },
+        };
       }
+
       throw Object.assign(new Error('Not Found'), { status: 404 });
     });
 
     await h['issues.opened'][0](ctx);
 
-    const posted = postedBodies();
-    expect(posted).not.toContain('Parent owner approval required');
-    expect(ensureAssigneesOnce).toHaveBeenCalled();
-    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+    expect(postedBodies()).not.toContain('Parent owner approval required');
+    expect(postedBodies()).not.toContain('### ➡️ Routing to an approver for review');
+
+    expect(issue.body).toContain('nsreq:parent-approval');
+    expect(issue.body).toContain('"parent":"sap.css"');
+    expect(issue.body).toContain(`"target":"${target}"`);
+    expect(issue.body).toContain('"approvedBy":"barOwner"');
+
+    const createRequestPrCalls = (createRequestPr as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+
+    expect(createRequestPrCalls).toHaveLength(1);
+
+    expect(createRequestPrCalls[0]).toEqual([
+      expect.anything(),
+      { owner: 'o', repo: 'r' },
+      expect.objectContaining({ number: 551 }),
+      expect.objectContaining({ identifier: target }),
+      expect.objectContaining({ template: tpl }),
+    ]);
+
+    expect(postedBodies()).toContain('Approved by parent namespace owner @barOwner');
+    expect(postedBodies()).toContain('Opened PR: #777');
+
+    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: ['Parent Owner Action'],
+      })
+    );
+
+    expect(postOnce.mock.calls.some((call) => call[3]?.minimizeTag === 'nsreq:handover')).toBe(false);
+  });
+
+  test('issue_comment: requester update creates subcontext PR when requester owns parent namespace', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar';
+    const issue = {
+      number: 552,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'barOwner' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    findOpenIssuePrs.mockResolvedValue([]);
+    createRequestPr.mockResolvedValue({ number: 778 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'updated', user: { login: 'barOwner' } },
+      sender: { type: 'User', login: 'barOwner' },
+      withCachedConfig: true,
+      config: withWorkflowLabels({
+        requests: {
+          subContextNamespace: {
+            folderName: 'data/namespaces',
+            schema: 'schema.json',
+            issueTemplate: 'template.yml',
+          },
+        },
+        workflow: { labels: {}, approvers: [] },
+      } as any),
+    });
+
+    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
+
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return {
+          data: {
+            content: b64('contacts:\n  - "@barOwner"\n'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(postedBodies()).toContain('Approved by parent namespace owner @barOwner');
+    expect(postedBodies()).toContain('Opened PR: #778');
+    expect(postedBodies()).not.toContain('### ➡️ Routing to an approver for review');
   });
 
   test('gates sub-namespace request when parent owner email resolves via GraphQL fallback', async () => {
