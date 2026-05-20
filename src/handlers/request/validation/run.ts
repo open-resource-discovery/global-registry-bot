@@ -16,6 +16,7 @@ import {
 import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
 import { runRegistryCustomValidateRuntime } from './hook-registry-custom-validate-runtime.js';
+import { applyRequiredFieldValidation, applySchemaIdentifierConsistencyCheck } from './local-validation-checks.js';
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
@@ -1280,17 +1281,13 @@ export async function validateRequestIssue(
   }
 
   // 5) Required field check from template
-  const requiredFields = (template?.body || []).filter((f) => f?.id && f.validations?.required);
-
-  const missingRequired = requiredFields
-    .filter((f) => isEmpty((formData as Record<string, unknown>)?.[String(f.id)]))
-    .map((f) => String(f?.attributes?.label || f.id));
-
-  for (const label of missingRequired) {
-    const msg = `Required field is missing in form: ${label}`;
-    buckets.form.push(msg);
-    errors.push(msg);
-  }
+  applyRequiredFieldValidation({
+    template,
+    formData,
+    formBucket: buckets.form,
+    errors,
+    isEmpty,
+  });
 
   // 6) Resolve primary identifier
   const schemaPathForId = String(template?._meta?.schema || '').trim();
@@ -1386,22 +1383,14 @@ export async function validateRequestIssue(
       schemaObjForValidation = schemaObj;
 
       // enforce identifier mapping consistency
-      const schemaProps = getObjectProp(schemaObj, 'properties') || {};
-
-      const idPropEntry = Object.entries(schemaProps).find(
-        ([, def]) => isPlainObject(def) && def['x-form-field'] === 'identifier'
-      );
-
-      const hasIdentifierFieldInTemplate = Array.isArray(template?.body)
-        ? template.body.some((f) => f?.id === 'identifier')
-        : false;
-
-      if (idPropEntry && !hasIdentifierFieldInTemplate) {
-        const msg =
-          'Configuration error: schema marks a primary identifier with x-form-field="identifier", but the form template has no field with id "identifier".';
-        buckets.schema.push(msg);
-        errors.push(msg);
-      }
+      applySchemaIdentifierConsistencyCheck({
+        template,
+        schemaObj,
+        schemaBucket: buckets.schema,
+        errors,
+        isPlainObject,
+        getObjectProp,
+      });
 
       const candidate = await projectForSchema(requestType, normalizedFormData, schemaObj);
 
