@@ -20,6 +20,7 @@ import { applyRequiredFieldValidation, applySchemaIdentifierConsistencyCheck } f
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
+import { collectDuplicateRegistryErrors } from './duplicate-registry-validation.js';
 import { collectVendorGovernanceErrors } from './vendor-governance-validation.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
@@ -967,37 +968,6 @@ function resolveTemplateAndRequestType(
   return { template, requestType, requestCfg };
 }
 
-async function checkRegistryDuplicate(
-  context: ValidationContext,
-  repoInfo: { owner: string; repo: string },
-  template: TemplateLike,
-  requestCfg: RequestConfigEntry,
-  normalizedFormData: FormData,
-  buckets: ValidationBuckets,
-  errors: string[]
-): Promise<void> {
-  const namespace = String(normalizedFormData.namespace || '').trim();
-  if (!namespace) return;
-
-  const resourceName = String(normalizedFormData.identifier || normalizedFormData.namespace || '').trim();
-  if (!resourceName) return;
-
-  try {
-    const structRoot = resolveRegistryRootForTemplate(context, template, requestCfg);
-    const filePath = `${structRoot}/${resourceName}.yaml`;
-
-    await context.octokit.repos.getContent({ owner: repoInfo.owner, repo: repoInfo.repo, path: filePath });
-
-    const msg = `Resource '${resourceName}' already exists in registry`;
-    buckets.registry.push(msg);
-    errors.push(msg);
-  } catch (e: unknown) {
-    if (getHttpStatus(e) !== 404) {
-      context.log?.warn?.({ err: e instanceof Error ? e.message : String(e) }, 'registry existence check failed');
-    }
-  }
-}
-
 function getAjvKey(context: ValidationContext, schemaPath: string): string {
   const hs = context.resourceBotHooksSource;
   return hs ? `${schemaPath}::${hs}` : schemaPath;
@@ -1395,7 +1365,21 @@ export async function validateRequestIssue(
   }
 
   const namespace = String(normalizedFormData.namespace || '').trim();
-  await checkRegistryDuplicate(context, { owner, repo }, template, requestCfg, normalizedFormData, buckets, errors);
+  const duplicateErrors = await collectDuplicateRegistryErrors({
+    context,
+    owner,
+    repo,
+    template,
+    requestCfg,
+    normalizedFormData,
+    getHttpStatus,
+    resolveRegistryRoot: (currentTemplate, currentRequestCfg) =>
+      resolveRegistryRootForTemplate(context, currentTemplate, currentRequestCfg),
+  });
+  if (duplicateErrors.length) {
+    buckets.registry.push(...duplicateErrors);
+    errors.push(...duplicateErrors);
+  }
 
   const nsType = inferNsType(requestType);
 
