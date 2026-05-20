@@ -277,6 +277,51 @@ function mkIssuesContext(args: {
   return ctx;
 }
 
+function mkPullRequestContext(args: {
+  action?: 'opened' | 'synchronize' | 'reopened' | 'ready_for_review';
+  pr?: any;
+  config?: any;
+}) {
+  const pr = args.pr ?? {
+    number: 2001,
+    title: 'Direct registry PR',
+    body: 'manual direct pr',
+    state: 'open',
+    draft: false,
+    user: { login: 'external-user' },
+    head: { ref: 'feature/registry-pr', sha: 'sha-workflow-waiting' },
+    base: { ref: 'main' },
+  };
+
+  const ctx = mkBaseContext({
+    owner: 'o',
+    repo: 'r',
+    issue: { number: pr.number, title: pr.title, body: pr.body, labels: [], user: pr.user },
+    withCachedConfig: true,
+    config:
+      args.config ??
+      withWorkflowLabels({
+        requests: {
+          systemNamespace: {
+            folderName: 'data/namespaces',
+            schema: 'schema.json',
+            issueTemplate: 'template.yml',
+          },
+        },
+        workflow: { labels: {}, approvers: [] },
+      } as any),
+  });
+
+  ctx.name = `pull_request.${args.action ?? 'opened'}`;
+  ctx.payload = {
+    action: args.action ?? 'opened',
+    repository: { name: 'r', owner: { login: 'o' } },
+    pull_request: pr,
+  };
+
+  return ctx;
+}
+
 function mkCheckSuiteContext(args: {
   event: 'check_suite.completed' | 'check_run.completed';
   conclusion: string;
@@ -12747,7 +12792,7 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     hooks: null,
     hooksSource: null,
   });
-  extractHashFromPrBody.mockReturnValueOnce('');
+  extractHashFromPrBody.mockReturnValue('');
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
@@ -12780,14 +12825,14 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     data: [{ filename: 'resources/product-direct-green.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-green\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-green-user' } }],
   });
 
@@ -12804,7 +12849,7 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     },
   });
 
-  runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved after push reevaluation' } as any);
+  runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after push reevaluation' } as any);
 
   await handler(ctx);
 
@@ -12857,7 +12902,7 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     hooks: null,
     hooksSource: null,
   });
-  extractHashFromPrBody.mockReturnValueOnce('');
+  extractHashFromPrBody.mockReturnValue('');
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
@@ -12890,14 +12935,14 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     data: [{ filename: 'resources/product-direct-mergeability-poll.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-mergeability-poll\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-mergeability-poll-user' } }],
   });
 
@@ -12914,7 +12959,7 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     },
   });
 
-  runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved after mergeability polling' } as any);
+  runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after mergeability polling' } as any);
 
   await handler(ctx);
 
@@ -12955,7 +13000,7 @@ test('push: direct registry PR creates an approval review when prior review look
     hooks: null,
     hooksSource: null,
   });
-  extractHashFromPrBody.mockReturnValueOnce('');
+  extractHashFromPrBody.mockReturnValue('');
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
@@ -12988,7 +13033,7 @@ test('push: direct registry PR creates an approval review when prior review look
     data: [{ filename: 'resources/product-direct-green-review-fetch-failed.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-green-review-fetch-failed\n', 'utf8').toString(
         'base64'
@@ -12997,7 +13042,7 @@ test('push: direct registry PR creates an approval review when prior review look
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-green-review-fetch-failed-user' } }],
   });
 
@@ -13015,7 +13060,7 @@ test('push: direct registry PR creates an approval review when prior review look
   });
   ctx.octokit.pulls.listReviews.mockRejectedValueOnce(httpErr(500));
 
-  runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved after review lookup failure' } as any);
+  runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after review lookup failure' } as any);
 
   await handler(ctx);
 
@@ -14544,6 +14589,174 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     );
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('pull_request.opened: approves waiting workflow run for safe registry-only PR', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2001,
+        title: 'Direct registry PR',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/registry-pr', sha: 'sha-workflow-waiting' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.agtwf01.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string, _args: any) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12345,
+                name: 'registry-validate',
+                status: 'waiting',
+                conclusion: null,
+                head_sha: 'sha-workflow-waiting',
+                pull_requests: [{ number: 2001 }],
+              },
+            ],
+          },
+        };
+      }
+
+      if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve') {
+        return { data: {} };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    expect(ctx.octokit.request).toHaveBeenCalledWith(
+      'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        run_id: 12345,
+      })
+    );
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+    expect(infoMsgs).toContain('workflow-approval:run-approved');
+  });
+
+  test('pull_request.opened: does not approve waiting workflow run for non-registry-only PR', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2002,
+        title: 'Mixed PR',
+        body: 'manual mixed pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/mixed-pr', sha: 'sha-mixed-waiting' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [
+        { filename: 'data/namespaces/sap.agtwf02.yaml', status: 'added' },
+        { filename: 'README.md', status: 'modified' },
+      ],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12346,
+                name: 'registry-validate',
+                status: 'waiting',
+                conclusion: null,
+                head_sha: 'sha-mixed-waiting',
+                pull_requests: [{ number: 2002 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    expect(ctx.octokit.request).not.toHaveBeenCalledWith(
+      'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+      expect.anything()
+    );
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+    expect(infoMsgs).toContain('workflow-approval:skip-not-safe-registry-only-pr');
+  });
+
+  test('pull_request.opened: does not schedule retry when workflow run is already visible and completed', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2003,
+        title: 'Direct registry PR',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/completed-run', sha: 'sha-completed-run' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.agtwf03.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12347,
+                name: 'registry-validate',
+                status: 'completed',
+                conclusion: 'success',
+                head_sha: 'sha-completed-run',
+                pull_requests: [{ number: 2003 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+
+    expect(infoMsgs).toContain('workflow-approval:no-waiting-runs');
+    expect(infoMsgs).toContain('workflow-approval:retry-skipped-run-already-visible');
+    expect(infoMsgs).not.toContain('workflow-approval:retry-scheduled');
   });
 
   test('check_suite.success: rejected linked direct PR closes linked PRs and reports closed PR numbers', async () => {

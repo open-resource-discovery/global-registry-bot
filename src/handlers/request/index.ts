@@ -322,6 +322,24 @@ const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
 const WORKFLOW_APPROVAL_RETRY_INFLIGHT = new Map<string, NodeJS.Timeout>();
 const WORKFLOW_APPROVAL_RETRY_DELAYS_MS = [10_000, 30_000];
 
+const WORKFLOW_APPROVAL_LAST_RUNS = new Map<string, WorkflowRunLike[]>();
+
+function workflowApprovalHeadKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
+  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`.toLowerCase();
+}
+
+function rememberWorkflowApprovalRuns(repoInfo: RepoInfo, pr: PullRequestLike, runs: WorkflowRunLike[]): void {
+  WORKFLOW_APPROVAL_LAST_RUNS.set(workflowApprovalHeadKey(repoInfo, pr), runs || []);
+}
+
+function shouldRetryWorkflowApproval(repoInfo: RepoInfo, pr: PullRequestLike): boolean {
+  const runs = WORKFLOW_APPROVAL_LAST_RUNS.get(workflowApprovalHeadKey(repoInfo, pr));
+
+  // Retry only when no run was visible yet. If GitHub already returned queued/completed/failed runs,
+  // there is no pending approval run to wait for.
+  return Array.isArray(runs) && runs.length === 0;
+}
+
 function workflowApprovalRetryKey(repoInfo: RepoInfo, pr: PullRequestLike, attempt: number): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}:${attempt}`.toLowerCase();
 }
@@ -5070,6 +5088,8 @@ async function maybeApprovePendingWorkflowRunsForRegistryPr(
   }
 
   const runs = await listWorkflowRunsForPullRequestHead(context, repoInfo, pr);
+  rememberWorkflowApprovalRuns(repoInfo, pr, runs);
+
   const waitingRuns = runs.filter(isWorkflowRunWaitingForApproval);
 
   if (!waitingRuns.length) {
@@ -5198,11 +5218,24 @@ async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
 ): Promise<boolean> {
   const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(context, repoInfo, pr, reason);
 
-  if (!approved) {
+  if (approved) return true;
+
+  if (shouldRetryWorkflowApproval(repoInfo, pr)) {
     scheduleWorkflowApprovalRetry(context, repoInfo, pr, reason);
+  } else {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        reason,
+      },
+      'workflow-approval:retry-skipped-run-already-visible'
+    );
   }
 
-  return approved;
+  return false;
 }
 
 async function maybeApprovePendingWorkflowRunsForPrNumbers(
