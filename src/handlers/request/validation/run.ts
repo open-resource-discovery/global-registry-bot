@@ -20,6 +20,7 @@ import { applyRequiredFieldValidation, applySchemaIdentifierConsistencyCheck } f
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
+import { collectVendorGovernanceErrors } from './vendor-governance-validation.js';
 import addFormatsModule from 'ajv-formats';
 import ajvErrorsModule from 'ajv-errors';
 
@@ -1042,114 +1043,6 @@ function resolveRegistryRootForTemplate(
   return folderName.replace(/^\/+/, '').replace(/\/+$/, '') || 'data';
 }
 
-function isNamespaceLikeRequestType(requestType: unknown): boolean {
-  const rt = toStringSafe(requestType)
-    .replace(/[\s_-]/g, '')
-    .toLowerCase();
-  if (!rt || rt === 'vendor') return false;
-
-  return rt.includes('namespace') || rt === 'system' || rt === 'subcontext' || rt === 'authority';
-}
-
-function isSystemNamespaceRequestType(requestType: unknown): boolean {
-  const rt = toStringSafe(requestType)
-    .replace(/[\s_-]/g, '')
-    .toLowerCase();
-  return rt === 'systemnamespace' || rt === 'system';
-}
-
-function extractVendorRootFromResourceName(resourceName: unknown): string {
-  const raw = toStringSafe(resourceName).replaceAll('\u00a0', ' ').trim();
-  if (!raw) return '';
-
-  const first = raw
-    .split('.')
-    .map((p) => p.trim())
-    .filter(Boolean)[0];
-
-  return toStringSafe(first).toLowerCase();
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  const raw = Array.isArray(value) ? value : value !== undefined && value !== null ? [value] : [];
-
-  return Array.from(new Set(raw.map((v) => toStringSafe(v).replace(/^@+/, '').trim().toLowerCase()).filter(Boolean)));
-}
-
-function resolveVendorRegistryRoot(context: ValidationContext): string {
-  const vendorCfg = getRequestConfig(context, 'vendor');
-  const folder = toStringSafe(vendorCfg?.folderName).replace(/^\/+/, '').replace(/\/+$/, '');
-  return folder || 'data/vendors';
-}
-
-function resolveAllowedSystemNamespaceVendors(requestCfg: RequestConfigEntry | null): string[] {
-  const configured = normalizeStringArray(requestCfg?.['allowedVendorRoots']);
-  if (configured.length) return configured;
-
-  const legacy = normalizeStringArray(requestCfg?.['allowedVendors']);
-  if (legacy.length) return legacy;
-
-  // preserve current behavior unless explicitly configured otherwise
-  return ['sap'];
-}
-
-async function repoPathExists(
-  context: ValidationContext,
-  owner: string,
-  repo: string,
-  repoPath: string
-): Promise<boolean> {
-  try {
-    await context.octokit.repos.getContent({ owner, repo, path: repoPath });
-    return true;
-  } catch (e: unknown) {
-    if (getHttpStatus(e) === 404) return false;
-    throw e;
-  }
-}
-
-async function collectVendorGovernanceErrors(
-  context: ValidationContext,
-  owner: string,
-  repo: string,
-  requestType: string,
-  requestCfg: RequestConfigEntry | null,
-  resourceName: string
-): Promise<string[]> {
-  if (!isNamespaceLikeRequestType(requestType)) return [];
-
-  const vendorRoot = extractVendorRootFromResourceName(resourceName);
-  if (!vendorRoot) return [];
-
-  const vendorRegistryRoot = resolveVendorRegistryRoot(context);
-  const vendorYamlPath = `${vendorRegistryRoot}/${vendorRoot}.yaml`;
-  const vendorYmlPath = `${vendorRegistryRoot}/${vendorRoot}.yml`;
-
-  const hasVendorEntry =
-    (await repoPathExists(context, owner, repo, vendorYamlPath)) ||
-    (await repoPathExists(context, owner, repo, vendorYmlPath));
-
-  const errors: string[] = [];
-
-  if (!hasVendorEntry) {
-    errors.push(
-      `Vendor '${vendorRoot}' is not registered. Please register '${vendorRoot}' first before requesting '${resourceName}'.`
-    );
-  }
-
-  if (isSystemNamespaceRequestType(requestType)) {
-    const allowedVendorRoots = resolveAllowedSystemNamespaceVendors(requestCfg);
-
-    if (!allowedVendorRoots.includes(vendorRoot)) {
-      errors.push(
-        `System namespaces are only allowed for vendor roots: ${allowedVendorRoots.join(', ')}. Requested vendor root: '${vendorRoot}'.`
-      );
-    }
-  }
-
-  return errors;
-}
-
 // Core validate function
 async function ensureStaticConfigLoaded(context: ValidationContext): Promise<void> {
   if (context.resourceBotConfig) return;
@@ -1341,7 +1234,17 @@ export async function validateRequestIssue(
 
   // 7.1) vendor governance
   try {
-    const vendorErrors = await collectVendorGovernanceErrors(context, owner, repo, requestType, requestCfg, rawIdOrNs);
+    const vendorErrors = await collectVendorGovernanceErrors({
+      context,
+      owner,
+      repo,
+      requestType,
+      requestCfg,
+      resourceName: rawIdOrNs,
+      getVendorRequestConfig: () => getRequestConfig(context, 'vendor'),
+      getHttpStatus,
+      toStringSafe,
+    });
 
     if (vendorErrors.length) {
       buckets.registry.push(...vendorErrors);
