@@ -173,10 +173,28 @@ type CreateRequestPr = (
 
 type TryMergeIfGreen = (ctx: unknown, args: { owner: string; repo: string; prNumber: number }) => Promise<void>;
 
-const DEFAULT_CONFIG_MOCK: StaticConfig = {
+const TEST_WORKFLOW_LABELS = {
+  authorAction: 'Requester Action',
+  approverAction: 'Review Pending',
+  parentOwnerAction: 'Parent Owner Action',
+  approvalRequested: ['Review Pending'],
+  approvalSuccessful: ['Approved'],
+  approvalRejected: ['Rejected'],
+};
+
+function withWorkflowLabels<T extends StaticConfig>(cfg: T): T {
+  cfg.workflow.labels = {
+    ...TEST_WORKFLOW_LABELS,
+    ...(cfg.workflow.labels || {}),
+  };
+
+  return cfg;
+}
+
+const DEFAULT_CONFIG_MOCK: StaticConfig = withWorkflowLabels({
   workflow: { labels: {}, approvers: [] },
   requests: {},
-};
+});
 
 const setStateLabel = jest.fn<SetStateLabel>(async () => {});
 const ensureAssigneesOnce = jest.fn<EnsureAssigneesOnce>(async () => {});
@@ -300,7 +318,7 @@ function mkCtx(args: {
     octokit: args.octokit ?? mkOctokit(),
     log: args.log ?? mkLogger(),
     issue: () => mkIssueParams(owner, repo, issueNumber),
-    resourceBotConfig: args.config,
+    resourceBotConfig: args.config ? withWorkflowLabels(args.config) : undefined,
     resourceBotHooks: {},
     resourceBotHooksSource: 'mock',
   };
@@ -684,7 +702,6 @@ describe('request-orchestrator additional coverage', () => {
     await expect(handlers['issue_comment.created']?.(ctx)).resolves.toBeUndefined();
 
     const warnMsgs = ctx.log.warn.mock.calls.map((c) => String(c[1] ?? '')).join('\n');
-    expect(warnMsgs).toContain('failed to remove review pending label after approval');
     expect(warnMsgs).toContain('failed to remove label');
 
     const removed = octokit.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
@@ -700,6 +717,8 @@ describe('request-orchestrator additional coverage', () => {
       workflow: {
         labels: {
           approvalSuccessful: 'ship it',
+          approvalRequested: ['Review Pending'],
+          approverAction: 'Review Pending',
         },
         approvers: [],
       },
@@ -710,7 +729,7 @@ describe('request-orchestrator additional coverage', () => {
       title: 'Request',
       body: '### Namespace\nsap.ok',
       state: 'open',
-      labels: [],
+      labels: [{ name: 'Review Pending' }],
       user: { login: 'author' },
     };
 

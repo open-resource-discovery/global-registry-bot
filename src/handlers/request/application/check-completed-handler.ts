@@ -86,6 +86,13 @@ export type CheckCompletedHandlerCallbacks<
     repoInfo: RepoInfoBase
   ) => Promise<void>;
   tryAutoMerge: (context: ContextType, repoInfo: RepoInfoBase, headSha: string) => Promise<void>;
+  maybeApprovePendingWorkflowRunsForPrNumbers: (
+    context: ContextType,
+    repoInfo: RepoInfoBase,
+    prNumbers: number[],
+    headSha: string,
+    reason: string
+  ) => Promise<boolean>;
   handleBlockingRegistryHeadConclusion: (
     context: ContextType,
     repoInfo: RepoInfoBase,
@@ -188,6 +195,18 @@ export async function handleCheckCompletedEvent<
       if (callbacks.isBlockingCheckConclusion(conclusion)) {
         await callbacks.getStaticConfig(context);
 
+        if (conclusion === 'action_required') {
+          const approvedWorkflow = await callbacks.maybeApprovePendingWorkflowRunsForPrNumbers(
+            context,
+            repoInfo,
+            prNumbers,
+            headShaStr,
+            `check-run:${conclusion}`
+          );
+
+          if (approvedWorkflow) return;
+        }
+
         await callbacks.handleBlockingRegistryHeadConclusion(
           context,
           repoInfo,
@@ -268,6 +287,18 @@ export async function handleCheckCompletedEvent<
 
   if (callbacks.isBlockingCheckConclusion(conclusion)) {
     await callbacks.getStaticConfig(context);
+
+    if (conclusion === 'action_required') {
+      const approvedWorkflow = await callbacks.maybeApprovePendingWorkflowRunsForPrNumbers(
+        context,
+        { owner: ownerLogin, repo: repoName },
+        prNumbers,
+        headShaStr,
+        `check-suite:${conclusion}`
+      );
+
+      if (approvedWorkflow) return;
+    }
 
     await callbacks.handleBlockingRegistryHeadConclusion(
       context,

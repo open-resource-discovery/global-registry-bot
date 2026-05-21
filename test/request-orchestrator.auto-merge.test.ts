@@ -30,7 +30,12 @@ const DEFAULT_CONFIG = {
   },
   workflow: {
     labels: {
+      authorAction: 'Requester Action',
+      approverAction: 'Review Pending',
+      parentOwnerAction: 'Parent Owner Action',
+      approvalRequested: ['Review Pending'],
       approvalSuccessful: ['Approved'],
+      approvalRejected: ['Rejected'],
     },
     approvers: [],
   },

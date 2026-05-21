@@ -85,6 +85,7 @@ export type OwnerApprovalRequirementsCallbacks<
   ensureLabelsPresentOnce: (context: ContextType, params: ParamsType, labels: string[]) => Promise<void>;
   ensureAssigneesPresent: (context: ContextType, params: ParamsType, assignees: string[]) => Promise<void>;
   postOnce: (context: ContextType, params: ParamsType, body: string, options?: PostOnceOptionsBase) => Promise<void>;
+  isSubContextRequestType: (requestType: unknown) => boolean;
   setStateLabel: (
     context: ContextType,
     params: ParamsType,
@@ -626,7 +627,26 @@ export async function maybeRequireParentOwnerApproval<
       { issue: issue.number, requester, parent, target, owners },
       'parent-approval:skip (requester is parent owner)'
     );
-    await ensureParentApprovalMarker(context, params, issue, null, callbacks);
+
+    if (callbacks.isSubContextRequestType(requestType)) {
+      await ensureParentApprovalMarker(
+        context,
+        params,
+        issue,
+        {
+          v: 1,
+          parent,
+          target,
+          owners,
+          approvedBy: requester,
+          approvedAt: new Date().toISOString(),
+        },
+        callbacks
+      );
+    } else {
+      await ensureParentApprovalMarker(context, params, issue, null, callbacks);
+    }
+
     await clearParentOwnerActionState(context, params, callbacks);
     return false;
   }
