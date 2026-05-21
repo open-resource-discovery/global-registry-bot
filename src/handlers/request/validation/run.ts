@@ -20,6 +20,7 @@ import { applyRequiredFieldValidation, applySchemaIdentifierConsistencyCheck } f
 import { resolveTemplateAndRequestType } from './request-type-resolution.js';
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
+import { buildCustomValidateContextArgs } from './custom-validate-context.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import { collectDuplicateRegistryErrors } from './duplicate-registry-validation.js';
 import { collectVendorGovernanceErrors } from './vendor-governance-validation.js';
@@ -518,204 +519,6 @@ function normalizeHookErrors(value: unknown): string[] {
   return out;
 }
 
-function approvalIssueLabelName(value: unknown): string {
-  if (typeof value === 'string') return toStringSafe(value);
-  if (isPlainObject(value)) return toStringSafe(value['name']);
-  return '';
-}
-
-function toApprovalIssueLabelNames(labels: IssueLike['labels']): string[] {
-  const items = Array.isArray(labels) ? labels : [];
-  return items.map((label) => approvalIssueLabelName(label)).filter(Boolean);
-}
-
-function buildValidationHookIssue(issue: IssueLike): CustomValidateArgs['issue'] {
-  const author = toStringSafe(issue?.user?.login);
-
-  return {
-    number: typeof issue?.number === 'number' ? issue.number : 0,
-    title: toStringSafe(issue?.title),
-    body: toStringSafe(issue?.body),
-    state: toStringSafe(issue?.state),
-    author,
-    labels: toApprovalIssueLabelNames(issue?.labels),
-  };
-}
-
-function buildValidationHookRequestAuthor(issue: IssueLike): CustomValidateArgs['requestAuthor'] {
-  return {
-    id: toStringSafe(issue?.user?.login),
-  };
-}
-
-function resolveUpperNamespaceName(resourceName: unknown): string {
-  const parts = toStringSafe(resourceName)
-    .split('.')
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (parts.length <= 2) return '';
-
-  return parts.slice(0, -1).join('.');
-}
-
-async function parseYamlObject(raw: string): Promise<Record<string, unknown> | null> {
-  try {
-    const yamlMod = (await import('yaml')) as unknown as {
-      parse?: (src: string) => unknown;
-      default?: { parse?: (src: string) => unknown };
-    };
-
-    const parse = yamlMod.parse || yamlMod.default?.parse;
-    if (typeof parse !== 'function') return null;
-
-    const parsed = parse(raw);
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readRepoYamlObject(
-  context: ValidationContext,
-  owner: string,
-  repo: string,
-  basePath: string
-): Promise<Record<string, unknown> | null> {
-  for (const ext of ['yaml', 'yml']) {
-    try {
-      const res = await context.octokit.repos.getContent({
-        owner,
-        repo,
-        path: `${basePath}.${ext}`,
-      });
-
-      const data = res.data;
-      if (Array.isArray(data) || !isRepoContentFile(data)) continue;
-
-      const text = Buffer.from(data.content, (data.encoding || 'base64') as BufferEncoding).toString('utf8');
-      const parsed = await parseYamlObject(text);
-      if (parsed) return parsed;
-    } catch (e: unknown) {
-      if (getHttpStatus(e) === 404) continue;
-      throw e;
-    }
-  }
-
-  return null;
-}
-
-async function resolveParentCandidateForValidationHook(
-  context: ValidationContext,
-  owner: string,
-  repo: string,
-  template: TemplateLike,
-  requestCfg: RequestConfigEntry,
-  resourceName: string
-): Promise<{ parentResourceName: string; parentCandidate: Record<string, unknown> | null }> {
-  const parentResourceName = resolveUpperNamespaceName(resourceName);
-  if (!parentResourceName) {
-    return { parentResourceName: '', parentCandidate: null };
-  }
-
-  const root = resolveRegistryRootForTemplate(context, template, requestCfg);
-  const parentCandidate = await readRepoYamlObject(context, owner, repo, `${root}/${parentResourceName}`);
-
-  return {
-    parentResourceName,
-    parentCandidate,
-  };
-}
-
-function addNormalizedOwnerReference(out: Set<string>, value: unknown): void {
-  const raw = toStringSafe(value);
-  if (!raw) return;
-
-  const githubUrlMatch = /(?:github\.com|github\.tools\.sap)\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/i.exec(
-    raw
-  );
-
-  if (githubUrlMatch?.[1]) {
-    out.add(normalizeLoginValue(githubUrlMatch[1]).toLowerCase());
-  }
-
-  for (const part of raw.split(/[,\s;]+/)) {
-    const cleaned = toStringSafe(part).replace(/^@+/, '').toLowerCase();
-    if (!cleaned) continue;
-
-    if (cleaned.includes('@')) {
-      out.add(cleaned);
-      continue;
-    }
-
-    if (/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(cleaned)) {
-      out.add(cleaned);
-    }
-  }
-}
-
-function collectNormalizedOwnerReferences(out: Set<string>, value: unknown): void {
-  if (value === null || value === undefined) return;
-
-  if (Array.isArray(value)) {
-    for (const item of value) collectNormalizedOwnerReferences(out, item);
-    return;
-  }
-
-  if (isPlainObject(value)) {
-    for (const item of Object.values(value)) collectNormalizedOwnerReferences(out, item);
-    return;
-  }
-
-  addNormalizedOwnerReference(out, value);
-}
-
-function resolveParentOwnersForValidationHook(parentCandidate: Record<string, unknown> | null): string[] {
-  if (!parentCandidate) return [];
-
-  const out = new Set<string>();
-
-  collectNormalizedOwnerReferences(
-    out,
-    parentCandidate['contacts'] ?? parentCandidate['contact'] ?? parentCandidate['owners'] ?? parentCandidate['owner']
-  );
-
-  return Array.from(out).filter(Boolean).sort();
-}
-
-async function buildCustomValidateContextArgs(
-  context: ValidationContext,
-  owner: string,
-  repo: string,
-  issue: IssueLike,
-  template: TemplateLike,
-  requestCfg: RequestConfigEntry,
-  resourceName: string
-): Promise<
-  Pick<CustomValidateArgs, 'requestAuthor' | 'issue' | 'parentResourceName' | 'parentCandidate' | 'parentOwners'>
-> {
-  const parent = await resolveParentCandidateForValidationHook(
-    context,
-    owner,
-    repo,
-    template,
-    requestCfg,
-    resourceName
-  );
-
-  return {
-    requestAuthor: buildValidationHookRequestAuthor(issue),
-    issue: buildValidationHookIssue(issue),
-    parentResourceName: parent.parentResourceName,
-    parentCandidate: parent.parentCandidate,
-    parentOwners: resolveParentOwnersForValidationHook(parent.parentCandidate),
-  };
-}
-
-function normalizeLoginValue(value: unknown): string {
-  return toStringSafe(value).replace(/^@+/, '').trim();
-}
-
 function getValueAtInstancePath(obj: unknown, instancePath: unknown): unknown {
   const p = toStringSafe(instancePath);
   if (!p || p === '/') return obj;
@@ -1161,15 +964,20 @@ export async function validateRequestIssue(
       const runCustomValidate = async (): Promise<void> => {
         if (!hooks) return;
 
-        const customValidateContextArgs = await buildCustomValidateContextArgs(
+        const customValidateContextArgs = await buildCustomValidateContextArgs({
           context,
           owner,
           repo,
           issue,
           template,
           requestCfg,
-          rawIdOrNs
-        );
+          resourceName: rawIdOrNs,
+          resolveRegistryRootForTemplate,
+          toStringSafe,
+          isPlainObject,
+          isRepoContentFile,
+          getHttpStatus,
+        });
 
         await runValidationHookRuntime({
           hooks,
