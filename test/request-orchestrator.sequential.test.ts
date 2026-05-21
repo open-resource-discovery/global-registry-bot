@@ -50,9 +50,38 @@ const tryMergeIfGreen = jest.fn(async (_ctx: any, _opts: any) => {});
 const loadStaticConfig = jest.fn(async () => ({}));
 const getDocLinksFromConfig = jest.fn(() => '');
 
-const DEFAULT_CONFIG = {
+type TestConfig = {
+  workflow?: {
+    labels?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+const TEST_WORKFLOW_LABELS = {
+  authorAction: 'Requester Action',
+  approverAction: 'Review Pending',
+  parentOwnerAction: 'Parent Owner Action',
+  approvalRequested: ['Review Pending'],
+  approvalSuccessful: ['Approved'],
+  approvalRejected: ['Rejected'],
+};
+
+function withWorkflowLabels<T extends TestConfig>(cfg: T): T {
+  cfg.workflow = {
+    ...(cfg.workflow || {}),
+    labels: {
+      ...TEST_WORKFLOW_LABELS,
+      ...(cfg.workflow?.labels || {}),
+    },
+  };
+
+  return cfg;
+}
+
+const DEFAULT_CONFIG = withWorkflowLabels({
   workflow: { labels: {}, approvers: [] },
-} as any;
+} as any);
 
 let requestHandler: any;
 
@@ -168,11 +197,12 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
           },
         }),
       },
+      request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
     },
   };
 
   if (args.withCachedConfig) {
-    ctx.resourceBotConfig = args.config ?? DEFAULT_CONFIG;
+    ctx.resourceBotConfig = withWorkflowLabels(args.config ?? DEFAULT_CONFIG);
     ctx.resourceBotHooks = null;
     ctx.resourceBotHooksSource = null;
   }
@@ -359,6 +389,97 @@ test('check_run.completed failure marks failed sequential registry heads and adv
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
+test('check_suite.completed action_required approves waiting workflow for safe registry-only PR', async () => {
+  const { app, handlers } = mkApp();
+  requestHandler(app);
+
+  const cfg = withWorkflowLabels({
+    requests: {
+      systemNamespace: {
+        folderName: 'data/namespaces',
+        schema: 'schema.json',
+        issueTemplate: 'template.yml',
+      },
+    },
+    workflow: { labels: {}, approvers: [] },
+  } as any);
+
+  const ctx = mkCheckSuiteContext({
+    event: 'check_suite.completed',
+    conclusion: 'action_required',
+    sha: 'sha-action-required',
+    ownerLogin: 'o',
+    repoName: 'r',
+    withCachedConfig: true,
+    config: cfg,
+  });
+
+  ctx.payload.check_suite.pull_requests = [{ number: 77 }];
+
+  ctx.octokit.pulls.get.mockResolvedValue({
+    data: {
+      number: 77,
+      title: 'Direct registry PR',
+      body: 'manual direct pr',
+      state: 'open',
+      draft: false,
+      user: { login: 'external-user' },
+      head: { ref: 'feature/action-required', sha: 'sha-action-required' },
+      base: { ref: 'main' },
+    },
+  });
+
+  ctx.octokit.pulls.listFiles.mockResolvedValue({
+    data: [{ filename: 'data/namespaces/sap.agtwf04.yaml', status: 'added' }],
+  });
+
+  ctx.octokit.request.mockImplementation(async (route: string) => {
+    if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+      return {
+        data: {
+          workflow_runs: [
+            {
+              id: 45678,
+              name: 'registry-validate',
+              status: 'waiting',
+              conclusion: null,
+              head_sha: 'sha-action-required',
+              pull_requests: [{ number: 77 }],
+            },
+          ],
+        },
+      };
+    }
+
+    if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve') {
+      return { data: {} };
+    }
+
+    return { data: {} };
+  });
+
+  await handlers['check_suite.completed'][0](ctx);
+
+  expect(ctx.octokit.request).toHaveBeenCalledWith(
+    'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+    expect.objectContaining({
+      owner: 'o',
+      repo: 'r',
+      run_id: 45678,
+    })
+  );
+
+  const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+  expect(infoMsgs).toContain('workflow-approval:run-approved');
+
+  const allLogMsgs = [
+    ...ctx.log.info.mock.calls.map((call: any[]) => call[1]),
+    ...ctx.log.warn.mock.calls.map((call: any[]) => call[1]),
+  ];
+
+  expect(allLogMsgs).not.toContain('sequential-registry-pr:failed-head-marked');
+});
+
 test('check_run.completed success releases active sequential PR when green head is not approved', async () => {
   const cfg = {
     requests: { product: { folderName: 'resources' } },
@@ -514,7 +635,6 @@ test('check_run.completed success handles sequential changed-file lookup failure
   const warnMessages = checkCtx.log.warn.mock.calls.map((call: any[]) => String(call[1] ?? call[0] ?? '')).join('\n');
 
   expect(warnMessages).toContain('sequential-registry-pr:changed-files-lookup-failed');
-  expect(warnMessages).toContain('direct-pr:on-approval:registry-doc-read-failed');
   expect(warnMessages).not.toContain('auto-merge candidate processing failed');
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });

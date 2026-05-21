@@ -49,14 +49,58 @@ const tryMergeIfGreen = jest.fn(async (_ctx: any, _opts: any) => {});
 const loadStaticConfig = jest.fn(async () => ({}));
 const getDocLinksFromConfig = jest.fn(() => '');
 
-const DEFAULT_CONFIG = {
+type TestConfig = {
+  workflow?: {
+    labels?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+const TEST_WORKFLOW_LABELS = {
+  authorAction: 'Requester Action',
+  approverAction: 'Review Pending',
+  parentOwnerAction: 'Parent Owner Action',
+  approvalRequested: ['Review Pending'],
+  approvalSuccessful: ['Approved'],
+  approvalRejected: ['Rejected'],
+};
+
+function withWorkflowLabels<T extends TestConfig>(cfg: T): T {
+  cfg.workflow = {
+    ...(cfg.workflow || {}),
+    labels: {
+      ...TEST_WORKFLOW_LABELS,
+      ...(cfg.workflow?.labels || {}),
+    },
+  };
+
+  return cfg;
+}
+
+const DEFAULT_CONFIG = withWorkflowLabels({
   workflow: { labels: {}, approvers: [] },
-} as any;
+} as any);
 
 let requestHandler: any;
 
 function postedBodies(): string {
   return postOnce.mock.calls.map((call) => call[2] ?? '').join('\n');
+}
+
+function reviewLabels(): { name: string }[] {
+  return [{ name: 'Review Pending' }];
+}
+
+function inReview<T extends { labels?: any[] }>(issue: T): T {
+  return {
+    ...issue,
+    labels: [...(Array.isArray(issue.labels) ? issue.labels : []), ...reviewLabels()],
+  };
+}
+
+function expectHandoverPosted(): void {
+  expect(postOnce.mock.calls.some((call) => call[3]?.minimizeTag === 'nsreq:handover')).toBe(true);
 }
 
 function httpErr(status: number): Error & { status: number } {
@@ -174,11 +218,12 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
           },
         }),
       },
+      request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
     },
   };
 
   if (args.withCachedConfig) {
-    ctx.resourceBotConfig = args.config ?? DEFAULT_CONFIG;
+    ctx.resourceBotConfig = withWorkflowLabels(args.config ?? DEFAULT_CONFIG);
     ctx.resourceBotHooks = null;
     ctx.resourceBotHooksSource = null;
   }
@@ -229,6 +274,51 @@ function mkIssuesContext(args: {
     sender: args.sender ?? { type: 'User', login: 'someone' },
     changes: args.changes ?? {},
   };
+  return ctx;
+}
+
+function mkPullRequestContext(args: {
+  action?: 'opened' | 'synchronize' | 'reopened' | 'ready_for_review';
+  pr?: any;
+  config?: any;
+}) {
+  const pr = args.pr ?? {
+    number: 2001,
+    title: 'Direct registry PR',
+    body: 'manual direct pr',
+    state: 'open',
+    draft: false,
+    user: { login: 'external-user' },
+    head: { ref: 'feature/registry-pr', sha: 'sha-workflow-waiting' },
+    base: { ref: 'main' },
+  };
+
+  const ctx = mkBaseContext({
+    owner: 'o',
+    repo: 'r',
+    issue: { number: pr.number, title: pr.title, body: pr.body, labels: [], user: pr.user },
+    withCachedConfig: true,
+    config:
+      args.config ??
+      withWorkflowLabels({
+        requests: {
+          systemNamespace: {
+            folderName: 'data/namespaces',
+            schema: 'schema.json',
+            issueTemplate: 'template.yml',
+          },
+        },
+        workflow: { labels: {}, approvers: [] },
+      } as any),
+  });
+
+  ctx.name = `pull_request.${args.action ?? 'opened'}`;
+  ctx.payload = {
+    action: args.action ?? 'opened',
+    repository: { name: 'r', owner: { login: 'o' } },
+    pull_request: pr,
+  };
+
   return ctx;
 }
 
@@ -544,7 +634,7 @@ test('issue_comment: approval ignored for self-approve when no approvers configu
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'bob' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'bob' } }),
     comment: { body: 'Approved', user: { login: 'bob' } },
     withCachedConfig: true,
     config: cfg,
@@ -571,7 +661,7 @@ test('issue_comment: approval keyword from config triggers approval detection', 
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: '> quote\n\nShip it', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
@@ -595,7 +685,7 @@ test('issue_comment: approval fails when resource name missing', async () => {
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
@@ -617,7 +707,7 @@ test('issue_comment: approval short-circuits when PR already exists', async () =
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
   });
@@ -661,7 +751,7 @@ test('issue_comment: approval with existing PR only adds hook approvers missing 
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
     config: cfg,
@@ -682,7 +772,7 @@ test('issue_comment: approval with existing PR only adds hook approvers missing 
         number: 1,
         title: 't',
         body: 'b',
-        labels: [],
+        labels: reviewLabels(),
         user: { login: 'author' },
       },
     };
@@ -707,7 +797,7 @@ test('issue_comment: approval create PR failure -> posts error', async () => {
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'Approved', user: { login: 'alice' } },
     withCachedConfig: true,
   });
@@ -735,7 +825,7 @@ test('issue_comment: author update comment triggers revalidation errors -> posts
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'updated', user: { login: 'author' } },
     withCachedConfig: true,
   });
@@ -765,7 +855,7 @@ test('issue_comment: author update revalidation maps machine-readable validation
 
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
-    issue: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
+    issue: inReview({ number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } }),
     comment: { body: 'updated', user: { login: 'author' } },
     withCachedConfig: true,
   });
@@ -2007,7 +2097,7 @@ describe('parent owner approval gating', () => {
     expect(ensureAssigneesOnce).not.toHaveBeenCalled();
   });
 
-  test('does not gate when the requester is already an owner of the parent namespace', async () => {
+  test('issues.opened: subcontext requester who owns parent namespace creates PR without CPA review', async () => {
     const { app, handlers: h } = mkApp();
     requestHandler(app);
 
@@ -2022,7 +2112,11 @@ describe('parent owner approval gating', () => {
     };
 
     const tpl = {
-      _meta: { requestType: 'subContextNamespace', root: '/data/namespaces', schema: 'x' },
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
       title: 'Sub-Context Namespace',
       labels: ['Sub-Context Namespace'],
       body: [],
@@ -2041,25 +2135,144 @@ describe('parent owner approval gating', () => {
       formData: { identifier: target, description: 'x' },
     });
 
+    findOpenIssuePrs.mockResolvedValue([]);
+    createRequestPr.mockResolvedValue({ number: 777 });
+
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    const parentYaml = `contacts:\n  - "@barOwner"\n`;
 
     (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
+
       if (path === 'data/namespaces/sap.css.yaml') {
-        return { data: { content: b64(parentYaml), encoding: 'base64' } };
+        return {
+          data: {
+            content: b64('contacts:\n  - "@barOwner"\n'),
+            encoding: 'base64',
+          },
+        };
       }
+
       throw Object.assign(new Error('Not Found'), { status: 404 });
     });
 
     await h['issues.opened'][0](ctx);
 
-    const posted = postedBodies();
-    expect(posted).not.toContain('Parent owner approval required');
-    expect(ensureAssigneesOnce).toHaveBeenCalled();
-    expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'review');
+    expect(postedBodies()).not.toContain('Parent owner approval required');
+    expect(postedBodies()).not.toContain('### ➡️ Routing to an approver for review');
+
+    expect(issue.body).toContain('nsreq:parent-approval');
+    expect(issue.body).toContain('"parent":"sap.css"');
+    expect(issue.body).toContain(`"target":"${target}"`);
+    expect(issue.body).toContain('"approvedBy":"barOwner"');
+
+    const createRequestPrCalls = (createRequestPr as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+
+    expect(createRequestPrCalls).toHaveLength(1);
+
+    expect(createRequestPrCalls[0]).toEqual([
+      expect.anything(),
+      { owner: 'o', repo: 'r' },
+      expect.objectContaining({ number: 551 }),
+      expect.objectContaining({ identifier: target }),
+      expect.objectContaining({ template: tpl }),
+    ]);
+
+    expect(postedBodies()).toContain('Approved by parent namespace owner @barOwner');
+    expect(postedBodies()).toContain('Opened PR: #777');
+
+    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: ['Parent Owner Action'],
+      })
+    );
+
+    expect(postOnce.mock.calls.some((call) => call[3]?.minimizeTag === 'nsreq:handover')).toBe(false);
+  });
+
+  test('issue_comment: requester update creates subcontext PR when requester owns parent namespace', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const target = 'sap.css.bar';
+    const issue = {
+      number: 552,
+      title: 'Sub-Context Namespace',
+      body: `### Namespace\n\n${target}\n`,
+      labels: [{ name: 'Sub-Context Namespace' }],
+      user: { type: 'User', login: 'barOwner' },
+      state: 'open',
+    };
+
+    const tpl = {
+      _meta: {
+        requestType: 'subContextNamespace',
+        root: '/data/namespaces',
+        schema: '.github/registry-bot/request-schemas/sub-context-namespace.schema.json',
+      },
+      title: 'Sub-Context Namespace',
+      labels: ['Sub-Context Namespace'],
+      body: [],
+    };
+
+    loadTemplate.mockResolvedValue(tpl);
+    parseForm.mockReturnValue({ identifier: target, description: 'x' });
+    validateRequestIssue.mockResolvedValue({
+      errors: [],
+      errorsGrouped: {},
+      errorsFormatted: '',
+      errorsFormattedSingle: '',
+      namespace: target,
+      nsType: 'subContextNamespace',
+      template: tpl,
+      formData: { identifier: target, description: 'x' },
+    });
+
+    findOpenIssuePrs.mockResolvedValue([]);
+    createRequestPr.mockResolvedValue({ number: 778 });
+
+    const ctx = mkCommentContext({
+      event: 'issue_comment.created',
+      issue,
+      comment: { body: 'updated', user: { login: 'barOwner' } },
+      sender: { type: 'User', login: 'barOwner' },
+      withCachedConfig: true,
+      config: withWorkflowLabels({
+        requests: {
+          subContextNamespace: {
+            folderName: 'data/namespaces',
+            schema: 'schema.json',
+            issueTemplate: 'template.yml',
+          },
+        },
+        workflow: { labels: {}, approvers: [] },
+      } as any),
+    });
+
+    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
+      }
+
+      if (path === 'data/namespaces/sap.css.yaml') {
+        return {
+          data: {
+            content: b64('contacts:\n  - "@barOwner"\n'),
+            encoding: 'base64',
+          },
+        };
+      }
+
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+
+    await handlers['issue_comment.created'][0](ctx);
+
+    expect(createRequestPr).toHaveBeenCalled();
+    expect(postedBodies()).toContain('Approved by parent namespace owner @barOwner');
+    expect(postedBodies()).toContain('Opened PR: #778');
+    expect(postedBodies()).not.toContain('### ➡️ Routing to an approver for review');
   });
 
   test('gates sub-namespace request when parent owner email resolves via GraphQL fallback', async () => {
@@ -2541,6 +2754,14 @@ describe('parent owner approval gating', () => {
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
     (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+      if (path === 'data/vendors/sap.yaml') {
+        return {
+          data: {
+            content: Buffer.from('type: vendor\nname: sap\n', 'utf8').toString('base64'),
+            encoding: 'base64',
+          },
+        };
+      }
       if (path === 'data/namespaces/sap.css.yaml') {
         return { data: { content: b64(topYaml), encoding: 'base64' } };
       }
@@ -6297,7 +6518,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('<!-- nsreq:snapshot:');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
     expect(posted).toContain('manual review required');
     expect(posted).toContain('<summary>Decision details</summary>');
   });
@@ -6418,7 +6639,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('Manual review required because onApproval did not approve all changed registry files.');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('check_suite.success: standalone direct PR onApproval unknown assigns only hook manual approvers and not approversPool', async () => {
@@ -6687,7 +6908,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -6905,7 +7126,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('<!-- nsreq:snapshot:');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
     expect(posted).toContain('manual review required');
     expect(posted).toContain('<summary>Decision details</summary>');
   });
@@ -6927,14 +7148,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 162,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7024,14 +7245,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 1621,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7126,14 +7347,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 16215,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const sharedPr = {
         number: 16215,
@@ -7243,14 +7464,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 1622,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7339,14 +7560,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 163,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7423,14 +7644,14 @@ public
       const { app, handlers } = mkApp();
       requestHandler(app);
 
-      const issue = {
+      const issue = inReview({
         number: 1623,
         title: 'Direct PR',
         body: 'manual direct pr',
         labels: [],
         user: { login: 'requester' },
         pull_request: {},
-      };
+      });
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
@@ -7875,7 +8096,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('<!-- nsreq:snapshot:');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
   test('issues.opened: onApproval unknown manual approvers override assignment pool only', async () => {
     const cfg = {
@@ -7990,7 +8211,7 @@ public
     expect(posted).toContain('manual review required');
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
     expect(posted).toContain('<summary>Decision details</summary>');
   });
 
@@ -8089,7 +8310,7 @@ public
     );
 
     expect(postedBodies()).toContain('manual review required');
-    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issues.opened: handover still auto-adds review labels when label refresh fails', async () => {
@@ -8179,7 +8400,7 @@ public
         call.some((arg: unknown) => String(arg ?? '').includes('failed to ensure labels'))
       )
     ).toBe(false);
-    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issues.opened: handover logs when auto-adding review labels fails with non-404', async () => {
@@ -8270,7 +8491,7 @@ public
         call.some((arg: unknown) => String(arg ?? '').includes('failed to ensure labels'))
       )
     ).toBe(true);
-    expect(postedBodies()).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issues.opened: concurrent unknown approvals dedupe the unknown-feedback post', async () => {
@@ -8820,7 +9041,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -8914,7 +9135,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -9028,7 +9249,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -9173,7 +9394,7 @@ public
         error: jest.fn(),
         debug: jest.fn(),
       },
-      resourceBotConfig: cfg,
+      resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
       resourceBotHooksSource: 'test',
     };
@@ -9327,7 +9548,7 @@ public
           error: jest.fn(),
           debug: jest.fn(),
         },
-        resourceBotConfig: cfg,
+        resourceBotConfig: withWorkflowLabels(cfg),
         resourceBotHooks: {},
         resourceBotHooksSource: 'test',
       };
@@ -9484,7 +9705,7 @@ public
           error: jest.fn(),
           debug: jest.fn(),
         },
-        resourceBotConfig: cfg,
+        resourceBotConfig: withWorkflowLabels(cfg),
         resourceBotHooks: {},
         resourceBotHooksSource: 'test',
       };
@@ -9717,7 +9938,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('Once reviewed, please comment `Approved` to approve this PR for merge.');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issue_comment.created: standalone direct PR fallback allows any request-type pool approver, not only assigned one', async () => {
@@ -10799,7 +11020,7 @@ public
     expect(posted).toContain('### ✅ No issues detected');
     expect(posted).toContain('### ➡️ Routing to an approver for review');
     expect(posted).toContain('Manual review required because onApproval did not approve all changed registry files.');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('issue_comment.created: product standalone direct PR approval by request-type pool requester creates approval review and merges', async () => {
@@ -11054,7 +11275,7 @@ public
     const posted = postedBodies();
 
     expect(posted).toContain('manual review required by hook');
-    expect(posted).toContain('<!-- nsreq:handover -->');
+    expectHandoverPosted();
   });
 
   test('check_suite.failure: registry validate annotations are grouped and posted to matching PR', async () => {
@@ -12694,7 +12915,7 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     hooks: null,
     hooksSource: null,
   });
-  extractHashFromPrBody.mockReturnValueOnce('');
+  extractHashFromPrBody.mockReturnValue('');
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
@@ -12727,14 +12948,14 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     data: [{ filename: 'resources/product-direct-green.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-green\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-green-user' } }],
   });
 
@@ -12751,7 +12972,7 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     },
   });
 
-  runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved after push reevaluation' } as any);
+  runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after push reevaluation' } as any);
 
   await handler(ctx);
 
@@ -12804,7 +13025,7 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     hooks: null,
     hooksSource: null,
   });
-  extractHashFromPrBody.mockReturnValueOnce('');
+  extractHashFromPrBody.mockReturnValue('');
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
@@ -12837,14 +13058,14 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     data: [{ filename: 'resources/product-direct-mergeability-poll.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-mergeability-poll\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-mergeability-poll-user' } }],
   });
 
@@ -12861,7 +13082,7 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     },
   });
 
-  runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved after mergeability polling' } as any);
+  runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after mergeability polling' } as any);
 
   await handler(ctx);
 
@@ -12902,7 +13123,7 @@ test('push: direct registry PR creates an approval review when prior review look
     hooks: null,
     hooksSource: null,
   });
-  extractHashFromPrBody.mockReturnValueOnce('');
+  extractHashFromPrBody.mockReturnValue('');
 
   const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
@@ -12935,7 +13156,7 @@ test('push: direct registry PR creates an approval review when prior review look
     data: [{ filename: 'resources/product-direct-green-review-fetch-failed.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-green-review-fetch-failed\n', 'utf8').toString(
         'base64'
@@ -12944,7 +13165,7 @@ test('push: direct registry PR creates an approval review when prior review look
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-green-review-fetch-failed-user' } }],
   });
 
@@ -12962,7 +13183,7 @@ test('push: direct registry PR creates an approval review when prior review look
   });
   ctx.octokit.pulls.listReviews.mockRejectedValueOnce(httpErr(500));
 
-  runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved after review lookup failure' } as any);
+  runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after review lookup failure' } as any);
 
   await handler(ctx);
 
@@ -13813,14 +14034,14 @@ test('issue_comment: already-existing resource retry failure reports stale branc
   requestHandler(app);
 
   const handler = handlers['issue_comment.created'][0];
-  const issue = {
+  const issue = inReview({
     number: 77,
     title: 'Request',
     body: '### Product ID\nproduct-stale',
     labels: [],
     state: 'open',
     user: { login: 'author' },
-  };
+  });
   const ctx = mkCommentContext({
     event: 'issue_comment.created',
     issue,
@@ -14180,6 +14401,14 @@ test('issue_comment: parent-owner approval posts validation fallback errors and 
 
   const openCtx = mkIssuesContext({ issue, action: 'opened' });
   (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    if (path === 'data/vendors/sap.yaml') {
+      return {
+        data: {
+          content: Buffer.from('type: vendor\nname: sap\n', 'utf8').toString('base64'),
+          encoding: 'base64',
+        },
+      };
+    }
     if (path === 'data/namespaces/sap.css.yaml') {
       return {
         data: { content: Buffer.from('contacts:\n  - "@barOwner"\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -14224,17 +14453,15 @@ describe('request orchestrator edge coverage for defensive branches', () => {
   const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
 
   function productCfg(extraLabels: Record<string, any> = {}) {
-    return {
+    return withWorkflowLabels({
       requests: { product: { folderName: 'resources' } },
       workflow: {
         labels: {
-          approvalRequested: ['Review Pending'],
-          approvalSuccessful: ['Approved'],
           ...extraLabels,
         },
         approvers: ['approver'],
       },
-    } as any;
+    } as any);
   }
 
   test('check_suite.completed failure paginates registry annotations until a partial page', async () => {
@@ -14292,14 +14519,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
-        issue: {
+        issue: inReview({
           number: 902,
           title: 'Direct PR',
           body: 'manual direct pr',
           labels: [],
           user: { login: 'requester' },
           pull_request: {},
-        },
+        }),
         comment: { body: 'Approved', user: { login: 'reviewer1' } },
         sender: { type: 'User', login: 'reviewer1' },
         withCachedConfig: true,
@@ -14356,14 +14583,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
       const ctx = mkCommentContext({
         event: 'issue_comment.created',
-        issue: {
+        issue: inReview({
           number: 9021,
           title: 'Direct PR ordered rejection',
           body: 'manual direct pr',
           labels: [],
           user: { login: 'requester' },
           pull_request: {},
-        },
+        }),
         comment: { body: 'Approved', user: { login: 'reviewer1' } },
         sender: { type: 'User', login: 'reviewer1' },
         withCachedConfig: true,
@@ -14485,6 +14712,174 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     );
     expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
+  });
+
+  test('pull_request.opened: approves waiting workflow run for safe registry-only PR', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2001,
+        title: 'Direct registry PR',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/registry-pr', sha: 'sha-workflow-waiting' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.agtwf01.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string, _args: any) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12345,
+                name: 'registry-validate',
+                status: 'waiting',
+                conclusion: null,
+                head_sha: 'sha-workflow-waiting',
+                pull_requests: [{ number: 2001 }],
+              },
+            ],
+          },
+        };
+      }
+
+      if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve') {
+        return { data: {} };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    expect(ctx.octokit.request).toHaveBeenCalledWith(
+      'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        run_id: 12345,
+      })
+    );
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+    expect(infoMsgs).toContain('workflow-approval:run-approved');
+  });
+
+  test('pull_request.opened: does not approve waiting workflow run for non-registry-only PR', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2002,
+        title: 'Mixed PR',
+        body: 'manual mixed pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/mixed-pr', sha: 'sha-mixed-waiting' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [
+        { filename: 'data/namespaces/sap.agtwf02.yaml', status: 'added' },
+        { filename: 'README.md', status: 'modified' },
+      ],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12346,
+                name: 'registry-validate',
+                status: 'waiting',
+                conclusion: null,
+                head_sha: 'sha-mixed-waiting',
+                pull_requests: [{ number: 2002 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    expect(ctx.octokit.request).not.toHaveBeenCalledWith(
+      'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+      expect.anything()
+    );
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+    expect(infoMsgs).toContain('workflow-approval:skip-not-safe-registry-only-pr');
+  });
+
+  test('pull_request.opened: does not schedule retry when workflow run is already visible and completed', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2003,
+        title: 'Direct registry PR',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/completed-run', sha: 'sha-completed-run' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.agtwf03.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12347,
+                name: 'registry-validate',
+                status: 'completed',
+                conclusion: 'success',
+                head_sha: 'sha-completed-run',
+                pull_requests: [{ number: 2003 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+
+    expect(infoMsgs).toContain('workflow-approval:no-waiting-runs');
+    expect(infoMsgs).toContain('workflow-approval:retry-skipped-run-already-visible');
+    expect(infoMsgs).not.toContain('workflow-approval:retry-scheduled');
   });
 
   test('check_suite.success: rejected linked direct PR closes linked PRs and reports closed PR numbers', async () => {

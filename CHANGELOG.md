@@ -7,6 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## Improve direct PR workflow automation and state handling
+
+- Resolve workflow labels dynamically from target `config.yaml`
+- Keep workflow state labels exclusive
+- Remove duplicate handover markers
+- Accept `Approved` comments only when the request/PR is in review state
+- Try to approve pending workflows for safe registry-only PRs
+- Prioritize auto-approvable direct PRs in the sequential queue
+- Close empty no-op registry PRs
+- Auto-approve sub-context requests when the requester owns the parent namespace
+
+Result: cleaner PR/Issue states, fewer manual CPA steps, and safer direct PR automation.
+
 ## [[0.1.7](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.7)] - 2026-05-08
 
 ## Registry Bot Release: Hook Secrets and Parent Owner Approval State

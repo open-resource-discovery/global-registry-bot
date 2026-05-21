@@ -186,17 +186,32 @@ const loadStaticConfig = jest.fn() as unknown as jest.MockedFunction<
 >;
 const getDocLinksFromConfig = jest.fn() as unknown as jest.MockedFunction<(cfg: StaticConfig) => string>;
 
+const TEST_WORKFLOW_LABELS = {
+  authorAction: 'Requester Action',
+  approverAction: 'Review Pending',
+  parentOwnerAction: 'Parent Owner Action',
+  approvalRequested: ['Review Pending'],
+  approvalSuccessful: ['Approved'],
+  approvalRejected: ['Rejected'],
+};
+
+function withWorkflowLabels<T extends StaticConfig>(cfg: T): T {
+  cfg.workflow = cfg.workflow || {};
+  cfg.workflow.labels = {
+    ...TEST_WORKFLOW_LABELS,
+    ...(cfg.workflow.labels || {}),
+  };
+  return cfg;
+}
+
 // Provide a DEFAULT_CONFIG for the module import
-const DEFAULT_CONFIG: StaticConfig = {
+const DEFAULT_CONFIG: StaticConfig = withWorkflowLabels({
   workflow: {
-    labels: {
-      approvalSuccessful: ['Approved'],
-    },
+    labels: {},
     approvers: [],
   },
-
   requests: {},
-};
+});
 
 jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
   setStateLabel,
@@ -340,7 +355,7 @@ function mkCtx(args: {
     issue: () => ({ owner: 'o', repo: 'r', issue_number: args.issue.number }),
     log: mkLogger(),
     // Cache config to skip loadStaticConfig
-    resourceBotConfig: args.config,
+    resourceBotConfig: withWorkflowLabels(args.config),
     resourceBotHooks: null,
     resourceBotHooksSource: 'test',
   };
@@ -887,7 +902,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     expect(postOnce).toHaveBeenCalledTimes(1);
     const msg = postOnce.mock.calls[0]?.[2] ?? '';
     const opts = postOnce.mock.calls[0]?.[3];
-    expect(String(msg)).toContain('Rejected label change reverted');
+    expect(String(msg)).toContain('Rejected state is managed automatically');
     expect(opts?.minimizeTag).toBe('nsreq:label-guard');
   });
 
