@@ -14760,6 +14760,22 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       return { data: {} };
     });
 
+    extractHashFromPrBody.mockReturnValue('');
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from('type: system\nname: sap.agtwf01\ndescription: Workflow approval test\n', 'utf8').toString(
+          'base64'
+        ),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'approved',
+      comment: 'trusted registry-only PR',
+    } as any);
+
     await handlers['pull_request.opened'][0](ctx);
 
     expect(ctx.octokit.request).toHaveBeenCalledWith(
@@ -14773,6 +14789,72 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
     expect(infoMsgs).toContain('workflow-approval:run-approved');
+  });
+
+  test('pull_request.opened: does not approve waiting workflow run without trust signal', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2004,
+        title: 'Direct registry PR without trust',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/untrusted-registry-pr', sha: 'sha-untrusted-waiting' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.untrustedwf01.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(
+          'type: system\nname: sap.untrustedwf01\ndescription: Untrusted workflow approval test\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({} as any);
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12348,
+                name: 'registry-validate',
+                status: 'waiting',
+                conclusion: null,
+                head_sha: 'sha-untrusted-waiting',
+                pull_requests: [{ number: 2004 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    expect(ctx.octokit.request).not.toHaveBeenCalledWith(
+      'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+      expect.anything()
+    );
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+    expect(infoMsgs).toContain('workflow-approval:skip-missing-trust-signal');
+    expect(infoMsgs).toContain('workflow-approval:retry-skipped-no-trust-signal');
   });
 
   test('pull_request.opened: does not approve waiting workflow run for non-registry-only PR', async () => {
@@ -14873,6 +14955,23 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       return { data: {} };
     });
 
+    extractHashFromPrBody.mockReturnValue('');
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(
+          'type: system\nname: sap.agtwf03\ndescription: Workflow approval completed-run test\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'approved',
+      comment: 'trusted registry-only PR',
+    } as any);
+
     await handlers['pull_request.opened'][0](ctx);
 
     const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
@@ -14880,6 +14979,74 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     expect(infoMsgs).toContain('workflow-approval:no-waiting-runs');
     expect(infoMsgs).toContain('workflow-approval:retry-skipped-run-already-visible');
     expect(infoMsgs).not.toContain('workflow-approval:retry-scheduled');
+  });
+
+  test('pull_request.opened: does not approve waiting workflow run without trust signal', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2004,
+        title: 'Direct registry PR without trust',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/untrusted-registry-pr', sha: 'sha-untrusted-waiting' },
+        base: { ref: 'main' },
+      },
+    });
+
+    extractHashFromPrBody.mockReturnValue('');
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.untrustedwf01.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(
+          'type: system\nname: sap.untrustedwf01\ndescription: Untrusted workflow approval test\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({} as any);
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12348,
+                name: 'registry-validate',
+                status: 'waiting',
+                conclusion: null,
+                head_sha: 'sha-untrusted-waiting',
+                pull_requests: [{ number: 2004 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    expect(ctx.octokit.request).not.toHaveBeenCalledWith(
+      'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve',
+      expect.anything()
+    );
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+    expect(infoMsgs).toContain('workflow-approval:skip-missing-trust-signal');
+    expect(infoMsgs).toContain('workflow-approval:retry-skipped-no-trust-signal');
   });
 
   test('check_suite.success: rejected linked direct PR closes linked PRs and reports closed PR numbers', async () => {
