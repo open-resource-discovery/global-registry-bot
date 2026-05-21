@@ -458,6 +458,22 @@ test('check_suite.completed action_required approves waiting workflow for safe r
     return { data: {} };
   });
 
+  extractHashFromPrBody.mockReturnValue('');
+
+  ctx.octokit.repos.getContent.mockResolvedValue({
+    data: {
+      content: Buffer.from('type: system\nname: sap.agtwf04\ndescription: Workflow approval test\n', 'utf8').toString(
+        'base64'
+      ),
+      encoding: 'base64',
+    },
+  });
+
+  runApprovalHook.mockResolvedValue({
+    status: 'approved',
+    comment: 'trusted registry-only PR',
+  } as any);
+
   await handlers['check_suite.completed'][0](ctx);
 
   expect(ctx.octokit.request).toHaveBeenCalledWith(

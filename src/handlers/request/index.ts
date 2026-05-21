@@ -5063,6 +5063,82 @@ async function approveWorkflowRun(
   }
 }
 
+type WorkflowApprovalTrustSignal = {
+  trusted: boolean;
+  reason: string;
+  decision?: ApprovalDecision;
+};
+
+async function resolveWorkflowApprovalTrustSignalForRegistryPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  pr: PullRequestLike,
+  reason: string
+): Promise<WorkflowApprovalTrustSignal> {
+  // Keep this path focused on standalone direct PRs.
+  // Linked/snapshot-managed request PRs use the normal issue approval lifecycle.
+  if (parseLinkedIssueNumberFromPr(pr, repoInfo) !== null || isSnapshotManagedRequestPr(pr)) {
+    return {
+      trusted: false,
+      reason: 'not-standalone-direct-pr',
+    };
+  }
+
+  const baseBranch = toStringTrim(pr.base?.ref);
+
+  try {
+    const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, { baseBranch });
+
+    if (decision.status === 'approved') {
+      return {
+        trusted: true,
+        reason: 'onApproval-approved',
+        decision,
+      };
+    }
+
+    const hasCurrentHeadApproval = await hasAllowedStandaloneDirectPrApprovalForCurrentHead(
+      context,
+      repoInfo,
+      pr,
+      decision,
+      { baseBranch }
+    );
+
+    if (hasCurrentHeadApproval) {
+      return {
+        trusted: true,
+        reason: 'allowed-current-head-approval',
+        decision,
+      };
+    }
+
+    return {
+      trusted: false,
+      reason: `missing-trust-signal:${toStringTrim(decision.status) || 'none'}`,
+      decision,
+    };
+  } catch (error: unknown) {
+    log(
+      context,
+      'warn',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        err: getErrorMessage(error),
+        status: getHttpStatus(error),
+        reason,
+      },
+      'workflow-approval:trust-check-failed'
+    );
+
+    return {
+      trusted: false,
+      reason: 'trust-check-failed',
+    };
+  }
+}
+
 async function maybeApprovePendingWorkflowRunsForRegistryPr(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -5082,6 +5158,25 @@ async function maybeApprovePendingWorkflowRunsForRegistryPr(
         reason,
       },
       'workflow-approval:skip-not-safe-registry-only-pr'
+    );
+
+    return false;
+  }
+
+  const trustSignal = await resolveWorkflowApprovalTrustSignalForRegistryPr(context, repoInfo, pr, reason);
+
+  if (!trustSignal.trusted) {
+    log(
+      context,
+      'info',
+      {
+        prNumber: pr.number,
+        headSha: toStringTrim(pr.head?.sha),
+        trustReason: trustSignal.reason,
+        decisionStatus: toStringTrim(trustSignal.decision?.status) || 'none',
+        reason,
+      },
+      'workflow-approval:skip-missing-trust-signal'
     );
 
     return false;
@@ -5223,6 +5318,8 @@ async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
   if (shouldRetryWorkflowApproval(repoInfo, pr)) {
     scheduleWorkflowApprovalRetry(context, repoInfo, pr, reason);
   } else {
+    const hasRunSnapshot = WORKFLOW_APPROVAL_LAST_RUNS.has(workflowApprovalHeadKey(repoInfo, pr));
+
     log(
       context,
       'info',
@@ -5231,7 +5328,9 @@ async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
         headSha: toStringTrim(pr.head?.sha),
         reason,
       },
-      'workflow-approval:retry-skipped-run-already-visible'
+      hasRunSnapshot
+        ? 'workflow-approval:retry-skipped-run-already-visible'
+        : 'workflow-approval:retry-skipped-no-trust-signal'
     );
   }
 
