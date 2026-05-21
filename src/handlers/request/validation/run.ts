@@ -2496,6 +2496,10 @@ function issueBodyHasTemplateFieldSection(issueBody: unknown, field: TemplateFie
   });
 }
 
+function issueBodyHasAnyIssueFormSection(issueBody: unknown): boolean {
+  return /^###\s+\S+/m.test(String(issueBody || ''));
+}
+
 function shouldEnforceRequiredTemplateField(issueBody: unknown, field: TemplateField, formData: FormData): boolean {
   const id = toStringSafe(field?.id);
   if (!id) return false;
@@ -2504,11 +2508,19 @@ function shouldEnforceRequiredTemplateField(issueBody: unknown, field: TemplateF
     return false;
   }
 
+  const hasAnyIssueFormSection = issueBodyHasAnyIssueFormSection(issueBody);
+
+  // Unit tests / synthetic validation bodies often do not contain issue-form markdown sections.
+  // In that case this is not a legacy issue-form body, so required validation must stay strict.
+  if (!hasAnyIssueFormSection) {
+    return true;
+  }
+
   // Backwards compatibility:
-  // Required fields added later must not block old issues that never had this section.
+  // If the issue body already has issue-form sections, but this specific section is missing,
+  // treat it as an older issue created before the field was added.
   return issueBodyHasTemplateFieldSection(issueBody, field);
 }
-
 function inferNsType(requestType: unknown): string {
   const requestTypeLc = toStringSafe(requestType).toLowerCase();
 
