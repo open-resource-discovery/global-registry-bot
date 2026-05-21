@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.8](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.8)] - 2026-05-21
+
 ## Improve direct PR workflow automation and state handling
 
 - Resolve workflow labels dynamically from target `config.yaml`
