@@ -21,6 +21,12 @@ import { resolveTemplateAndRequestType } from './request-type-resolution.js';
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildCustomValidateContextArgs } from './custom-validate-context.js';
+import {
+  dedupe,
+  filterNoisyOneOfTypeErrors,
+  normalizeAjvMessage,
+  type AjvErrorLike,
+} from './ajv-error-postprocessing.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
 import { collectDuplicateRegistryErrors } from './duplicate-registry-validation.js';
 import { collectVendorGovernanceErrors } from './vendor-governance-validation.js';
@@ -436,14 +442,6 @@ function pickHookSecretsForWorker(secrets: HookSecrets): Record<string, string> 
   return out;
 }
 
-type AjvErrorLike = {
-  keyword?: string;
-  instancePath?: string;
-  schemaPath?: string;
-  message?: string;
-  params?: Record<string, unknown>;
-};
-
 // Lightweight helpers to access unknown objects safely without any assertions
 function getRecordProp(obj: unknown, key: string): unknown {
   if (!isPlainObject(obj)) return undefined;
@@ -487,11 +485,6 @@ function newBuckets(): ValidationBuckets {
   return { registry: [], form: [], rules: [], schema: [] };
 }
 
-function dedupe(arr: unknown): string[] {
-  const a = Array.isArray(arr) ? arr : [];
-  return Array.from(new Set(a.map((s) => String(s).trim()).filter(Boolean)));
-}
-
 function normalizeHookErrors(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
 
@@ -516,84 +509,6 @@ function normalizeHookErrors(value: unknown): string[] {
     if (s) out.push(s);
   }
 
-  return out;
-}
-
-function getValueAtInstancePath(obj: unknown, instancePath: unknown): unknown {
-  const p = toStringSafe(instancePath);
-  if (!p || p === '/') return obj;
-
-  const parts = p.split('/').filter(Boolean);
-  let cur: unknown = obj;
-
-  for (const part of parts) {
-    if (cur === null || cur === undefined) return undefined;
-
-    if (Array.isArray(cur) && /^\d+$/.test(part)) {
-      cur = cur[Number(part)];
-      continue;
-    }
-
-    if (isPlainObject(cur)) {
-      cur = cur[part];
-      continue;
-    }
-
-    return undefined;
-  }
-
-  return cur;
-}
-
-function filterNoisyOneOfTypeErrors(ajvErrs: unknown, candidate: unknown): AjvErrorLike[] {
-  const errs = Array.isArray(ajvErrs) ? (ajvErrs as unknown[]) : [];
-
-  const hasSpecificErrorAtPath = new Set(
-    errs
-      .filter((e) => isPlainObject(e))
-      .map((e) => e as AjvErrorLike)
-      .filter(
-        (e) =>
-          String(e.instancePath || '') &&
-          ['pattern', 'format', 'minItems', 'uniqueItems', 'errorMessage', 'oneOf', 'anyOf'].includes(
-            String(e.keyword || '')
-          )
-      )
-      .map((e) => String(e.instancePath || ''))
-  );
-
-  const sane: AjvErrorLike[] = errs.filter(isPlainObject).map((e) => e as AjvErrorLike);
-  return sane.filter((e) => {
-    if (e.keyword === 'type' && toStringSafe(e.params?.['type']) === 'string') {
-      const path = String(e.instancePath || '');
-      const val = getValueAtInstancePath(candidate, path);
-
-      if (Array.isArray(val) && hasSpecificErrorAtPath.has(path)) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-}
-
-function normalizeAjvMessage(msg: unknown): string {
-  const raw = toStringSafe(msg);
-  if (!raw) return '';
-
-  let out = raw
-    .replaceAll(/\bmust\s+not\b/gi, 'MUST NOT')
-    .replaceAll(/\bshall\s+not\b/gi, 'SHALL NOT')
-    .replaceAll(/\bshould\s+not\b/gi, 'SHOULD NOT')
-    .replaceAll(/\bmust\b/gi, 'MUST')
-    .replaceAll(/\brequired\b/gi, 'REQUIRED')
-    .replaceAll(/\bshall\b/gi, 'SHALL')
-    .replaceAll(/\bshould\b/gi, 'SHOULD')
-    .replaceAll(/\brecommended\b/gi, 'RECOMMENDED')
-    .replaceAll(/\bmay\b/gi, 'MAY')
-    .replaceAll(/\boptional\b/gi, 'OPTIONAL');
-
-  out = out.charAt(0).toUpperCase() + out.slice(1);
   return out;
 }
 
@@ -1034,11 +949,14 @@ export async function validateRequestIssue(
         }
 
         const ajvErrsRaw = Array.isArray(validate.errors) ? (validate.errors as unknown[]) : [];
-        const ajvErrs = filterNoisyOneOfTypeErrors(ajvErrsRaw, candidate);
+        const ajvErrs = filterNoisyOneOfTypeErrors(ajvErrsRaw, candidate, {
+          toStringSafe,
+          isPlainObject,
+        });
 
         ajvErrorsForUnifiedFormat = ajvErrs;
 
-        const primary = dedupe(ajvErrs.map((e) => normalizeAjvMessage(e?.message)).filter(Boolean));
+        const primary = dedupe(ajvErrs.map((e) => normalizeAjvMessage(e?.message, { toStringSafe })).filter(Boolean));
         if (primary.length) {
           buckets.schema.push(...primary);
           errors.push(...primary);
