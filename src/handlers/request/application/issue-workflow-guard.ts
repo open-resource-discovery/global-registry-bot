@@ -547,8 +547,12 @@ export async function handleIssueLabelChangeWorkflowGuard<
   if (changedKey && lockedKeys.has(changedKey) && !isProgressStateLabel(changedKey)) {
     const isManualApprovedAdd =
       action === 'labeled' && callbacks.labelsMatching([changedLabel], approvedLabel).length > 0;
+    const isManualRejectedAdd =
+      action === 'labeled' &&
+      callbacks.labelsMatching([changedLabel], REQUEST_STATUS_LABEL_REJECTED).length > 0 &&
+      toStringTrim(issue.state).toLowerCase() !== 'closed';
 
-    if (!isManualApprovedAdd) {
+    if (!isManualApprovedAdd && !isManualRejectedAdd) {
       if (action === 'labeled') {
         await callbacks.removeExactLabelsFromIssue(context, params, [changedLabel]);
       } else if (action === 'unlabeled') {
@@ -598,7 +602,7 @@ export async function handleIssueLabelChangeWorkflowGuard<
     await callbacks.postOnce(
       context,
       params,
-      'Rejected label change reverted. Rejected is set automatically when a request is closed without approval.',
+      'Rejected label change reverted. Rejected state is managed automatically when a request is closed without approval.',
       { minimizeTag: 'nsreq:label-guard' }
     );
     return;

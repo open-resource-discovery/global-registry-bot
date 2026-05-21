@@ -750,6 +750,7 @@ export async function validateRequestIssue(
   applyRequiredFieldValidation({
     template,
     formData,
+    issueBody: String(issue.body || ''),
     formBucket: buckets.form,
     errors,
     isEmpty,

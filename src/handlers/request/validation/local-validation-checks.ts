@@ -12,9 +12,57 @@ type TemplateLike = {
 
 type FormData = Record<string, string>;
 
+function escapeRegExpLocal(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function issueBodyHasTemplateFieldSection(issueBody: unknown, field: TemplateField): boolean {
+  const body = String(issueBody || '');
+  if (!body) return false;
+
+  const candidates = [String(field?.attributes?.label || ''), String(field?.id || '')].filter(Boolean);
+
+  return candidates.some((candidate) => {
+    const re = new RegExp(`^###\\s+${escapeRegExpLocal(candidate)}\\s*$`, 'mi');
+    return re.test(body);
+  });
+}
+
+function issueBodyHasAnyIssueFormSection(issueBody: unknown): boolean {
+  return /^###\s+\S+/m.test(String(issueBody || ''));
+}
+
+function shouldEnforceRequiredTemplateField(
+  issueBody: unknown,
+  field: TemplateField,
+  formData: FormData,
+  isEmpty: (value: unknown) => boolean
+): boolean {
+  const id = String(field?.id || '');
+  if (!id) return false;
+
+  if (!isEmpty((formData as Record<string, unknown>)[id])) {
+    return false;
+  }
+
+  const hasAnyIssueFormSection = issueBodyHasAnyIssueFormSection(issueBody);
+
+  // Unit tests / synthetic validation bodies often do not contain issue-form markdown sections.
+  // In that case this is not a legacy issue-form body, so required validation must stay strict.
+  if (!hasAnyIssueFormSection) {
+    return true;
+  }
+
+  // Backwards compatibility:
+  // If the issue body already has issue-form sections, but this specific section is missing,
+  // treat it as an older issue created before the field was added.
+  return issueBodyHasTemplateFieldSection(issueBody, field);
+}
+
 export function applyRequiredFieldValidation(args: {
   template: TemplateLike;
   formData: FormData;
+  issueBody: unknown;
   formBucket: string[];
   errors: string[];
   isEmpty: (value: unknown) => boolean;
@@ -22,7 +70,7 @@ export function applyRequiredFieldValidation(args: {
   const requiredFields = (args.template?.body || []).filter((field) => field?.id && field.validations?.required);
 
   const missingRequired = requiredFields
-    .filter((field) => args.isEmpty((args.formData as Record<string, unknown>)?.[String(field.id)]))
+    .filter((field) => shouldEnforceRequiredTemplateField(args.issueBody, field, args.formData, args.isEmpty))
     .map((field) => String(field?.attributes?.label || field.id));
 
   for (const label of missingRequired) {
