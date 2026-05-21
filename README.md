@@ -1,119 +1,93 @@
 # Registry Bot
 
-Registry Bot is a configuration-driven GitHub App built with Probot.
-It automates registry requests in a target repository.
-A user opens an issue based on a repo template.
-The bot parses the issue content.
-The bot validates the data with JSON Schema.
-If the request is valid, the bot creates a pull request with a YAML entry file.
-It can enable GitHub auto-merge if the repo allows it.
+Registry Bot is a configuration-driven GitHub App built with Probot. It automates registry request handling in a target repository by validating GitHub issues, creating registry YAML pull requests, routing approvals, and merging safe changes when the repository rules allow it.
 
-All behavior is defined per repository:
+The bot is generic. Repository-specific behavior is configured in the target repo:
 
-- `.github/registry-bot/config.yaml` or `.github/registry-bot/config.yml`
-- optional runtime hooks: `.github/registry-bot/config.js`
+```text
+.github/registry-bot/config.yaml or config.yml
+.github/registry-bot/config.js           # optional runtime hooks
+.github/ISSUE_TEMPLATE/*.yml             # request forms
+.github/registry-bot/request-schemas/*   # JSON schemas
+```
 
-## Features
+## What the bot does
 
-- Config-driven behavior via `.github/registry-bot/config.yaml` or `.github/registry-bot/config.yml`.
-- Each request type maps to one issue template, one JSON schema, and one target folder.
-- One routing label on the issue selects the request type.
-- Templates can be GitHub Issue Forms (`.yml/.yaml`) or Markdown templates (`.md`).
-- The bot parses the issue body into form data.
-- Validation uses JSON Schema draft 2020-12 with AJV.
-- Optional hooks can change form data and add extra validation rules.
-- Optional approval hooks can auto-approve requests after validation.
-- Hook HTTP calls are restricted. HTTPS only. Host allowlist. Timeouts.
-- The bot blocks duplicates. It checks if the YAML entry already exists.
-- For valid requests, it creates a branch, writes a YAML file, and opens a pull request.
-- It can enable GitHub auto-merge when repo rules allow it.
-- It validates the static config on pushes to the default branch.
+- Parses GitHub Issue Forms into request data.
+- Validates requests with JSON Schema and optional repo hooks.
+- Checks duplicate registry entries before creating PRs.
+- Creates branches, YAML files, and pull requests for valid requests.
+- Routes manual approvals through configurable labels and assignees.
+- Supports parent-owner and contact-owner approval gates.
+- Supports `onApproval` hooks for automatic approval decisions.
+- Handles standalone direct registry PRs.
+- Keeps workflow state labels exclusive, for example `Requester Action`, `CPA Action`, `Parent Owner Action`, `Approved`, or `Rejected`.
+- Uses a sequential direct-PR queue to avoid parallel registry updates and CI overload.
+- Can approve pending workflow runs only for safe registry-only PRs with an existing trust signal.
 
-## Requirements
+## High-level architecture
 
-- **Node.js 18+** (LTS recommended)
-- **npm**, **yarn**, or **pnpm** for dependency management
-- **GitHub App credentials** (created via [GitHub Developer Settings](https://docs.github.com/en/apps/creating-github-apps/creating-a-github-app))
-  Required permissions:
-  - **Issues** (read & write)
-  - **Pull requests** (read & write)
-  - **Contents** (read & write)
-  - **Metadata** (read-only)
-  - **Checks** (read-only)
-  - **Workflows** (read-only)
+```text
+GitHub Webhook
+  -> Probot App
+    -> Target Config Loader
+      -> Issue Template Parser
+      -> JSON Schema Validator
+      -> Optional Hook Worker
+        -> Optional external validation API
+    -> GitHub Issue / PR / Label / Review APIs
+    -> Registry YAML Pull Request
+```
 
-## Testing with Example Registry
+GitHub remains the system of record. The bot stores request state through GitHub issues, pull requests, comments, labels, reviews, and hidden metadata markers in issue bodies. The bot does not maintain a separate persistent database for request content.
 
-The bot is designed to operate against a dedicated **registry repository** that stores structured YAML entries such as namespaces, products, or vendors.
-A preconfigured testing setup is available for local development and integration testing:
+## Request lifecycle
 
-- [`registry-bot`](https://github.tools.sap/ORD/github-registry-bot) → GitHub App source code (this repository)
-- [`example-registry`](https://github.tools.sap/cpa-namespace-registry-bot/example-registry) → sample registry repository used for validation, PR creation, and schema testing
+1. A requester opens an issue using a configured Issue Form.
+2. The routing label selects the request type.
+3. The bot parses the issue body and validates it.
+4. If validation fails, the bot posts one validation comment and sets the configured requester-action label.
+5. If ownership approval is required, the bot routes to the correct owner state, for example `Parent Owner Action`.
+6. If validation and gates pass, the bot either:
+   - creates a PR directly, or
+   - routes the request to manual review, or
+   - auto-approves when `onApproval` returns an approved decision.
+7. The bot creates or updates labels so that only one workflow state is active at a time.
 
-⚠️ **Important:**
-Because this is a GitHub App, it must be **installed on the target repository** to receive webhook events.
-Without installation, events like `issues.opened`, `issue_comment.created`, or `check_suite.completed` will never reach the bot.
+## Direct registry PR lifecycle
 
-## Usage
+Standalone direct registry PRs are PRs that modify registry YAML files.
 
-### Submitting a registry request
+The bot:
 
-1. Open a new issue.
-2. Pick a registry request template from the repository.
-3. Ensure the routing label is on the issue.
-4. Fill all required form fields.
-5. Submit the issue.
+- reads changed registry YAML files,
+- resolves request type and resource name,
+- runs `onApproval` file by file,
+- rejects the PR if any file is rejected,
+- routes to manual review if approval is unknown or incomplete,
+- creates a real PR review approval for approved cases,
+- merges only when approval applies to the current head and checks are green.
 
-### Validation
+Green CI alone is not enough for merge.
 
-- The bot parses the issue content.
-- It posts one validation comment and updates it on changes.
-- If there are errors, fix them and edit the issue.
-- The bot re-validates on each new event.
+## Workflow run approval
 
-### Pull request creation
+Some GitHub/GHES setups require maintainers to approve workflow runs for PRs from forks or contributors.
 
-- When validation passes, the bot creates a branch.
-- It writes the YAML entry file to the configured folder.
-- It opens a pull request.
-- It tries to enable auto-merge if allowed by the repository.
+The bot may attempt to approve pending workflow runs only when all of these are true:
 
-### Review and merge
+- the PR is open and not draft,
+- the PR changes only registry YAML files,
+- no workflow or bot/config code is changed,
+- the PR has a trust signal:
+  - `onApproval` returned `approved`, or
+  - a valid current-head approval already exists.
 
-- Review and approve the pull request.
-- Optionally, `onApproval` can auto-approve eligible requests after validation.
-- With auto-merge enabled, GitHub merges when all checks pass.
-- If auto-merge is not enabled, the bot adds a merge-candidate label.
+Without a trust signal, the bot does not bypass GitHub's manual workflow approval gate.
 
-### Static Configuration
+## Configuration
 
-The bot is configured per repository via:
-
-`.github/registry-bot/config.yaml`
-
-At minimum, this file must define how issue templates map to target folders and JSON schemas.
-The `issueTemplate` keys must match the **issue template filenames** (without `.yml` / `.yaml`), and each entry must provide:
-
-- `folderName` – target folder for the generated YAML files (e.g. `/namespaces`, `/vendors`)
-- `schema` – path to the JSON schema used for validation (relative to the repo root or `.github/registry-bot`)
-
-PR and workflow behavior are optional and can be customized via the `pr` and `workflow` sections.
-If `workflow.approvers` is empty or missing, any user except the issue author can approve.
-
-### Static Configuration
-
-The bot is configured per repository using:
-
-`.github/registry-bot/config.yaml`
-
-The config must define **requests**. Each request type maps to:
-
-- `folderName`: target folder for generated YAML files (e.g. `/data/namespaces`)
-- `schema`: JSON schema path used for validation
-- `issueTemplate`: path to the GitHub issue template
-- `approvers`: optional list of approvers for this request type
-
-Example:
+Minimal target repo config:
 
 ```yaml
 requests:
@@ -121,194 +95,156 @@ requests:
     folderName: /data/namespaces
     schema: './request-schemas/system-namespace.schema.json'
     issueTemplate: '../ISSUE_TEMPLATE/1-system-namespace-request.yaml'
-    approvers: ['C5123154', 'D012312']
-  subContextNamespace:
-    folderName: /data/namespaces
-    schema: './request-schemas/sub-context-namespace.schema.json'
-    issueTemplate: '../ISSUE_TEMPLATE/2-sub-context-namespace-request.yaml'
-  authorityNamespace:
-    folderName: /data/namespaces
-    schema: './request-schemas/authority-namespace.schema.json'
-    issueTemplate: '../ISSUE_TEMPLATE/3-authority-namespace-request.yaml'
-  product:
-    folderName: /data/products
-    schema: './request-schemas/product.schema.json'
-    issueTemplate: '../ISSUE_TEMPLATE/4-product-request.yaml'
-```
 
-### pr section (optional)
-
-Configures how the bot names branches and pull requests:
-
-```yaml
 pr:
   branchNameTemplate: 'feat/resource-{resource}-issue-{issue}'
-  titleTemplate: 'Add {type} {resource}'
+  titleTemplate: 'Add {type} `{resource}`'
   autoMerge:
     enabled: true
-    method: 'squash'
-```
+    method: squash
 
-- `branchNameTemplate` controls branch names.
-- `titleTemplate` controls PR titles.
-- `autoMerge.enabled` enables auto merge.
-- `autoMerge.method` must be merge, squash, or rebase.
-
-### workflow section (optional)
-
-Controls labels and approvers:
-
-```yaml
 workflow:
   labels:
     authorAction: 'Requester Action'
-    approverAction: 'Review Pending'
-    approvalRequested: ['Review Pending']
+    approverAction: 'CPA Action'
+    parentOwnerAction: 'Parent Owner Action'
+    approvalRequested: ['CPA Action']
     approvalSuccessful: ['Approved']
+    approvalRejected: ['Rejected']
     autoMergeCandidate: 'auto-merge-candidate'
-  approvers: ['C5388932', 'D068547']
+  approvers: ['<login-name>']
+  approversPool: ['<login-name>']
 ```
 
-- `workflow.labels.*`: labels used by the bot during the lifecycle.
-- `workflow.approvers`: default approvers for all requests.
-  - If empty or missing, any user except the issue author can approve.
+Important fields:
 
-### Configuration Options
+| Field | Purpose |
+| --- | --- |
+| `requests.*.folderName` | Target folder for generated registry YAML. |
+| `requests.*.schema` | JSON schema for validation. |
+| `requests.*.issueTemplate` | GitHub issue template used for this request type. |
+| `requests.*.approvers` | Request-type approvers. |
+| `requests.*.approversPool` | Request-type reviewer pool. One deterministic user is assigned, all pool users can approve. |
+| `workflow.labels.*` | Labels used for request state and approval state. |
+| `workflow.approvers` | Global fallback approvers. |
+| `workflow.approversPool` | Global fallback reviewer pool. |
 
-#### Top-level structure
+## Runtime hooks
 
-| Field      | Type           | Required | Description                                             |
-| ---------- | -------------- | -------- | ------------------------------------------------------- |
-| `requests` | object         | yes      | Maps request types to their configuration.              |
-| `pr`       | object \| null | no       | Controls pull request creation and auto-merge behavior. |
-| `workflow` | object \| null | no       | Controls labels, approvers, and workflow behavior.      |
+Target repositories can provide optional runtime logic in:
 
----
+```text
+.github/registry-bot/config.js
+```
 
-#### `requests` (required)
+Supported hooks:
 
-| Field                         | Type             | Required | Description                                                               |
-| ----------------------------- | ---------------- | -------- | ------------------------------------------------------------------------- |
-| `<requestType>`               | object           | yes      | One request configuration (key name is arbitrary).                        |
-| `<requestType>.folderName`    | string \| null   | yes      | Target folder for generated YAML files.                                   |
-| `<requestType>.schema`        | string \| null   | yes      | Path to the JSON schema used for validation.                              |
-| `<requestType>.issueTemplate` | string \| null   | yes      | Path to the GitHub issue template file.                                   |
-| `<requestType>.approvers`     | string[] \| null | no       | Optional approvers for this request type. Overrides `workflow.approvers`. |
+| Hook | Purpose |
+| --- | --- |
+| `beforeValidate(args)` | Optional form normalization before validation. |
+| `onValidate(args)` / `customValidate(args)` | Additional validation after schema projection. |
+| `onApproval(args)` | Business decision for automatic approval, rejection, or manual review. |
 
----
-
-#### `pr` (optional)
-
-| Field                      | Type           | Required             | Description                       |
-| -------------------------- | -------------- | -------------------- | --------------------------------- |
-| `pr.branchNameTemplate`    | string \| null | no                   | Template for branch names.        |
-| `pr.titleTemplate`         | string \| null | no                   | Template for pull request titles. |
-| `pr.commitMessageTemplate` | string \| null | no                   | Template for commit messages.     |
-| `pr.autoMerge`             | object \| null | yes (if `pr` exists) | Auto-merge configuration.         |
-
-**`pr.autoMerge`**
-
-| Field     | Type            | Required | Description                                   |
-| --------- | --------------- | -------- | --------------------------------------------- |
-| `enabled` | boolean \| null | yes      | Enables auto-merge.                           |
-| `method`  | string \| null  | yes      | Merge method: `merge`, `squash`, or `rebase`. |
-
----
-
-#### `workflow` (optional)
-
-| Field                | Type             | Required                   | Description                         |
-| -------------------- | ---------------- | -------------------------- | ----------------------------------- |
-| `workflow.labels`    | object \| null   | yes (if `workflow` exists) | Labels used by the bot.             |
-| `workflow.approvers` | string[] \| null | yes (if `workflow` exists) | Default approvers for all requests. |
-| `workflow.links`     | object \| null   | no                         | Optional documentation links.       |
-
-**`workflow.labels`**
-
-| Field                | Type             | Required | Description                              |
-| -------------------- | ---------------- | -------- | ---------------------------------------- |
-| `global`             | string[] \| null | yes      | Global labels applied to requests.       |
-| `authorAction`       | string \| null   | yes      | Label for requester action required.     |
-| `approverAction`     | string \| null   | yes      | Label for reviewer action required.      |
-| `approvalRequested`  | string[] \| null | yes      | Labels indicating approval is requested. |
-| `approvalSuccessful` | string[] \| null | yes      | Labels indicating approval was given.    |
-| `autoMergeCandidate` | string \| null   | yes      | Label for auto-merge candidate PRs.      |
-
-**`workflow.links`**
-
-| Field  | Type           | Required | Description                          |
-| ------ | -------------- | -------- | ------------------------------------ |
-| `docs` | string \| null | no       | Markdown text shown in bot comments. |
-
-### Runtime hooks (optional)
-
-You can add custom validation in:
-
-`.github/registry-bot/config.js`
-
-This file is loaded at runtime.
-It can add extra checks on top of JSON Schema.
-Use it for repo-specific rules or external lookups.
-
-#### Supported hook
-
-- `onValidate(args)`
-  - Runs during validation.
-  - Receives `requestType`, `form`, and `log` (plus other context values).
-  - Must return an array of validation errors.
-  - Return `[]` if everything is fine.
-- `onApproval(args)`
-  - Runs after validation and parent checks passed.
-  - Receives request context similar to `onValidate`.
-  - Can return an approval decision for automatic approval handling.
-  - If omitted, the normal manual review flow stays unchanged.
-
-#### Example (product lookup)
+`onApproval` can return:
 
 ```js
-// .github/registry-bot/config.js
-
-async function validateProductRegistration({ form, log }) {
-  const errors = [];
-
-  // Example: check Product ID against SAP Business Accelerator Hub
-  // and add field-level errors if mismatch is detected.
-
-  return errors;
-}
-
-export async function onValidate({ requestType, log, ...rest }) {
-  try {
-    switch (requestType) {
-      case 'product':
-        return await validateProductRegistration({ log, ...rest });
-      default:
-        return [];
-    }
-  } catch (e) {
-    log.error({ err: e?.message ?? String(e) }, 'hook:onValidate:error');
-    return [`Runtime error during validation: ${e?.message ?? String(e)}`];
-  }
-}
-
-export async function onApproval({ requestType, log, ...rest }) {
-  try {
-    switch (requestType) {
-      case 'product':
-        return { approved: false };
-      default:
-        return { approved: false };
-    }
-  } catch (e) {
-    log.error({ err: e?.message ?? String(e) }, 'hook:onApproval:error');
-    return { approved: false };
-  }
-}
-
-export default { onValidate, onApproval };
+{ status: 'approved', message: '...' }
+{ status: 'rejected', message: '...', errors: [...] }
+{ status: 'unknown', approvers: ['USER'], message: '...' }
 ```
 
-If config.js is missing, the bot runs with built-in validation only.
+No response or no match means the normal review flow continues.
+
+## Hook secrets
+
+Hook secrets are provided through environment variables prefixed with `HOOK_SECRET_`.
+
+Example:
+
+```text
+HOOK_SECRET_STC_URL=https://example.invalid
+HOOK_SECRET_BASIC_AUTH=Basic ...
+```
+
+Inside `config.js`:
+
+```js
+const stcUrl = config.getSecret('STC_URL');
+const basicAuth = config.getSecret('BASIC_AUTH');
+```
+
+The `HOOK_SECRET_` prefix is removed before the value is exposed to the hook. Secrets are scoped to hook execution and should not be stored in target repo config files.
+
+## External service validation and STC scope
+
+External lookups are optional and target-repo controlled through `config.js`.
+
+For STC Service ID validation, the intended behavior is limited to a technical existence check:
+
+```text
+/serviceService/Services?$top=1&$select=ID&$filter=ID eq 'SERVICE-...'
+```
+
+The hook only checks whether the submitted STC Service ID exists.
+
+The bot does not request, read, process, or store STC personal data such as:
+
+- creator,
+- owner,
+- responsible person,
+- modifiedBy,
+- contact person,
+- or similar user-related STC fields.
+
+The bot also does not store STC response payloads. It only uses the lookup result to decide whether the submitted request field is valid. If the ID does not exist or the lookup fails, the bot returns a validation error on the request.
+
+Purpose: registry data quality validation, not personal data processing.
+
+## Security boundaries
+
+- The bot is installed as a GitHub App on target repositories.
+- Hook HTTP calls should be limited to allowed hosts and HTTPS endpoints.
+- Secrets are loaded from deployment environment variables, not from repository files.
+- The bot does not auto-merge PRs without current-head approval and green checks.
+- The bot does not approve workflow runs for untrusted registry-only PRs without a trust signal.
+- Workflow approval automation requires GitHub App `Actions: write` permission.
+
+## Required GitHub App permissions
+
+Minimum permissions depend on enabled features:
+
+| Permission | Level | Why |
+| --- | --- | --- |
+| Metadata | Read | Required by GitHub Apps. |
+| Issues | Read & write | Read issues, comments, labels, assignees, update state. |
+| Pull requests | Read & write | Create reviews, update/merge/close PRs. |
+| Contents | Read & write | Read config/schemas and write registry YAML files. |
+| Checks | Read | React to CI/check results. |
+| Actions | Read | Read workflow runs. |
+| Actions | Write | Only needed for workflow run approval automation. |
+
+## Local development
+
+```bash
+npm install
+npm test
+```
+
+For integration testing, install the GitHub App on an example registry repository and configure:
+
+```text
+.github/registry-bot/config.yaml
+.github/registry-bot/config.js
+.github/ISSUE_TEMPLATE/*.yml
+.github/registry-bot/request-schemas/*.json
+```
+
+## Operational notes
+
+- The bot validates config on default-branch updates.
+- Existing issues remain compatible when templates gain new required fields.
+- Failed or blocked direct PR heads are skipped temporarily so the sequential queue can continue.
+- Hidden markers are used for routing lock, parent approval, contact approval, and snapshot tracking.
 
 ## Architecture
 
