@@ -17,6 +17,7 @@ import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
 import { runRegistryCustomValidateRuntime } from './hook-registry-custom-validate-runtime.js';
 import { applyRequiredFieldValidation, applySchemaIdentifierConsistencyCheck } from './local-validation-checks.js';
+import { resolveTemplateAndRequestType } from './request-type-resolution.js';
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
 import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
@@ -842,132 +843,6 @@ function initAjvInstance(ajv: AjvInstance, context: ValidationContext): void {
   }
 }
 
-function buildValidateRequestIssueErrorResult(
-  errors: string[],
-  buckets: ValidationBuckets,
-  template: TemplateLike,
-  schemaObj: unknown,
-  message: string,
-  targetBucket: string[]
-): ValidateRequestIssueResult {
-  targetBucket.push(message);
-  errors.push(message);
-
-  return buildValidateRequestIssueResult(errors, buckets, template, {
-    schemaObj,
-    ajvErrorsForUnifiedFormat: [],
-    formData: {},
-    namespace: '',
-    nsType: '',
-  });
-}
-
-function resolveTemplateAndRequestType(
-  context: ValidationContext,
-  template: TemplateLike,
-  formData: FormData,
-  errors: string[],
-  buckets: ValidationBuckets
-):
-  | { template: TemplateLike; requestType: string; requestCfg: RequestConfigEntry }
-  | { result: ValidateRequestIssueResult } {
-  let requestType = String(template?._meta?.requestType || '').trim();
-
-  if (requestType && requestType.toLowerCase() === 'partnernamespace') {
-    const selected =
-      (formData as Record<string, unknown>)['requestType'] ?? (formData as Record<string, unknown>)['request-type'];
-
-    const mapped = mapPartnerNamespaceRequestTypeToConfigKey(selected);
-    if (!mapped) {
-      return {
-        result: buildValidateRequestIssueErrorResult(
-          errors,
-          buckets,
-          template,
-          null,
-          `Invalid Partner Namespace 'Request Type' selection '${toStringSafe(selected) || ''}'. Expected one of: authority, system, subContext.`,
-          buckets.form
-        ),
-      };
-    }
-
-    const mappedCfg = getRequestConfig(context, mapped);
-    if (!mappedCfg) {
-      return {
-        result: buildValidateRequestIssueErrorResult(
-          errors,
-          buckets,
-          template,
-          null,
-          `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests has no such entry.`,
-          buckets.schema
-        ),
-      };
-    }
-
-    const mappedSchema = toStringSafe(mappedCfg.schema);
-    if (!mappedSchema) {
-      return {
-        result: buildValidateRequestIssueErrorResult(
-          errors,
-          buckets,
-          template,
-          null,
-          `Configuration error: Partner Namespace selection maps to '${mapped}', but cfg.requests['${mapped}'].schema is empty.`,
-          buckets.schema
-        ),
-      };
-    }
-
-    const nextMeta = template._meta
-      ? {
-          ...template._meta,
-          requestType: mapped,
-          schema: mappedSchema,
-          root: toStringSafe(mappedCfg.folderName),
-        }
-      : {
-          requestType: mapped,
-          schema: mappedSchema,
-          root: toStringSafe(mappedCfg.folderName),
-        };
-
-    template = { ...template };
-    template._meta = nextMeta;
-
-    requestType = mapped;
-  }
-
-  if (!requestType) {
-    return {
-      result: buildValidateRequestIssueErrorResult(
-        errors,
-        buckets,
-        template,
-        null,
-        'Configuration error: template missing _meta.requestType (expected cfg.requests mapping via loadTemplate).',
-        buckets.schema
-      ),
-    };
-  }
-
-  const requestCfg = getRequestConfig(context, requestType);
-  if (!requestCfg) {
-    return {
-      result: buildValidateRequestIssueErrorResult(
-        errors,
-        buckets,
-        template,
-        null,
-        `Configuration error: unknown requestType '${requestType}' (missing cfg.requests entry).`,
-        buckets.schema
-      ),
-    };
-  }
-
-  return { template, requestType, requestCfg };
-}
-
 function getAjvKey(context: ValidationContext, schemaPath: string): string {
   const hs = context.resourceBotHooksSource;
   return hs ? `${schemaPath}::${hs}` : schemaPath;
@@ -1113,7 +988,17 @@ export async function validateRequestIssue(
   // 3) form
   const formData = givenFormData || parseForm(String(issue.body || ''), template);
 
-  const resolvedTemplate = resolveTemplateAndRequestType(context, template, formData, errors, buckets);
+  const resolvedTemplate = resolveTemplateAndRequestType({
+    context,
+    template,
+    formData,
+    errors,
+    buckets,
+    getRequestConfig,
+    mapPartnerNamespaceRequestTypeToConfigKey,
+    buildValidateRequestIssueResult,
+    toStringSafe,
+  });
   if ('result' in resolvedTemplate) return resolvedTemplate.result;
 
   template = resolvedTemplate.template;
