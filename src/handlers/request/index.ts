@@ -94,6 +94,11 @@ import {
   type CheckCompletedHandlerCallbacks,
 } from './application/check-completed-handler.js';
 import {
+  maybeApprovePendingWorkflowRunsForRegistryPrWithRetryApplication,
+  maybeApprovePendingWorkflowRunsForPrNumbersApplication,
+  type WorkflowApprovalCallbacks,
+} from './application/workflow-approval.js';
+import {
   maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
   type DefaultBranchCheckSuiteReevaluationCallbacks,
 } from './application/default-branch-check-suite-reevaluation.js';
@@ -463,10 +468,6 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type LoggerFn = (this: unknown, obj: unknown, msg?: string) => void;
 type LoggerLike = Partial<Record<LogLevel, LoggerFn>>;
 
-const WORKFLOW_APPROVAL_RETRY_INFLIGHT = new Map<string, NodeJS.Timeout>();
-const WORKFLOW_APPROVAL_RETRY_DELAYS_MS = [10_000, 30_000];
-const WORKFLOW_APPROVAL_LAST_RUNS = new Map<string, WorkflowRunLike[]>();
-
 const log = (context: { log?: LoggerLike } | undefined, level: LogLevel, obj: unknown, msg: string): void => {
   const logger = context?.log;
   const fn = logger?.[level];
@@ -696,17 +697,6 @@ type CheckSuiteLike = {
   head_sha?: string | null;
   head_branch?: string | null;
   pull_requests?: CheckSuitePullRequestRef[] | null;
-};
-
-type WorkflowRunPullRequestRef = { number?: number | null };
-
-type WorkflowRunLike = {
-  id?: number | null;
-  name?: string | null;
-  status?: string | null;
-  conclusion?: string | null;
-  head_sha?: string | null;
-  pull_requests?: WorkflowRunPullRequestRef[] | null;
 };
 
 function readCheckSuiteFromPayload(payload: unknown): CheckSuiteLike | null {
@@ -2460,23 +2450,6 @@ async function listChangedYamlFilesForPrWithFallback(
   });
 }
 
-function workflowApprovalHeadKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`.toLowerCase();
-}
-
-function workflowApprovalRetryKey(repoInfo: RepoInfo, pr: PullRequestLike, attempt: number): string {
-  return `${workflowApprovalHeadKey(repoInfo, pr)}:${attempt}`;
-}
-
-function rememberWorkflowApprovalRuns(repoInfo: RepoInfo, pr: PullRequestLike, runs: WorkflowRunLike[]): void {
-  WORKFLOW_APPROVAL_LAST_RUNS.set(workflowApprovalHeadKey(repoInfo, pr), runs || []);
-}
-
-function shouldRetryWorkflowApproval(repoInfo: RepoInfo, pr: PullRequestLike): boolean {
-  const runs = WORKFLOW_APPROVAL_LAST_RUNS.get(workflowApprovalHeadKey(repoInfo, pr));
-  return Array.isArray(runs) && runs.length === 0;
-}
-
 function isSafeRegistryWorkflowApprovalFile(context: BotContext<RequestEvents>, file: PullRequestFileLike): boolean {
   const filename = normalizeRepoPath(file?.filename);
   const status = toStringTrim(file?.status).toLowerCase();
@@ -2488,320 +2461,27 @@ function isSafeRegistryWorkflowApprovalFile(context: BotContext<RequestEvents>, 
   return true;
 }
 
-async function isSafeRegistryOnlyPullRequest(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<boolean> {
-  const files = await listChangedFilesForPr(context, repoInfo, pr.number);
-  if (!files.length) return false;
-
-  return files.every((file) => isSafeRegistryWorkflowApprovalFile(context, file));
-}
-
-function isWorkflowRunWaitingForApproval(run: WorkflowRunLike): boolean {
-  const status = toStringTrim(run?.status).toLowerCase();
-  const conclusion = toStringTrim(run?.conclusion).toLowerCase();
-
-  return status === 'waiting' || conclusion === 'action_required';
-}
-
-function workflowRunTargetsPullRequest(run: WorkflowRunLike, pr: PullRequestLike): boolean {
-  const headSha = toStringTrim(pr.head?.sha);
-  const runHeadSha = toStringTrim(run?.head_sha);
-
-  if (headSha && runHeadSha && headSha === runHeadSha) return true;
-
-  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
-  return prs.some((item) => item?.number === pr.number);
-}
-
-async function listWorkflowRunsForPullRequestHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<WorkflowRunLike[]> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return [];
-
-  try {
-    const client = context.octokit as unknown as {
-      request: (route: string, args: Record<string, unknown>) => Promise<{ data?: unknown }>;
-    };
-    const res = await client.request('GET /repos/{owner}/{repo}/actions/runs', {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      head_sha: headSha,
-      per_page: 100,
-    });
-    const data = isPlainObject(res?.data) ? res.data : {};
-    const runs = Array.isArray(data['workflow_runs']) ? data['workflow_runs'] : [];
-
-    return (runs as WorkflowRunLike[]).filter((run) => workflowRunTargetsPullRequest(run, pr));
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        prNumber: pr.number,
-        headSha,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'workflow-approval:runs-read-failed'
-    );
-
-    return [];
-  }
-}
-
-async function approveWorkflowRun(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  runId: number
-): Promise<boolean> {
-  try {
-    const client = context.octokit as unknown as {
-      request: (route: string, args: Record<string, unknown>) => Promise<unknown>;
-    };
-
-    await client.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve', {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      run_id: runId,
-    });
-
-    return true;
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        runId,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'workflow-approval:approve-run-failed'
-    );
-
-    return false;
-  }
-}
-
-type WorkflowApprovalTrustSignal = {
-  trusted: boolean;
-  reason: string;
-  decision?: ApprovalDecision;
-};
-
-async function resolveWorkflowApprovalTrustSignalForRegistryPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<WorkflowApprovalTrustSignal> {
-  if (parseLinkedIssueNumberFromPr(pr, repoInfo) !== null || isSnapshotManagedRequestPr(pr)) {
-    return { trusted: false, reason: 'not-standalone-direct-pr' };
-  }
-
-  const baseBranch = toStringTrim(pr.base?.ref);
-
-  try {
-    const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, { baseBranch });
-
-    if (decision.status === 'approved') {
-      return { trusted: true, reason: 'onApproval-approved', decision };
-    }
-
-    const hasCurrentHeadApproval = await hasAllowedStandaloneDirectPrApprovalForCurrentHead(
-      context,
-      repoInfo,
-      pr,
-      decision,
-      { baseBranch }
-    );
-
-    if (hasCurrentHeadApproval) {
-      return { trusted: true, reason: 'allowed-current-head-approval', decision };
-    }
-
-    return {
-      trusted: false,
-      reason: `missing-trust-signal:${toStringTrim(decision.status) || 'none'}`,
-      decision,
-    };
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-        reason,
-      },
-      'workflow-approval:trust-check-failed'
-    );
-
-    return { trusted: false, reason: 'trust-check-failed' };
-  }
-}
-
-async function maybeApprovePendingWorkflowRunsForRegistryPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<boolean> {
-  if (!isPullRequestOpen(pr) || pr.draft === true) return false;
-
-  const safeRegistryOnly = await isSafeRegistryOnlyPullRequest(context, repoInfo, pr);
-  if (!safeRegistryOnly) {
-    log(context, 'info', { prNumber: pr.number, reason }, 'workflow-approval:skip-not-safe-registry-only-pr');
-    return false;
-  }
-
-  const trustSignal = await resolveWorkflowApprovalTrustSignalForRegistryPr(context, repoInfo, pr, reason);
-  if (!trustSignal.trusted) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        trustReason: trustSignal.reason,
-        decisionStatus: toStringTrim(trustSignal.decision?.status) || 'none',
-        reason,
-      },
-      'workflow-approval:skip-missing-trust-signal'
-    );
-
-    return false;
-  }
-
-  const runs = await listWorkflowRunsForPullRequestHead(context, repoInfo, pr);
-  rememberWorkflowApprovalRuns(repoInfo, pr, runs);
-
-  const waitingRuns = runs.filter(isWorkflowRunWaitingForApproval);
-  if (!waitingRuns.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        runs: runs.map((run) => ({
-          id: run.id,
-          name: toStringTrim(run.name),
-          status: toStringTrim(run.status),
-          conclusion: toStringTrim(run.conclusion),
-        })),
-        reason,
-      },
-      'workflow-approval:no-waiting-runs'
-    );
-
-    return false;
-  }
-
-  let approvedAny = false;
-
-  for (const run of waitingRuns) {
-    const runId = typeof run.id === 'number' && Number.isFinite(run.id) ? run.id : 0;
-    if (!runId) continue;
-
-    const approved = await approveWorkflowRun(context, repoInfo, runId);
-    approvedAny = approvedAny || approved;
-
-    log(
-      context,
-      approved ? 'info' : 'warn',
-      {
-        prNumber: pr.number,
-        runId,
-        runName: toStringTrim(run.name),
-        headSha: toStringTrim(pr.head?.sha),
-        reason,
-      },
-      approved ? 'workflow-approval:run-approved' : 'workflow-approval:run-approval-failed'
-    );
-  }
-
-  return approvedAny;
-}
-
-function scheduleWorkflowApprovalRetry(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string,
-  attempt = 0
-): void {
-  const delay = WORKFLOW_APPROVAL_RETRY_DELAYS_MS[attempt];
-  if (delay === undefined) return;
-
-  const key = workflowApprovalRetryKey(repoInfo, pr, attempt);
-  if (WORKFLOW_APPROVAL_RETRY_INFLIGHT.has(key)) return;
-
-  const originalHeadSha = toStringTrim(pr.head?.sha);
-  const timer = setTimeout(() => {
-    WORKFLOW_APPROVAL_RETRY_INFLIGHT.delete(key);
-
-    void (async (): Promise<void> => {
-      const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-      const freshHeadSha = toStringTrim(freshPr.head?.sha);
-
-      if (!isPullRequestOpen(freshPr)) return;
-      if (originalHeadSha && freshHeadSha && originalHeadSha !== freshHeadSha) return;
-
-      const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(
-        context,
-        repoInfo,
-        freshPr,
-        `${reason}:retry-${attempt + 1}`
-      );
-
-      if (!approved) {
-        scheduleWorkflowApprovalRetry(context, repoInfo, freshPr, reason, attempt + 1);
-      }
-    })().catch((error: unknown) => {
-      log(
-        context,
-        'warn',
-        {
-          prNumber: pr.number,
-          err: getErrorMessage(error),
-          status: getHttpStatus(error),
-          reason,
-          attempt: attempt + 1,
-        },
-        'workflow-approval:retry-failed'
-      );
-    });
-  }, delay);
-
-  if (typeof timer.unref === 'function') {
-    timer.unref();
-  }
-
-  WORKFLOW_APPROVAL_RETRY_INFLIGHT.set(key, timer);
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha: originalHeadSha,
-      delayMs: delay,
-      attempt: attempt + 1,
-      reason,
-    },
-    'workflow-approval:retry-scheduled'
-  );
+function buildWorkflowApprovalCallbacks(): WorkflowApprovalCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike,
+  PullRequestFileLike
+> {
+  return {
+    isPullRequestOpen,
+    isSafeRegistryWorkflowApprovalFile,
+    listChangedFilesForPr,
+    parseLinkedIssueNumberFromPr,
+    isSnapshotManagedRequestPr,
+    evaluateDirectPrOnApproval,
+    hasAllowedStandaloneDirectPrApprovalForCurrentHead,
+    readFreshPullRequest,
+    isPlainObject,
+    log,
+    getErrorMessage,
+    getHttpStatus,
+    toStringTrim,
+  };
 }
 
 async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
@@ -2810,28 +2490,13 @@ async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
   pr: PullRequestLike,
   reason: string
 ): Promise<boolean> {
-  const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(context, repoInfo, pr, reason);
-  if (approved) return true;
-
-  if (shouldRetryWorkflowApproval(repoInfo, pr)) {
-    scheduleWorkflowApprovalRetry(context, repoInfo, pr, reason);
-  } else {
-    const hasRunSnapshot = WORKFLOW_APPROVAL_LAST_RUNS.has(workflowApprovalHeadKey(repoInfo, pr));
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        reason,
-      },
-      hasRunSnapshot
-        ? 'workflow-approval:retry-skipped-run-already-visible'
-        : 'workflow-approval:retry-skipped-no-trust-signal'
-    );
-  }
-
-  return false;
+  return await maybeApprovePendingWorkflowRunsForRegistryPrWithRetryApplication(
+    context,
+    repoInfo,
+    pr,
+    reason,
+    buildWorkflowApprovalCallbacks()
+  );
 }
 
 async function maybeApprovePendingWorkflowRunsForPrNumbers(
@@ -2841,21 +2506,14 @@ async function maybeApprovePendingWorkflowRunsForPrNumbers(
   headSha: string,
   reason: string
 ): Promise<boolean> {
-  const sha = toStringTrim(headSha);
-  const uniquePrNumbers = Array.from(new Set((prNumbers || []).filter((n) => Number.isFinite(n))));
-
-  for (const prNumber of uniquePrNumbers) {
-    const pr = await readFreshPullRequest(context, repoInfo, prNumber);
-    if (!pr || !isPullRequestOpen(pr)) continue;
-
-    const prHeadSha = toStringTrim(pr.head?.sha);
-    if (sha && prHeadSha && prHeadSha !== sha) continue;
-
-    const approved = await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(context, repoInfo, pr, reason);
-    if (approved) return true;
-  }
-
-  return false;
+  return await maybeApprovePendingWorkflowRunsForPrNumbersApplication(
+    context,
+    repoInfo,
+    prNumbers,
+    headSha,
+    reason,
+    buildWorkflowApprovalCallbacks()
+  );
 }
 
 async function isPullRequestBehindCurrentBase(
