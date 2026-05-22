@@ -162,41 +162,43 @@ Hook secrets are provided through environment variables prefixed with `HOOK_SECR
 Example:
 
 ```text
-HOOK_SECRET_STC_URL=https://example.invalid
-HOOK_SECRET_BASIC_AUTH=Basic ...
+HOOK_SECRET_REMOTE_LOOKUP_URL=https://example.invalid
+HOOK_SECRET_REMOTE_LOOKUP_AUTH=Bearer ...
 ```
 
 Inside `config.js`:
 
 ```js
-const stcUrl = config.getSecret('STC_URL');
-const basicAuth = config.getSecret('BASIC_AUTH');
+const lookupUrl = config.getSecret('REMOTE_LOOKUP_URL');
+const lookupAuth = config.getSecret('REMOTE_LOOKUP_AUTH');
 ```
 
 The `HOOK_SECRET_` prefix is removed before the value is exposed to the hook. Secrets are scoped to hook execution and should not be stored in target repo config files.
 
-## External service validation and STC scope
+## External service validation and data scope
 
 External lookups are optional and target-repo controlled through `config.js`.
 
-For STC Service ID validation, the intended behavior is limited to a technical existence check:
+A validation hook may call a remote source to check whether a submitted technical identifier exists. The lookup should be limited to the minimum required fields.
+
+Example:
 
 ```text
-/serviceService/Services?$top=1&$select=ID&$filter=ID eq 'SERVICE-...'
+/resources?$top=1&$select=id&$filter=id eq 'RESOURCE-...'
 ```
 
-The hook only checks whether the submitted STC Service ID exists.
+The hook should only use the lookup result to validate the submitted request field.
 
-The bot does not request, read, process, or store STC personal data such as:
+The bot does not request, read, process, or store personal data from remote validation sources, such as:
 
 - creator,
 - owner,
 - responsible person,
 - modifiedBy,
 - contact person,
-- or similar user-related STC fields.
+- or similar user-related fields.
 
-The bot also does not store STC response payloads. It only uses the lookup result to decide whether the submitted request field is valid. If the ID does not exist or the lookup fails, the bot returns a validation error on the request.
+The bot does not store remote response payloads. If the identifier does not exist or the lookup fails, the bot returns a validation error on the request.
 
 Purpose: registry data quality validation, not personal data processing.
 
