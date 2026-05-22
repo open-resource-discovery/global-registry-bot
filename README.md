@@ -118,16 +118,16 @@ workflow:
 
 Important fields:
 
-| Field | Purpose |
-| --- | --- |
-| `requests.*.folderName` | Target folder for generated registry YAML. |
-| `requests.*.schema` | JSON schema for validation. |
-| `requests.*.issueTemplate` | GitHub issue template used for this request type. |
-| `requests.*.approvers` | Request-type approvers. |
+| Field                      | Purpose                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| `requests.*.folderName`    | Target folder for generated registry YAML.                                                  |
+| `requests.*.schema`        | JSON schema for validation.                                                                 |
+| `requests.*.issueTemplate` | GitHub issue template used for this request type.                                           |
+| `requests.*.approvers`     | Request-type approvers.                                                                     |
 | `requests.*.approversPool` | Request-type reviewer pool. One deterministic user is assigned, all pool users can approve. |
-| `workflow.labels.*` | Labels used for request state and approval state. |
-| `workflow.approvers` | Global fallback approvers. |
-| `workflow.approversPool` | Global fallback reviewer pool. |
+| `workflow.labels.*`        | Labels used for request state and approval state.                                           |
+| `workflow.approvers`       | Global fallback approvers.                                                                  |
+| `workflow.approversPool`   | Global fallback reviewer pool.                                                              |
 
 ## Runtime hooks
 
@@ -139,11 +139,11 @@ Target repositories can provide optional runtime logic in:
 
 Supported hooks:
 
-| Hook | Purpose |
-| --- | --- |
-| `beforeValidate(args)` | Optional form normalization before validation. |
-| `onValidate(args)` / `customValidate(args)` | Additional validation after schema projection. |
-| `onApproval(args)` | Business decision for automatic approval, rejection, or manual review. |
+| Hook                                        | Purpose                                                                |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| `beforeValidate(args)`                      | Optional form normalization before validation.                         |
+| `onValidate(args)` / `customValidate(args)` | Additional validation after schema projection.                         |
+| `onApproval(args)`                          | Business decision for automatic approval, rejection, or manual review. |
 
 `onApproval` can return:
 
@@ -213,15 +213,15 @@ Purpose: registry data quality validation, not personal data processing.
 
 Minimum permissions depend on enabled features:
 
-| Permission | Level | Why |
-| --- | --- | --- |
-| Metadata | Read | Required by GitHub Apps. |
-| Issues | Read & write | Read issues, comments, labels, assignees, update state. |
-| Pull requests | Read & write | Create reviews, update/merge/close PRs. |
-| Contents | Read & write | Read config/schemas and write registry YAML files. |
-| Checks | Read | React to CI/check results. |
-| Actions | Read | Read workflow runs. |
-| Actions | Write | Only needed for workflow run approval automation. |
+| Permission    | Level        | Why                                                     |
+| ------------- | ------------ | ------------------------------------------------------- |
+| Metadata      | Read         | Required by GitHub Apps.                                |
+| Issues        | Read & write | Read issues, comments, labels, assignees, update state. |
+| Pull requests | Read & write | Create reviews, update/merge/close PRs.                 |
+| Contents      | Read & write | Read config/schemas and write registry YAML files.      |
+| Checks        | Read         | React to CI/check results.                              |
+| Actions       | Read         | Read workflow runs.                                     |
+| Actions       | Write        | Only needed for workflow run approval automation.       |
 
 ## Local development
 
