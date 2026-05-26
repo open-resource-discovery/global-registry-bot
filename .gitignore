@@ -37,4 +37,4 @@ secrets*.json
 manifest.yaml
 
 # Claude Code local settings
-.claude/settings.local.json
+.claude
