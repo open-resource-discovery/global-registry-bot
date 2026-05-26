@@ -35,3 +35,6 @@ pnpm-lock.yaml
 secrets*.json
 .cfvars.yml
 manifest.yaml
+
+# Claude Code local settings
+.claude/settings.local.json
