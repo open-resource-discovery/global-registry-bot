@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
 
       - name: Create GitHub Release
-        uses: open-resource-discovery/github-release@71b3539d7d3210ac70857bdbf04b9fdefc2c86a8 # main
+        uses: open-resource-discovery/github-release@1ba8394a6cf6f83cecfff680067cfa0ab7539f38 # main
         with:
           tag-template: 'v<version>'
           version: ${{ inputs.version }}
