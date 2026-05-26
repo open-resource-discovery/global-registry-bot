@@ -99,6 +99,7 @@ import {
   type WorkflowApprovalCallbacks,
 } from './application/workflow-approval.js';
 import { extractParentContactCandidates, lookupGithubLoginsByEmail } from './application/parent-contact-resolution.js';
+import { checkParentChainExistsInFlatStructureApplication } from './application/parent-chain-validation.js';
 import {
   maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
   type DefaultBranchCheckSuiteReevaluationCallbacks,
@@ -3722,23 +3723,6 @@ function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestE
   return vendorRoot || 'data/vendors';
 }
 
-async function repoYamlExists(context: BotContext<RequestEvents>, repo: RepoInfo, basePath: string): Promise<boolean> {
-  for (const ext of ['yaml', 'yml']) {
-    try {
-      await context.octokit.repos.getContent({
-        owner: repo.owner,
-        repo: repo.repo,
-        path: `${basePath}.${ext}`,
-      });
-      return true;
-    } catch (e: unknown) {
-      if (getHttpStatus(e) !== 404) throw e;
-    }
-  }
-
-  return false;
-}
-
 async function checkParentChainExistsInFlatStructure(
   context: BotContext<RequestEvents>,
   { owner, repo }: RepoInfo,
@@ -3746,38 +3730,18 @@ async function checkParentChainExistsInFlatStructure(
   formData: FormData,
   explicitResourceName?: string
 ): Promise<string | null> {
-  const rootRaw = toStringTrim(template?._meta?.root);
-  const structRoot = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!structRoot) return null;
-
-  const rt = toStringTrim(template?._meta?.requestType).toLowerCase();
-  const isNamespaceLike = rt.includes('namespace') || rt === 'subcontext' || rt === 'system' || rt === 'authority';
-  if (!isNamespaceLike) return null;
-
-  const resourceName = toStringTrim(explicitResourceName) || extractResourceNameFromForm(formData, template);
-  const parts = toStringTrim(resourceName).split('.').filter(Boolean);
-  if (parts.length < 2) return null;
-
-  const repoInfo: RepoInfo = { owner, repo };
-  const vendorRoot = resolveVendorRegistryRootForRequestHandler(context);
-
-  for (let i = parts.length - 1; i >= 1; i -= 1) {
-    const parentName = parts.slice(0, i).join('.');
-    if (!parentName) continue;
-
-    const exists =
-      i === 1
-        ? await repoYamlExists(context, repoInfo, `${vendorRoot}/${parentName}`)
-        : await repoYamlExists(context, repoInfo, `${structRoot}/${parentName}`);
-
-    if (exists) continue;
-
-    return i === 1
-      ? `Vendor '${parentName}' is not present. Please register the vendor first.`
-      : `Parent resource '${parentName}' is not present. Please register the parent first.`;
-  }
-
-  return null;
+  return await checkParentChainExistsInFlatStructureApplication(
+    context,
+    { owner, repo },
+    template,
+    formData,
+    {
+      extractResourceNameFromForm,
+      resolveVendorRegistryRoot: resolveVendorRegistryRootForRequestHandler,
+      getHttpStatus,
+    },
+    explicitResourceName
+  );
 }
 
 async function loadTemplateWithLabelRefresh(
