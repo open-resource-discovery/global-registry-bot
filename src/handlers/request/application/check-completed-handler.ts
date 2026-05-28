@@ -221,6 +221,20 @@ export async function handleCheckCompletedEvent<
     if (conclusion !== 'success') return;
     if (!headShaStr) return;
 
+    if (prNumbers.length === 0) {
+      callbacks.log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          headShaStr,
+        },
+        'checks:check-run-deferred-no-pr-mapping'
+      );
+      return;
+    }
+
     for (const prNumber of prNumbers) {
       await callbacks.collapseBotCommentsByPrefix(
         context,

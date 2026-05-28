@@ -4530,12 +4530,12 @@ export default function requestHandler(app: Probot): void {
     }
   );
 
-  const runAutoMergeEvaluation = async (
+  const runAutoMergeEvaluation = (
     context: BotContext<RequestEvents>,
     repoInfo: RepoInfo,
     normalizedHeadSha: string
-  ): Promise<void> => {
-    await runAutoMergeEvaluationApplication(context, repoInfo, normalizedHeadSha, buildAutoMergeTriggerCallbacks());
+  ): Promise<boolean> => {
+    return runAutoMergeEvaluationApplication(context, repoInfo, normalizedHeadSha, buildAutoMergeTriggerCallbacks());
   };
 
   const tryAutoMerge = async (
