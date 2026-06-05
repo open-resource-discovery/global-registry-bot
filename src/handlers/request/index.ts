@@ -299,30 +299,24 @@ import { createPullRequestEventHandler } from './events/pull-requests.js';
 import { createCheckEventHandler } from './events/checks.js';
 import { createStatusEventHandler } from './events/status.js';
 import { createPushEventHandler } from './events/push.js';
-import { composeCheckCompletedHandlerCallbacks } from './composition/checks-composition.js';
-import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-composition.js';
-import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
-import { composeIssueWorkflowGuardCallbacks } from './composition/issue-workflow-guard-composition.js';
-import { composeWorkflowApprovalCallbacks } from './composition/workflow-approval-composition.js';
-import {
-  composeRequestIssueAuthorUpdateCallbacks,
-  composeRequestIssueLifecycleCallbacks,
-  composeRequestPrCreationRecoveryCallbacks,
-} from './composition/issue-lifecycle-composition.js';
-import {
-  composeDefaultBranchApprovedPrBranchUpdateCallbacks,
-  composeDefaultBranchDirectPrReevaluationCallbacks,
-} from './composition/default-branch-push-composition.js';
-import {
-  composeDirectPrApprovalCommentHandlingCallbacks,
-  composeStandaloneDirectPrApprovalCallbacks,
-} from './composition/issue-comment-direct-pr-composition.js';
 import {
   composeApprovalCommentHandlingCallbacks,
   composeApprovedRequestFinalizationCallbacks,
+  composeAutoMergeTriggerCallbacks,
+  composeCheckCompletedHandlerCallbacks,
+  composeDefaultBranchApprovedPrBranchUpdateCallbacks,
+  composeDefaultBranchCheckSuiteReevaluationCallbacks,
+  composeDefaultBranchDirectPrReevaluationCallbacks,
+  composeDirectPrApprovalCommentHandlingCallbacks,
   composeIssueStateReviewerOperationsCallbacks,
+  composeIssueWorkflowGuardCallbacks,
   composeOwnerApprovalCommentHandlingCallbacks,
-} from './composition/issue-comment-approval-composition.js';
+  composeRequestIssueAuthorUpdateCallbacks,
+  composeRequestIssueLifecycleCallbacks,
+  composeRequestPrCreationRecoveryCallbacks,
+  composeStandaloneDirectPrApprovalCallbacks,
+  composeWorkflowApprovalCallbacks,
+} from './composition/index.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
 
