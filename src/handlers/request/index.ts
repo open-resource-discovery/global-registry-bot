@@ -283,10 +283,12 @@ import { readIssueBodyForProcessing } from './domain/issue-body-processing.js';
 import { type RegistryValidationMachineReadableSource } from './domain/registry-validation-annotations.js';
 import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
-import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
+import { DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
+import { log as infraLog } from './infrastructure/logger.js';
+import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
+import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
 import type { Context, Probot } from 'probot';
-import YAML from 'yaml';
 import { createHash } from 'node:crypto';
 
 const DBG = process.env.DEBUG_NS === '1';
@@ -313,10 +315,6 @@ type ResourceBotContextExt = {
   resourceBotConfig?: NormalizedStaticConfig;
   resourceBotHooks?: RegistryBotHooks | null;
   resourceBotHooksSource?: string | null;
-};
-
-type StaticConfigLoadOptions = {
-  forceReload?: boolean;
 };
 
 type BotContext<E extends RequestEvents> = Context<E> & ResourceBotContextExt;
@@ -466,18 +464,7 @@ type EffectiveConstants = {
   approverPoolUsernames: string[];
 };
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type LoggerFn = (this: unknown, obj: unknown, msg?: string) => void;
-type LoggerLike = Partial<Record<LogLevel, LoggerFn>>;
-
-const log = (context: { log?: LoggerLike } | undefined, level: LogLevel, obj: unknown, msg: string): void => {
-  const logger = context?.log;
-  const fn = logger?.[level];
-
-  if (typeof fn === 'function') {
-    fn.call(logger, obj, msg);
-  }
-};
+const log = infraLog;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -499,48 +486,6 @@ function normalizeLogin(value: unknown): string {
 
 function uniqLogins(values: string[]): string[] {
   return uniqLoginsPure(values);
-}
-
-type RepoContentFile = { content?: string; encoding?: string };
-
-function isRepoContentFile(v: unknown): v is RepoContentFile {
-  return isPlainObject(v) && typeof v['content'] === 'string';
-}
-
-async function readRepoFileText(
-  context: BotContext<RequestEvents>,
-  repo: RepoInfo,
-  path: string
-): Promise<string | null> {
-  const p = toStringTrim(path).replace(/^\/+/, '');
-  if (!p) return null;
-
-  try {
-    const res = await context.octokit.repos.getContent({ owner: repo.owner, repo: repo.repo, path: p });
-    const data = (res as unknown as { data?: unknown }).data;
-
-    if (Array.isArray(data) || !isRepoContentFile(data)) return null;
-
-    const enc = typeof data.encoding === 'string' ? data.encoding : 'base64';
-    return Buffer.from(String(data.content || ''), enc as BufferEncoding).toString('utf8');
-  } catch {
-    return null;
-  }
-}
-
-async function readYamlFromRepo(
-  context: BotContext<RequestEvents>,
-  repo: RepoInfo,
-  path: string
-): Promise<unknown | null> {
-  const txt = await readRepoFileText(context, repo, path);
-  if (!txt) return null;
-
-  try {
-    return YAML.parse(txt);
-  } catch {
-    return null;
-  }
 }
 
 function readCheckRunId(run: CheckRunLike | null): number | null {
@@ -4157,54 +4102,7 @@ function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
 }
 
 export default function requestHandler(app: Probot): void {
-  const getStaticConfig = async (
-    context: BotContext<RequestEvents>,
-    options: StaticConfigLoadOptions = {}
-  ): Promise<NormalizedStaticConfig> => {
-    const forceReload = options.forceReload === true;
-
-    if (!forceReload && context.resourceBotConfig && context.resourceBotHooks !== undefined) {
-      return context.resourceBotConfig;
-    }
-
-    try {
-      const { config, hooks, hooksSource } = await loadStaticConfig(context, {
-        validate: false,
-        updateIssue: false,
-        forceReload,
-      });
-
-      context.resourceBotConfig = config;
-      context.resourceBotHooks = hooks;
-      context.resourceBotHooksSource = hooksSource || null;
-
-      log(
-        context,
-        'info',
-        {
-          forceReload,
-          hooksSource: context.resourceBotHooksSource,
-        },
-        'static-config:context-loaded'
-      );
-
-      return context.resourceBotConfig;
-    } catch (err: unknown) {
-      (app.log || console).warn?.(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          forceReload,
-        },
-        'failed to load resource-bot static config, using defaults'
-      );
-
-      context.resourceBotConfig = DEFAULT_CONFIG;
-      context.resourceBotHooks = null;
-      context.resourceBotHooksSource = null;
-
-      return context.resourceBotConfig;
-    }
-  };
+  const getStaticConfig = createStaticConfigContextLoader<BotContext<RequestEvents>>(app.log || console);
 
   const buildDefaultBranchCheckSuiteReevaluationCallbacks = (): DefaultBranchCheckSuiteReevaluationCallbacks<
     BotContext<RequestEvents>,
