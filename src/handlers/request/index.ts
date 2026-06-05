@@ -312,6 +312,10 @@ import {
   composeDefaultBranchApprovedPrBranchUpdateCallbacks,
   composeDefaultBranchDirectPrReevaluationCallbacks,
 } from './composition/default-branch-push-composition.js';
+import {
+  composeDirectPrApprovalCommentHandlingCallbacks,
+  composeStandaloneDirectPrApprovalCallbacks,
+} from './composition/issue-comment-direct-pr-composition.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
 
@@ -2990,7 +2994,12 @@ function buildStandaloneDirectPrApprovalCallbacks(): StandaloneDirectPrApprovalC
   PullRequestLike,
   ReturnType<typeof buildStandaloneDirectPrReviewHandoverOptions>
 > {
-  return {
+  return composeStandaloneDirectPrApprovalCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    PullRequestLike,
+    ReturnType<typeof buildStandaloneDirectPrReviewHandoverOptions>
+  >({
     evaluateDirectPrOnApproval,
     hasAllowedStandaloneDirectPrApprovalForCurrentHead,
     ensureAutomatedApprovalReviewForCurrentHead,
@@ -3001,7 +3010,7 @@ function buildStandaloneDirectPrApprovalCallbacks(): StandaloneDirectPrApprovalC
     isCrossRepositoryPullRequest,
     buildStandaloneDirectPrReviewHandoverOptions,
     log,
-  };
+  });
 }
 
 function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommentHandlingCallbacks<
@@ -3012,13 +3021,15 @@ function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommen
   IssueLike,
   EffectiveConstants
 > {
-  return {
+  return composeDirectPrApprovalCommentHandlingCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    IssueParams,
+    PullRequestLike,
+    IssueLike,
+    EffectiveConstants
+  >({
     resolveEffectiveConstants,
-    buildIssueParams: (repoInfo: RepoInfo, pr: PullRequestLike) => ({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      issue_number: pr.number,
-    }),
     prAsIssueLike,
     ensureReviewLabelsPresentOnIssue,
     resolveDirectPrRequestTypes,
@@ -3031,7 +3042,7 @@ function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommen
     tryMergeApprovedPrOrUpdateBranch,
     postOnce,
     log,
-  };
+  });
 }
 
 async function handleDirectPrApprovalComment(
