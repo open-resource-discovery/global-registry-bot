@@ -297,6 +297,7 @@ import { createPushEventHandler } from './events/push.js';
 import { composeCheckCompletedHandlerCallbacks } from './composition/checks-composition.js';
 import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-composition.js';
 import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
+import { composeIssueWorkflowGuardCallbacks } from './composition/issue-workflow-guard-composition.js';
 import { composeWorkflowApprovalCallbacks } from './composition/workflow-approval-composition.js';
 import {
   composeRequestIssueAuthorUpdateCallbacks,
@@ -3979,23 +3980,23 @@ function buildIssueWorkflowGuardCallbacks(): IssueWorkflowGuardCallbacks<
   FormData,
   EffectiveConstants
 > {
-  return {
+  return composeIssueWorkflowGuardCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants
+  >({
     tryLoadTemplateForLabels,
     normalizeKey,
     postOnce,
-    updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
-      await context.octokit.issues.update({ ...params, body });
-    },
     fetchIssueLabels,
     toLabelNames,
     removeExactLabelsFromIssue,
-    addLabels: async (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]): Promise<void> => {
-      await context.octokit.issues.addLabels({ ...params, labels });
-    },
     labelsMatching,
     loadTemplateWithLabelRefresh,
     parseForm,
-    createEmptyFormData: (): FormData => ({}),
     readIssueBodyForProcessing,
     isRequestIssue,
     resolveEffectiveConstants,
@@ -4010,7 +4011,7 @@ function buildIssueWorkflowGuardCallbacks(): IssueWorkflowGuardCallbacks<
     removeProgressStatusLabels,
     log,
     getErrorMessage,
-  };
+  });
 }
 
 async function handleClosedIssueWorkflowGuard(
