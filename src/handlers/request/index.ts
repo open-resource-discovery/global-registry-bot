@@ -292,6 +292,7 @@ import { registerRequestEvents } from './events/index.js';
 import { createPullRequestEventHandler } from './events/pull-requests.js';
 import { createCheckEventHandler } from './events/checks.js';
 import { createStatusEventHandler } from './events/status.js';
+import { createPushEventHandler } from './events/push.js';
 import { composeCheckCompletedHandlerCallbacks } from './composition/checks-composition.js';
 import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-composition.js';
 import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
@@ -4470,63 +4471,31 @@ export default function requestHandler(app: Probot): void {
       toStringTrim,
     });
 
-  const handlePush = async (context: BotContext<'push'>): Promise<void> => {
-    const payload = context.payload as unknown;
-    const repoInfo = readRepoInfoFromPayload(payload);
-    const ref = isPlainObject(payload) ? toStringTrim(payload['ref']) : '';
-    const baseBranch = readDefaultBranchFromPush(payload);
-    const changedFiles = readPushChangedFiles(payload);
-    const approvalConfigChangedFiles = changedFiles.filter(isApprovalConfigChangePath);
-    const defaultBranchPush = isDefaultBranchPush(payload);
-
-    log(
-      context,
-      'info',
-      {
-        event: toStringTrim((context as unknown as { name?: string }).name),
-        ref,
-        defaultBranch: baseBranch,
-        isDefaultBranchPush: defaultBranchPush,
-        owner: repoInfo?.owner,
-        repo: repoInfo?.repo,
-        changedFilesCount: changedFiles.length,
-        approvalConfigChangedFiles,
-      },
-      'default-branch-push:received'
-    );
-
-    if (!defaultBranchPush) return;
-
-    if (!repoInfo) {
-      log(
-        context,
-        'warn',
-        {
-          ref,
-          defaultBranch: baseBranch,
-        },
-        'default-branch-push:missing-repo-info'
-      );
-      return;
-    }
-
-    await getStaticConfig(context, { forceReload: true });
-
-    const directPrReevaluationReason = approvalConfigChangedFiles.length
-      ? 'default-branch-push:approval-config-change'
-      : 'default-branch-push:direct-pr-reevaluation';
-
-    const directResult = await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-      context,
-      repoInfo,
-      baseBranch,
-      directPrReevaluationReason
-    );
-
-    if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
-      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
-    }
-  };
+  const handlePush = createPushEventHandler<BotContext<'push'>, RepoInfo, SequentialRegistryPrResult>({
+    readRepoInfoFromPayload,
+    isPlainObject,
+    toStringTrim,
+    readDefaultBranchFromPush,
+    readPushChangedFiles,
+    isApprovalConfigChangePath,
+    isDefaultBranchPush,
+    getStaticConfig: async (context: BotContext<'push'>, options: { forceReload?: boolean }): Promise<unknown> =>
+      await getStaticConfig(context, options),
+    reevaluateOpenDirectPullRequestsAfterDefaultBranchPush: async (
+      context: BotContext<'push'>,
+      repoInfo: RepoInfo,
+      baseBranch: string,
+      reason: string
+    ): Promise<SequentialRegistryPrResult> =>
+      await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(context, repoInfo, baseBranch, reason),
+    updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry: async (
+      context: BotContext<'push'>,
+      repoInfo: RepoInfo,
+      baseBranch: string
+    ): Promise<boolean> =>
+      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch),
+    log,
+  });
 
   const handlePullRequest = createPullRequestEventHandler<
     BotContext<
