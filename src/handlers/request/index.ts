@@ -298,6 +298,11 @@ import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-compo
 import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
 import { composeWorkflowApprovalCallbacks } from './composition/workflow-approval-composition.js';
 import {
+  composeRequestIssueAuthorUpdateCallbacks,
+  composeRequestIssueLifecycleCallbacks,
+  composeRequestPrCreationRecoveryCallbacks,
+} from './composition/issue-lifecycle-composition.js';
+import {
   composeDefaultBranchApprovedPrBranchUpdateCallbacks,
   composeDefaultBranchDirectPrReevaluationCallbacks,
 } from './composition/default-branch-push-composition.js';
@@ -3275,7 +3280,13 @@ function buildRequestPrCreationRecoveryCallbacks(): RequestPrCreationRecoveryCal
   TemplateLike,
   FormData
 > {
-  return {
+  return composeRequestPrCreationRecoveryCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    IssueLike,
+    TemplateLike,
+    FormData
+  >({
     createRequestPr: async (
       context: BotContext<RequestEvents>,
       repoInfo: RepoInfo,
@@ -3285,7 +3296,7 @@ function buildRequestPrCreationRecoveryCallbacks(): RequestPrCreationRecoveryCal
     ): Promise<{ number: number }> => await createRequestPr(context, repoInfo, issue, parsedFormData, options),
     getHttpStatus,
     renderConfiguredRequestBranchName,
-  };
+  });
 }
 
 function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {
@@ -3305,7 +3316,14 @@ function buildRequestIssueLifecycleCallbacks(
   FormData,
   ValidateRequestIssueResult
 > {
-  return {
+  return composeRequestIssueLifecycleCallbacks<
+    BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    ValidateRequestIssueResult
+  >({
     isJestWorker: Boolean(process.env.JEST_WORKER_ID),
     isDebugEnabled: DBG,
     hasIssueFormInputs,
@@ -3325,20 +3343,8 @@ function buildRequestIssueLifecycleCallbacks(
     calcSnapshotHash,
     normalizeIssueTitle,
     closeOutdatedRequestPrs,
-    onCloseOutdatedRequestPrsSkipped: (error: unknown): void => {
-      (app.log || console).warn?.(
-        { err: error instanceof Error ? error.message : String(error) },
-        'closeOutdatedRequestPRs skipped'
-      );
-    },
     validateRequestIssue,
     checkParentChainExistsInFlatStructure,
-    onParentChainCheckFailed: (error: unknown): void => {
-      (app.log || console).warn?.(
-        { err: error instanceof Error ? error.message : String(error) },
-        'parent chain check failed'
-      );
-    },
     resolveEffectiveRequestType,
     maybeRequireParentOwnerApproval,
     maybeRequireSystemContactOwnerApproval,
@@ -3380,7 +3386,8 @@ function buildRequestIssueLifecycleCallbacks(
       ),
     buildReviewHandoverOptions: (): Record<string, unknown> =>
       buildReviewHandoverOptions() as unknown as Record<string, unknown>,
-  };
+    appLog: app.log || console,
+  });
 }
 
 function buildRequestIssueAuthorUpdateCallbacks(
@@ -3393,7 +3400,14 @@ function buildRequestIssueAuthorUpdateCallbacks(
   FormData,
   ValidateRequestIssueResult
 > {
-  return {
+  return composeRequestIssueAuthorUpdateCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    ValidateRequestIssueResult
+  >({
     validateRequestIssue,
     parseForm,
     calcSnapshotHash,
@@ -3444,22 +3458,8 @@ function buildRequestIssueAuthorUpdateCallbacks(
       ),
     buildReviewHandoverOptions: (): Record<string, unknown> =>
       buildReviewHandoverOptions() as unknown as Record<string, unknown>,
-    onParentChainCheckFailed: (error: unknown): void => {
-      (app.log || console).warn?.(
-        { err: error instanceof Error ? error.message : String(error) },
-        'parent chain check failed'
-      );
-    },
-    onCloseOutdatedRequestPrsSkipped: (error: unknown): void => {
-      (app.log || console).warn?.(
-        { err: error instanceof Error ? error.message : String(error) },
-        'closeOutdatedRequestPRs skipped'
-      );
-    },
-    onRevalidationFailed: (error: unknown): void => {
-      (app.log || console).warn?.(`Revalidation failed: ${error instanceof Error ? error.message : String(error)}`);
-    },
-  };
+    appLog: app.log || console,
+  });
 }
 
 async function processIssueEvent(
