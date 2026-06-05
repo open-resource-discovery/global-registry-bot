@@ -98,6 +98,97 @@ export function createIssueLifecycleEventHandler<
   };
 }
 
+export type IssueClosedEventDependencies<
+  ContextType extends { payload: unknown; issue: () => IssueParamsType },
+  IssueParamsType extends IssueParamsBase,
+  IssueType extends IssueLikeBase,
+> = {
+  getStaticConfig: (context: ContextType) => Promise<unknown>;
+  hasIssueFormInputs: (issue: IssueType) => boolean;
+  isJestWorker: () => boolean;
+  handleClosedIssueWorkflowGuard: (context: ContextType, params: IssueParamsType, issue: IssueType) => Promise<void>;
+};
+
+export function createIssueClosedEventHandler<
+  ContextType extends { payload: unknown; issue: () => IssueParamsType },
+  IssueParamsType extends IssueParamsBase,
+  IssueType extends IssueLikeBase,
+>(
+  dependencies: IssueClosedEventDependencies<ContextType, IssueParamsType, IssueType>
+): RequestEventHandler<ContextType> {
+  return async function handleIssueClosed(context: ContextType): Promise<void> {
+    await dependencies.getStaticConfig(context);
+
+    const payload = context.payload as { issue?: unknown };
+    const issue = payload.issue as IssueType;
+
+    if (!dependencies.isJestWorker()) {
+      if (!dependencies.hasIssueFormInputs(issue)) return;
+    }
+
+    await dependencies.handleClosedIssueWorkflowGuard(context, context.issue(), issue);
+  };
+}
+
+export type IssueLabelChangeEventDependencies<
+  ContextType extends { payload: unknown; issue: () => IssueParamsType },
+  IssueParamsType extends IssueParamsBase,
+  IssueType extends IssueLikeBase,
+  SenderType extends { login?: string | null },
+> = {
+  getStaticConfig: (context: ContextType) => Promise<unknown>;
+  isBotSender: (sender: SenderType | null | undefined) => boolean;
+  hasIssueFormInputs: (issue: IssueType) => boolean;
+  isJestWorker: () => boolean;
+  toStringTrim: (value: unknown) => string;
+  readPayloadLabelName: (payload: unknown) => string;
+  handleIssueLabelChangeWorkflowGuard: (
+    context: ContextType,
+    params: IssueParamsType,
+    issue: IssueType,
+    action: string,
+    changedLabel: string,
+    senderLogin: string | undefined | null
+  ) => Promise<void>;
+};
+
+export function createIssueLabelChangeEventHandler<
+  ContextType extends { payload: unknown; issue: () => IssueParamsType },
+  IssueParamsType extends IssueParamsBase,
+  IssueType extends IssueLikeBase,
+  SenderType extends { login?: string | null },
+>(
+  dependencies: IssueLabelChangeEventDependencies<ContextType, IssueParamsType, IssueType, SenderType>
+): RequestEventHandler<ContextType> {
+  return async function handleIssueLabelChange(context: ContextType): Promise<void> {
+    await dependencies.getStaticConfig(context);
+
+    const payload = context.payload as Record<string, unknown>;
+    const sender = payload['sender'] as SenderType | undefined;
+
+    if (dependencies.isBotSender(sender)) return;
+
+    const issue = payload['issue'] as IssueType;
+
+    if (!dependencies.isJestWorker()) {
+      if (!dependencies.hasIssueFormInputs(issue)) return;
+    }
+
+    const action = dependencies.toStringTrim(payload['action']).toLowerCase();
+    const changedLabel = dependencies.readPayloadLabelName(context.payload);
+    if (!changedLabel) return;
+
+    await dependencies.handleIssueLabelChangeWorkflowGuard(
+      context,
+      context.issue(),
+      issue,
+      action,
+      changedLabel,
+      sender?.login
+    );
+  };
+}
+
 export type IssueEventHandlers<IssueLifecycleContext, IssueClosedContext, IssueLabelContext> = {
   handleIssueLifecycle: RequestEventHandler<IssueLifecycleContext>;
   handleIssueClosed: RequestEventHandler<IssueClosedContext>;

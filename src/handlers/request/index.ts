@@ -289,7 +289,11 @@ import { log as infraLog } from './infrastructure/logger.js';
 import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
 import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
 import { registerRequestEvents } from './events/index.js';
-import { createIssueLifecycleEventHandler } from './events/issues.js';
+import {
+  createIssueClosedEventHandler,
+  createIssueLabelChangeEventHandler,
+  createIssueLifecycleEventHandler,
+} from './events/issues.js';
 import { createPullRequestEventHandler } from './events/pull-requests.js';
 import { createCheckEventHandler } from './events/checks.js';
 import { createStatusEventHandler } from './events/status.js';
@@ -4231,40 +4235,40 @@ export default function requestHandler(app: Probot): void {
     isDebugEnabled: DBG,
   });
 
-  const handleIssueClosed = async (context: BotContext<'issues.closed'>): Promise<void> => {
-    await getStaticConfig(context);
+  const handleIssueClosed = createIssueClosedEventHandler<BotContext<'issues.closed'>, IssueParams, IssueLike>({
+    getStaticConfig: async (context: BotContext<'issues.closed'>): Promise<unknown> => await getStaticConfig(context),
+    hasIssueFormInputs,
+    isJestWorker: (): boolean => Boolean(process.env.JEST_WORKER_ID),
+    handleClosedIssueWorkflowGuard: async (
+      context: BotContext<'issues.closed'>,
+      params: IssueParams,
+      issue: IssueLike
+    ): Promise<void> => await handleClosedIssueWorkflowGuard(context, params, issue),
+  });
 
-    const issue = context.payload.issue as unknown as IssueLike;
-
-    if (!process.env.JEST_WORKER_ID) {
-      if (!hasIssueFormInputs(issue)) return;
-    }
-
-    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-    const params: IssueParams = { owner, repo, issue_number: issueNumber };
-    await handleClosedIssueWorkflowGuard(context, params, issue);
-  };
-
-  const handleIssueLabelChange = async (context: BotContext<'issues.labeled' | 'issues.unlabeled'>): Promise<void> => {
-    await getStaticConfig(context);
-
-    const sender = context.payload.sender as unknown as SenderLike;
-    if (isBotSender(sender)) return; // prevent loops
-
-    const issue = context.payload.issue as unknown as IssueLike;
-
-    if (!process.env.JEST_WORKER_ID) {
-      if (!hasIssueFormInputs(issue)) return;
-    }
-    const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
-
-    const changedLabel = readPayloadLabelName(context.payload as unknown);
-    if (!changedLabel) return;
-
-    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-    const params: IssueParams = { owner, repo, issue_number: issueNumber };
-    await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, sender?.login);
-  };
+  const handleIssueLabelChange = createIssueLabelChangeEventHandler<
+    BotContext<'issues.labeled' | 'issues.unlabeled'>,
+    IssueParams,
+    IssueLike,
+    SenderLike
+  >({
+    getStaticConfig: async (context: BotContext<'issues.labeled' | 'issues.unlabeled'>): Promise<unknown> =>
+      await getStaticConfig(context),
+    isBotSender,
+    hasIssueFormInputs,
+    isJestWorker: (): boolean => Boolean(process.env.JEST_WORKER_ID),
+    toStringTrim,
+    readPayloadLabelName,
+    handleIssueLabelChangeWorkflowGuard: async (
+      context: BotContext<'issues.labeled' | 'issues.unlabeled'>,
+      params: IssueParams,
+      issue: IssueLike,
+      action: string,
+      changedLabel: string,
+      senderLogin: string | undefined | null
+    ): Promise<void> =>
+      await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, senderLogin),
+  });
 
   const handleIssueComment = async (
     context: BotContext<'issue_comment.created' | 'issue_comment.edited'>
