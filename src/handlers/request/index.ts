@@ -296,6 +296,10 @@ import { composeCheckCompletedHandlerCallbacks } from './composition/checks-comp
 import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-composition.js';
 import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
 import { composeWorkflowApprovalCallbacks } from './composition/workflow-approval-composition.js';
+import {
+  composeDefaultBranchApprovedPrBranchUpdateCallbacks,
+  composeDefaultBranchDirectPrReevaluationCallbacks,
+} from './composition/default-branch-push-composition.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
 
@@ -2669,7 +2673,7 @@ function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchAppro
   RepoInfo,
   PullRequestLike
 > {
-  return {
+  return composeDefaultBranchApprovedPrBranchUpdateCallbacks<BotContext<RequestEvents>, RepoInfo, PullRequestLike>({
     isSequentialRegistryPrActiveBlocking,
     listOpenPullRequests,
     isSequentialRegistryPrHeadSkipped,
@@ -2685,7 +2689,7 @@ function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchAppro
     markSequentialRegistryPrHeadSkipped,
     getErrorMessage,
     log,
-  };
+  });
 }
 
 function buildDefaultBranchDirectPrReevaluationCallbacks(): DefaultBranchDirectPrReevaluationCallbacks<
@@ -2693,10 +2697,14 @@ function buildDefaultBranchDirectPrReevaluationCallbacks(): DefaultBranchDirectP
   RepoInfo,
   SequentialRegistryPrResult
 > {
-  return {
+  return composeDefaultBranchDirectPrReevaluationCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    SequentialRegistryPrResult
+  >({
     runOneSequentialDirectRegistryPrMaintenance,
     log,
-  };
+  });
 }
 
 function buildDirectPrChangedResourceApprovalCallbacks(): DirectPrChangedResourceApprovalCallbacks<
