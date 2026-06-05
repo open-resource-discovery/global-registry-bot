@@ -289,6 +289,7 @@ import { log as infraLog } from './infrastructure/logger.js';
 import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
 import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
 import { registerRequestEvents } from './events/index.js';
+import { createIssueLifecycleEventHandler } from './events/issues.js';
 import { createPullRequestEventHandler } from './events/pull-requests.js';
 import { createCheckEventHandler } from './events/checks.js';
 import { createStatusEventHandler } from './events/status.js';
@@ -4206,54 +4207,28 @@ export default function requestHandler(app: Probot): void {
   };
 
   // moved to outer scope
-  const handleIssueLifecycle = async (
-    context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
-  ): Promise<void> => {
-    await getStaticConfig(context);
-
-    if (shouldSkipIssueEditedEvent(context)) return;
-
-    const sender = context.payload.sender as unknown as SenderLike;
-    const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
-    if (action === 'edited' && isBotSender(sender)) return; // prevent loops
-
-    const issue = context.payload.issue as unknown as IssueLike;
-
-    if (DBG) {
-      const safeLabels = toLabelNames(issue?.labels);
-      const payload = context.payload as unknown;
-
-      let changesKeys: string[] = [];
-      if (isPlainObject(payload) && 'changes' in payload) {
-        const c = payload['changes'];
-        if (isPlainObject(c)) changesKeys = Object.keys(c);
-      }
-
-      log(
-        context,
-        'debug',
-        {
-          action: (context.payload as unknown as Record<string, unknown>)?.action,
-          issueNumber: issue?.number,
-          issueId: issue?.id,
-          title: issue?.title,
-          state: issue?.state,
-          user: issue?.user?.login,
-          created_at: issue?.created_at,
-          updated_at: issue?.updated_at,
-          labels: safeLabels,
-          bodyLen: String(issue?.body || '').length,
-          bodyHead: String(issue?.body || '').slice(0, 300),
-          changesKeys,
-        },
-        'dbg:issues:payload.issue'
-      );
-    }
-
-    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-    const params: IssueParams = { owner, repo, issue_number: issueNumber };
-    await processIssueEvent(app, context, params, issue);
-  };
+  const handleIssueLifecycle = createIssueLifecycleEventHandler<
+    BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
+    IssueParams,
+    IssueLike,
+    SenderLike
+  >({
+    getStaticConfig: async (
+      context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
+    ): Promise<unknown> => await getStaticConfig(context),
+    shouldSkipIssueEditedEvent,
+    isPlainObject,
+    toStringTrim,
+    isBotSender,
+    toLabelNames,
+    processIssueEvent: async (
+      context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
+      params: IssueParams,
+      issue: IssueLike
+    ): Promise<void> => await processIssueEvent(app, context, params, issue),
+    log,
+    isDebugEnabled: DBG,
+  });
 
   const handleIssueClosed = async (context: BotContext<'issues.closed'>): Promise<void> => {
     await getStaticConfig(context);
