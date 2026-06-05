@@ -316,6 +316,12 @@ import {
   composeDirectPrApprovalCommentHandlingCallbacks,
   composeStandaloneDirectPrApprovalCallbacks,
 } from './composition/issue-comment-direct-pr-composition.js';
+import {
+  composeApprovalCommentHandlingCallbacks,
+  composeApprovedRequestFinalizationCallbacks,
+  composeIssueStateReviewerOperationsCallbacks,
+  composeOwnerApprovalCommentHandlingCallbacks,
+} from './composition/issue-comment-approval-composition.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
 
@@ -3084,7 +3090,15 @@ function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizatio
   EffectiveConstants,
   PullRequestLike
 > {
-  return {
+  return composeApprovedRequestFinalizationCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants,
+    PullRequestLike
+  >({
     resolveEffectiveConstants,
     extractResourceNameFromForm,
     resolveEffectiveRequestType,
@@ -3095,7 +3109,7 @@ function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizatio
     ensureAssigneesPresent,
     createRequestPrWithRecovery,
     postOnce,
-  };
+  });
 }
 
 async function finalizeApprovedRequest(
@@ -3534,7 +3548,14 @@ function buildIssueStateReviewerOperationsCallbacks(): IssueStateReviewerOperati
   FormData,
   EffectiveConstants
 > {
-  return {
+  return composeIssueStateReviewerOperationsCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants
+  >({
     toLabelNames,
     normalizeKey,
     resolveWorkflowLabel,
@@ -3546,7 +3567,7 @@ function buildIssueStateReviewerOperationsCallbacks(): IssueStateReviewerOperati
     getHttpStatus,
     getErrorMessage,
     log,
-  };
+  });
 }
 
 function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbacks<
@@ -3558,7 +3579,15 @@ function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbac
   EffectiveConstants,
   ValidateRequestIssueResult
 > {
-  return {
+  return composeApprovalCommentHandlingCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants,
+    ValidateRequestIssueResult
+  >({
     resolveEffectiveConstants,
     resolveEffectiveRequestType,
     resolveApproversForRequestType,
@@ -3572,7 +3601,7 @@ function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbac
     checkParentChainExistsInFlatStructure,
     log,
     finalizeApprovedRequest,
-  };
+  });
 }
 
 function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandlingCallbacks<
@@ -3585,7 +3614,16 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
   ContactApprovalMeta,
   ParentApprovalMeta
 > {
-  return {
+  return composeOwnerApprovalCommentHandlingCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    ValidateRequestIssueResult,
+    ContactApprovalMeta,
+    ParentApprovalMeta
+  >({
     readContactApprovalMeta,
     readParentApprovalMeta,
     normalizeLogin,
@@ -3599,21 +3637,6 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
     resolveEffectiveRequestType,
     ensureContactApprovalMarker,
     ensureParentApprovalMarker,
-    buildApprovedContactApprovalMeta: ({ target, owners, approvedBy, approvedAt }): ContactApprovalMeta => ({
-      v: 1,
-      target: toStringTrim(target),
-      owners: uniqLogins(owners || []),
-      approvedBy: normalizeLogin(approvedBy),
-      approvedAt: toStringTrim(approvedAt),
-    }),
-    buildApprovedParentApprovalMeta: ({ parent, target, owners, approvedBy, approvedAt }): ParentApprovalMeta => ({
-      v: 1,
-      parent: toStringTrim(parent),
-      target: toStringTrim(target),
-      owners: uniqLogins(owners || []),
-      approvedBy: normalizeLogin(approvedBy),
-      approvedAt: toStringTrim(approvedAt),
-    }),
     maybeHandleApprovalDecision: async (
       context,
       params,
@@ -3654,7 +3677,8 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
     clearParentOwnerActionState,
     isSubContextRequestType,
     finalizeApprovedRequest,
-  };
+    toStringTrim,
+  });
 }
 
 async function handleApprovalComment(
