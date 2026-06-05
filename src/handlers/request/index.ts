@@ -289,6 +289,7 @@ import { log as infraLog } from './infrastructure/logger.js';
 import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
 import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
 import { registerRequestEvents } from './events/index.js';
+import { createIssueCommentEventHandler } from './events/issue-comments.js';
 import {
   createIssueClosedEventHandler,
   createIssueLabelChangeEventHandler,
@@ -4305,110 +4306,88 @@ export default function requestHandler(app: Probot): void {
       await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, senderLogin),
   });
 
-  const handleIssueComment = async (
-    context: BotContext<'issue_comment.created' | 'issue_comment.edited'>
-  ): Promise<void> => {
-    await getStaticConfig(context);
-
-    const issue = context.payload.issue as unknown as IssueLike;
-    const comment = context.payload.comment as unknown as CommentLike;
-    const sender = context.payload.sender as unknown as SenderLike;
-
-    const commenter = String(comment?.user?.login || '');
-
-    if (DBG) {
-      log(
-        context,
-        'debug',
-        {
-          event: context.name,
-          action: (context.payload as unknown as Record<string, unknown>)?.action,
-          issue: issue?.number,
-          commenter,
-        },
-        'requestHandler:issue-comment-event'
-      );
-    }
-
-    if (isBotSender(sender)) return;
-
-    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-    const params: IssueParams = { owner, repo, issue_number: issueNumber };
-    const repoInfo: RepoInfo = { owner, repo };
-
-    const stripped = stripQuoteAndCode(comment.body || '');
-    const isApproval = isApprovalCommentForContext(context, stripped);
-
-    if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
-      const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
-
-      if (isPullRequestConversation && isApproval) {
-        const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
-        if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
-          await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
-        }
-      }
-
-      return;
-    }
-
-    let template: TemplateLike;
-    try {
-      template = await loadTemplateWithLabelRefresh(context, params, issue);
-    } catch (e: unknown) {
-      log(
-        context,
-        'error',
-        { err: e instanceof Error ? e.message : String(e), owner, repo, issue: issue?.number },
-        'Error loading template in issue_comment handler'
-      );
-      return;
-    }
-
-    const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-    if (!isRequestIssue(context, template, parsedFormData)) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { issue: issue.number, parsedKeys: Object.keys(parsedFormData || {}) },
-          'requestHandler:issue-comment-event skipped (not a request issue)'
-        );
-      }
-      return;
-    }
-
-    if (isApproval) {
-      const handled = await handleParentOwnerApprovalIfNeeded(
-        context,
-        params,
-        issue,
-        template,
-        parsedFormData,
-        commenter
-      );
-      if (handled) return;
-
-      const contactHandled = await handleSystemContactOwnerApprovalIfNeeded(
-        context,
-        params,
-        issue,
-        template,
-        parsedFormData,
-        commenter
-      );
-      if (contactHandled) return;
-
-      await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
-      return;
-    }
-
-    if (comment.user.login === issue.user?.login) {
-      const saysUpdated = isAuthorUpdateComment(comment.body);
-      if (!saysUpdated) return;
-      await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData);
-    }
-  };
+  const handleIssueComment = createIssueCommentEventHandler<
+    BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+    IssueParams,
+    IssueLike,
+    CommentLike,
+    SenderLike,
+    PullRequestLike,
+    TemplateLike,
+    FormData
+  >({
+    getStaticConfig: async (context: BotContext<'issue_comment.created' | 'issue_comment.edited'>): Promise<unknown> =>
+      await getStaticConfig(context),
+    isPlainObject,
+    isBotSender,
+    hasIssueFormInputs,
+    isJestWorker: (): boolean => Boolean(process.env.JEST_WORKER_ID),
+    stripQuoteAndCode,
+    isApprovalCommentForContext: (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      strippedText: string
+    ): boolean => isApprovalCommentForContext(context, strippedText),
+    isAuthorUpdateComment,
+    readFreshPullRequest: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      repoInfo: RepoInfo,
+      prNumber: number
+    ): Promise<PullRequestLike | null> => await readFreshPullRequest(context, repoInfo, prNumber),
+    parseLinkedIssueNumberFromPr,
+    handleDirectPrApprovalComment: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      repoInfo: RepoInfo,
+      pr: PullRequestLike,
+      commenter: string
+    ): Promise<void> => await handleDirectPrApprovalComment(context, repoInfo, pr, commenter),
+    loadTemplateWithLabelRefresh: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike
+    ): Promise<TemplateLike> => await loadTemplateWithLabelRefresh(context, params, issue),
+    readIssueBodyForProcessing,
+    parseForm,
+    isRequestIssue: (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      template: TemplateLike,
+      parsedFormData: FormData
+    ): boolean => isRequestIssue(context, template, parsedFormData),
+    handleParentOwnerApprovalIfNeeded: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData,
+      commenter: string
+    ): Promise<boolean> =>
+      await handleParentOwnerApprovalIfNeeded(context, params, issue, template, parsedFormData, commenter),
+    handleSystemContactOwnerApprovalIfNeeded: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData,
+      commenter: string
+    ): Promise<boolean> =>
+      await handleSystemContactOwnerApprovalIfNeeded(context, params, issue, template, parsedFormData, commenter),
+    handleApprovalComment: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData,
+      commenter: string
+    ): Promise<void> => await handleApprovalComment(context, params, issue, template, parsedFormData, commenter),
+    handleAuthorUpdateComment: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData
+    ): Promise<void> => await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData),
+    log,
+    isDebugEnabled: DBG,
+  });
 
   const runAutoMergeEvaluation = (
     context: BotContext<RequestEvents>,
