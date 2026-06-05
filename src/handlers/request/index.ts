@@ -295,6 +295,7 @@ import { createStatusEventHandler } from './events/status.js';
 import { composeCheckCompletedHandlerCallbacks } from './composition/checks-composition.js';
 import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-composition.js';
 import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
+import { composeWorkflowApprovalCallbacks } from './composition/workflow-approval-composition.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
 
@@ -2279,7 +2280,7 @@ function buildWorkflowApprovalCallbacks(): WorkflowApprovalCallbacks<
   PullRequestLike,
   PullRequestFileLike
 > {
-  return {
+  return composeWorkflowApprovalCallbacks<BotContext<RequestEvents>, RepoInfo, PullRequestLike, PullRequestFileLike>({
     isPullRequestOpen,
     isSafeRegistryWorkflowApprovalFile,
     listChangedFilesForPr,
@@ -2293,7 +2294,7 @@ function buildWorkflowApprovalCallbacks(): WorkflowApprovalCallbacks<
     getErrorMessage,
     getHttpStatus,
     toStringTrim,
-  };
+  });
 }
 
 async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
