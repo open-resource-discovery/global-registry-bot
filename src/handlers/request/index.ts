@@ -288,6 +288,13 @@ import { getDocLinksFromConfig } from './constants.js';
 import { log as infraLog } from './infrastructure/logger.js';
 import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
 import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
+import { registerRequestEvents } from './events/index.js';
+import { createPullRequestEventHandler } from './events/pull-requests.js';
+import { createCheckEventHandler } from './events/checks.js';
+import { createStatusEventHandler } from './events/status.js';
+import { composeCheckCompletedHandlerCallbacks } from './composition/checks-composition.js';
+import { composeAutoMergeTriggerCallbacks } from './composition/auto-merge-composition.js';
+import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './composition/default-branch-check-suite-composition.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
 
@@ -4108,73 +4115,21 @@ export default function requestHandler(app: Probot): void {
     BotContext<RequestEvents>,
     RepoInfo,
     SequentialRegistryPrResult
-  > => ({
-    readDefaultBranchFromPayload,
-    getBranch: async (
-      context: BotContext<RequestEvents>,
-      args: { owner: string; repo: string; branch: string }
-    ): Promise<{ data?: { commit?: { sha?: string | null } } }> => await context.octokit.repos.getBranch(args),
-    logBranchHeadReadFailed: (
-      context: BotContext<RequestEvents>,
-      args: {
-        repoInfo: RepoInfo;
-        defaultBranch: string;
-        headSha: string;
-        errorMessage: string;
-        status: number | undefined;
-      }
-    ): void => {
-      log(
-        context,
-        'warn',
-        {
-          owner: args.repoInfo.owner,
-          repo: args.repoInfo.repo,
-          defaultBranch: args.defaultBranch,
-          headSha: args.headSha,
-          err: args.errorMessage,
-          status: args.status,
-        },
-        'default-branch-check-suite:branch-head-read-failed'
-      );
-    },
-    logEvaluated: (
-      context: BotContext<RequestEvents>,
-      args: {
-        repoInfo: RepoInfo;
-        defaultBranch: string;
-        headBranch: string;
-        headSha: string;
-        defaultBranchHeadSha: string;
-        conclusion: string;
-        status: string;
-        isDefaultBranchSuite: boolean;
-      }
-    ): void => {
-      log(
-        context,
-        'info',
-        {
-          owner: args.repoInfo.owner,
-          repo: args.repoInfo.repo,
-          defaultBranch: args.defaultBranch,
-          headBranch: args.headBranch,
-          headSha: args.headSha,
-          defaultBranchHeadSha: args.defaultBranchHeadSha,
-          conclusion: args.conclusion,
-          status: args.status,
-          isDefaultBranchSuite: args.isDefaultBranchSuite,
-        },
-        'default-branch-check-suite:evaluated'
-      );
-    },
-    getErrorMessage,
-    getHttpStatus,
-    getStaticConfig: async (context: BotContext<RequestEvents>, options: { forceReload: true }): Promise<unknown> =>
-      await getStaticConfig(context, options),
-    reevaluateOpenDirectPullRequestsAfterDefaultBranchPush,
-    updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry,
-  });
+  > =>
+    composeDefaultBranchCheckSuiteReevaluationCallbacks<
+      BotContext<RequestEvents>,
+      RepoInfo,
+      SequentialRegistryPrResult
+    >({
+      readDefaultBranchFromPayload,
+      getErrorMessage,
+      getHttpStatus,
+      getStaticConfig: async (context: BotContext<RequestEvents>, options: { forceReload: true }): Promise<unknown> =>
+        await getStaticConfig(context, options),
+      reevaluateOpenDirectPullRequestsAfterDefaultBranchPush,
+      updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry,
+      log,
+    });
 
   const buildAutoMergeTriggerCallbacks = (): AutoMergeTriggerCallbacks<
     BotContext<RequestEvents>,
@@ -4182,21 +4137,28 @@ export default function requestHandler(app: Probot): void {
     PullRequestLike,
     SequentialRegistryPrActiveState | null,
     HeadGreenEvaluation
-  > => ({
-    getStaticConfig,
-    evaluateHeadGreenForApprovalReevaluation,
-    listOpenPullRequests,
-    processPullRequestForAutoMerge,
-    releaseSequentialRegistryPrIfNotApprovedAfterGreen,
-    advanceSequentialRegistryPrQueueAfterTerminalState,
-    readFreshPullRequest,
-    isSequentialDirectRegistryPr,
-    getSequentialRegistryPrActive,
-    clearSequentialRegistryPrActive,
-    markSequentialRegistryPrHeadSkipped,
-    runOneSequentialDirectRegistryPrMaintenance,
-    log,
-  });
+  > =>
+    composeAutoMergeTriggerCallbacks<
+      BotContext<RequestEvents>,
+      RepoInfo,
+      PullRequestLike,
+      SequentialRegistryPrActiveState | null,
+      HeadGreenEvaluation
+    >({
+      getStaticConfig,
+      evaluateHeadGreenForApprovalReevaluation,
+      listOpenPullRequests,
+      processPullRequestForAutoMerge,
+      releaseSequentialRegistryPrIfNotApprovedAfterGreen,
+      advanceSequentialRegistryPrQueueAfterTerminalState,
+      readFreshPullRequest,
+      isSequentialDirectRegistryPr,
+      getSequentialRegistryPrActive,
+      clearSequentialRegistryPrActive,
+      markSequentialRegistryPrHeadSkipped,
+      runOneSequentialDirectRegistryPrMaintenance,
+      log,
+    });
 
   const shouldSkipIssueEditedEvent = (
     context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
@@ -4234,57 +4196,56 @@ export default function requestHandler(app: Probot): void {
   };
 
   // moved to outer scope
-  app.on(
-    ['issues.opened', 'issues.edited', 'issues.reopened'],
-    async (context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>): Promise<void> => {
-      await getStaticConfig(context);
+  const handleIssueLifecycle = async (
+    context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
+  ): Promise<void> => {
+    await getStaticConfig(context);
 
-      if (shouldSkipIssueEditedEvent(context)) return;
+    if (shouldSkipIssueEditedEvent(context)) return;
 
-      const sender = context.payload.sender as unknown as SenderLike;
-      const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
-      if (action === 'edited' && isBotSender(sender)) return; // prevent loops
+    const sender = context.payload.sender as unknown as SenderLike;
+    const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
+    if (action === 'edited' && isBotSender(sender)) return; // prevent loops
 
-      const issue = context.payload.issue as unknown as IssueLike;
+    const issue = context.payload.issue as unknown as IssueLike;
 
-      if (DBG) {
-        const safeLabels = toLabelNames(issue?.labels);
-        const payload = context.payload as unknown;
+    if (DBG) {
+      const safeLabels = toLabelNames(issue?.labels);
+      const payload = context.payload as unknown;
 
-        let changesKeys: string[] = [];
-        if (isPlainObject(payload) && 'changes' in payload) {
-          const c = payload['changes'];
-          if (isPlainObject(c)) changesKeys = Object.keys(c);
-        }
-
-        log(
-          context,
-          'debug',
-          {
-            action: (context.payload as unknown as Record<string, unknown>)?.action,
-            issueNumber: issue?.number,
-            issueId: issue?.id,
-            title: issue?.title,
-            state: issue?.state,
-            user: issue?.user?.login,
-            created_at: issue?.created_at,
-            updated_at: issue?.updated_at,
-            labels: safeLabels,
-            bodyLen: String(issue?.body || '').length,
-            bodyHead: String(issue?.body || '').slice(0, 300),
-            changesKeys,
-          },
-          'dbg:issues:payload.issue'
-        );
+      let changesKeys: string[] = [];
+      if (isPlainObject(payload) && 'changes' in payload) {
+        const c = payload['changes'];
+        if (isPlainObject(c)) changesKeys = Object.keys(c);
       }
 
-      const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-      await processIssueEvent(app, context, params, issue);
+      log(
+        context,
+        'debug',
+        {
+          action: (context.payload as unknown as Record<string, unknown>)?.action,
+          issueNumber: issue?.number,
+          issueId: issue?.id,
+          title: issue?.title,
+          state: issue?.state,
+          user: issue?.user?.login,
+          created_at: issue?.created_at,
+          updated_at: issue?.updated_at,
+          labels: safeLabels,
+          bodyLen: String(issue?.body || '').length,
+          bodyHead: String(issue?.body || '').slice(0, 300),
+          changesKeys,
+        },
+        'dbg:issues:payload.issue'
+      );
     }
-  );
 
-  app.on('issues.closed', async (context: BotContext<'issues.closed'>): Promise<void> => {
+    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
+    const params: IssueParams = { owner, repo, issue_number: issueNumber };
+    await processIssueEvent(app, context, params, issue);
+  };
+
+  const handleIssueClosed = async (context: BotContext<'issues.closed'>): Promise<void> => {
     await getStaticConfig(context);
 
     const issue = context.payload.issue as unknown as IssueLike;
@@ -4296,137 +4257,133 @@ export default function requestHandler(app: Probot): void {
     const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
     const params: IssueParams = { owner, repo, issue_number: issueNumber };
     await handleClosedIssueWorkflowGuard(context, params, issue);
-  });
+  };
 
-  app.on(
-    ['issues.labeled', 'issues.unlabeled'],
-    async (context: BotContext<'issues.labeled' | 'issues.unlabeled'>): Promise<void> => {
-      await getStaticConfig(context);
+  const handleIssueLabelChange = async (context: BotContext<'issues.labeled' | 'issues.unlabeled'>): Promise<void> => {
+    await getStaticConfig(context);
 
-      const sender = context.payload.sender as unknown as SenderLike;
-      if (isBotSender(sender)) return; // prevent loops
+    const sender = context.payload.sender as unknown as SenderLike;
+    if (isBotSender(sender)) return; // prevent loops
 
-      const issue = context.payload.issue as unknown as IssueLike;
+    const issue = context.payload.issue as unknown as IssueLike;
 
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) return;
-      }
-      const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
-
-      const changedLabel = readPayloadLabelName(context.payload as unknown);
-      if (!changedLabel) return;
-
-      const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-      await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, sender?.login);
+    if (!process.env.JEST_WORKER_ID) {
+      if (!hasIssueFormInputs(issue)) return;
     }
-  );
+    const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
 
-  app.on(
-    ['issue_comment.created', 'issue_comment.edited'],
-    async (context: BotContext<'issue_comment.created' | 'issue_comment.edited'>): Promise<void> => {
-      await getStaticConfig(context);
+    const changedLabel = readPayloadLabelName(context.payload as unknown);
+    if (!changedLabel) return;
 
-      const issue = context.payload.issue as unknown as IssueLike;
-      const comment = context.payload.comment as unknown as CommentLike;
-      const sender = context.payload.sender as unknown as SenderLike;
+    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
+    const params: IssueParams = { owner, repo, issue_number: issueNumber };
+    await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, sender?.login);
+  };
 
-      const commenter = String(comment?.user?.login || '');
+  const handleIssueComment = async (
+    context: BotContext<'issue_comment.created' | 'issue_comment.edited'>
+  ): Promise<void> => {
+    await getStaticConfig(context);
 
+    const issue = context.payload.issue as unknown as IssueLike;
+    const comment = context.payload.comment as unknown as CommentLike;
+    const sender = context.payload.sender as unknown as SenderLike;
+
+    const commenter = String(comment?.user?.login || '');
+
+    if (DBG) {
+      log(
+        context,
+        'debug',
+        {
+          event: context.name,
+          action: (context.payload as unknown as Record<string, unknown>)?.action,
+          issue: issue?.number,
+          commenter,
+        },
+        'requestHandler:issue-comment-event'
+      );
+    }
+
+    if (isBotSender(sender)) return;
+
+    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
+    const params: IssueParams = { owner, repo, issue_number: issueNumber };
+    const repoInfo: RepoInfo = { owner, repo };
+
+    const stripped = stripQuoteAndCode(comment.body || '');
+    const isApproval = isApprovalCommentForContext(context, stripped);
+
+    if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
+      const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
+
+      if (isPullRequestConversation && isApproval) {
+        const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
+        if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
+          await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
+        }
+      }
+
+      return;
+    }
+
+    let template: TemplateLike;
+    try {
+      template = await loadTemplateWithLabelRefresh(context, params, issue);
+    } catch (e: unknown) {
+      log(
+        context,
+        'error',
+        { err: e instanceof Error ? e.message : String(e), owner, repo, issue: issue?.number },
+        'Error loading template in issue_comment handler'
+      );
+      return;
+    }
+
+    const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
+    if (!isRequestIssue(context, template, parsedFormData)) {
       if (DBG) {
         log(
           context,
           'debug',
-          {
-            event: context.name,
-            action: (context.payload as unknown as Record<string, unknown>)?.action,
-            issue: issue?.number,
-            commenter,
-          },
-          'requestHandler:issue-comment-event'
+          { issue: issue.number, parsedKeys: Object.keys(parsedFormData || {}) },
+          'requestHandler:issue-comment-event skipped (not a request issue)'
         );
       }
-
-      if (isBotSender(sender)) return;
-
-      const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-      const repoInfo: RepoInfo = { owner, repo };
-
-      const stripped = stripQuoteAndCode(comment.body || '');
-      const isApproval = isApprovalCommentForContext(context, stripped);
-
-      if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
-        const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
-
-        if (isPullRequestConversation && isApproval) {
-          const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
-          if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
-            await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
-          }
-        }
-
-        return;
-      }
-
-      let template: TemplateLike;
-      try {
-        template = await loadTemplateWithLabelRefresh(context, params, issue);
-      } catch (e: unknown) {
-        log(
-          context,
-          'error',
-          { err: e instanceof Error ? e.message : String(e), owner, repo, issue: issue?.number },
-          'Error loading template in issue_comment handler'
-        );
-        return;
-      }
-
-      const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-      if (!isRequestIssue(context, template, parsedFormData)) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            { issue: issue.number, parsedKeys: Object.keys(parsedFormData || {}) },
-            'requestHandler:issue-comment-event skipped (not a request issue)'
-          );
-        }
-        return;
-      }
-
-      if (isApproval) {
-        const handled = await handleParentOwnerApprovalIfNeeded(
-          context,
-          params,
-          issue,
-          template,
-          parsedFormData,
-          commenter
-        );
-        if (handled) return;
-
-        const contactHandled = await handleSystemContactOwnerApprovalIfNeeded(
-          context,
-          params,
-          issue,
-          template,
-          parsedFormData,
-          commenter
-        );
-        if (contactHandled) return;
-
-        await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
-        return;
-      }
-
-      if (comment.user.login === issue.user?.login) {
-        const saysUpdated = isAuthorUpdateComment(comment.body);
-        if (!saysUpdated) return;
-        await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData);
-      }
+      return;
     }
-  );
+
+    if (isApproval) {
+      const handled = await handleParentOwnerApprovalIfNeeded(
+        context,
+        params,
+        issue,
+        template,
+        parsedFormData,
+        commenter
+      );
+      if (handled) return;
+
+      const contactHandled = await handleSystemContactOwnerApprovalIfNeeded(
+        context,
+        params,
+        issue,
+        template,
+        parsedFormData,
+        commenter
+      );
+      if (contactHandled) return;
+
+      await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
+      return;
+    }
+
+    if (comment.user.login === issue.user?.login) {
+      const saysUpdated = isAuthorUpdateComment(comment.body);
+      if (!saysUpdated) return;
+      await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData);
+    }
+  };
 
   const runAutoMergeEvaluation = (
     context: BotContext<RequestEvents>,
@@ -4469,42 +4426,42 @@ export default function requestHandler(app: Probot): void {
       machineReadableSources: RegistryValidationMachineReadableSource[];
     },
     RegistryValidationMachineReadableSource
-  > => ({
-    readCheckRunFromPayload,
-    readCheckSuiteFromPayload,
-    readRepoInfoFromPayload,
-    readCheckRunPrNumbers,
-    resolveCheckSuitePrNumbers,
-    readCheckSuiteId,
-    listAllCheckRunsForSuite,
-    readCheckRunId,
-    readFirstRegistryValidationArtifactsForSuiteRuns,
-    readPullRequestHtmlUrl: async (
-      context: BotContext<RequestEvents>,
-      repoInfo: RepoInfo,
-      prNumber: number
-    ): Promise<string> => {
-      const pr = await context.octokit.pulls.get({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: prNumber,
-      });
-      return toStringTrim((pr.data as { html_url?: string })?.html_url);
-    },
-    collapseBotCommentsByPrefix,
-    postCheckSuiteRegistryValidationComments,
-    maybeHandleDefaultBranchCheckSuiteSuccess,
-    tryAutoMerge,
-    maybeApprovePendingWorkflowRunsForPrNumbers,
-    handleBlockingRegistryHeadConclusion,
-    isBlockingCheckConclusion,
-    readDefaultBranchFromPayload,
-    getStaticConfig: async (context: BotContext<RequestEvents>): Promise<unknown> => await getStaticConfig(context),
-    log,
-    isDebugEnabled: DBG,
-  });
+  > =>
+    composeCheckCompletedHandlerCallbacks<
+      BotContext<RequestEvents>,
+      RepoInfo,
+      CheckRunLike,
+      CheckSuiteLike,
+      {
+        byFile: Map<string, string[]>;
+        machineReadableSources: RegistryValidationMachineReadableSource[];
+      },
+      RegistryValidationMachineReadableSource
+    >({
+      readCheckRunFromPayload,
+      readCheckSuiteFromPayload,
+      readRepoInfoFromPayload,
+      readCheckRunPrNumbers,
+      resolveCheckSuitePrNumbers,
+      readCheckSuiteId,
+      listAllCheckRunsForSuite,
+      readCheckRunId,
+      readFirstRegistryValidationArtifactsForSuiteRuns,
+      collapseBotCommentsByPrefix,
+      postCheckSuiteRegistryValidationComments,
+      maybeHandleDefaultBranchCheckSuiteSuccess,
+      tryAutoMerge,
+      maybeApprovePendingWorkflowRunsForPrNumbers,
+      handleBlockingRegistryHeadConclusion,
+      isBlockingCheckConclusion,
+      readDefaultBranchFromPayload,
+      getStaticConfig: async (context: BotContext<RequestEvents>): Promise<unknown> => await getStaticConfig(context),
+      log,
+      isDebugEnabled: DBG,
+      toStringTrim,
+    });
 
-  app.on('push', async (context: BotContext<'push'>): Promise<void> => {
+  const handlePush = async (context: BotContext<'push'>): Promise<void> => {
     const payload = context.payload as unknown;
     const repoInfo = readRepoInfoFromPayload(payload);
     const ref = isPlainObject(payload) ? toStringTrim(payload['ref']) : '';
@@ -4560,58 +4517,45 @@ export default function requestHandler(app: Probot): void {
     if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
       await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
     }
+  };
+
+  const handlePullRequest = createPullRequestEventHandler<
+    BotContext<
+      'pull_request.opened' | 'pull_request.synchronize' | 'pull_request.reopened' | 'pull_request.ready_for_review'
+    >,
+    RepoInfo,
+    PullRequestLike
+  >({
+    getStaticConfig,
+    readRepoInfoFromPayload,
+    isPlainObject,
+    isPullRequestOpen,
+    maybeApprovePendingWorkflowRunsForRegistryPrWithRetry,
+    toStringTrim,
   });
 
-  app.on(
-    ['pull_request.opened', 'pull_request.synchronize', 'pull_request.reopened', 'pull_request.ready_for_review'],
-    async (
-      context: BotContext<
-        'pull_request.opened' | 'pull_request.synchronize' | 'pull_request.reopened' | 'pull_request.ready_for_review'
-      >
-    ): Promise<void> => {
-      await getStaticConfig(context);
-
-      const payload = context.payload as unknown;
-      const repoInfo = readRepoInfoFromPayload(payload);
-      if (!repoInfo) return;
-
-      const prRaw = isPlainObject(payload) ? payload['pull_request'] : null;
-      if (!isPlainObject(prRaw)) return;
-
-      const pr = prRaw as PullRequestLike;
-      if (!isPullRequestOpen(pr)) return;
-
-      await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
-        context,
-        repoInfo,
-        pr,
-        `pull-request:${toStringTrim((payload as Record<string, unknown>)['action']) || 'event'}`
-      );
-    }
-  );
-
-  app.on(
-    ['check_suite.completed', 'check_run.completed'],
-    async (context: BotContext<'check_suite.completed' | 'check_run.completed'>): Promise<void> => {
-      const payload = context.payload as unknown;
-      const eventName = toStringTrim((context as unknown as { name?: string }).name);
+  const handleCheck = createCheckEventHandler<BotContext<'check_suite.completed' | 'check_run.completed'>>({
+    toStringTrim,
+    handleCheckCompletedEvent: async (context, payload, eventName): Promise<void> => {
       await handleCheckCompletedEventApplication(context, payload, eventName, buildCheckCompletedHandlerCallbacks());
-    }
-  );
+    },
+  });
 
-  app.on('status', async (context: BotContext<'status'>): Promise<void> => {
-    const payload = context.payload as unknown;
-    const state = isPlainObject(payload) ? toStringTrim(payload['state']) : '';
-    if (state !== 'success') return;
+  const handleStatus = createStatusEventHandler<BotContext<'status'>, RepoInfo>({
+    isPlainObject,
+    toStringTrim,
+    toRepoInfo: (owner, repo) => ({ owner, repo }),
+    tryAutoMerge,
+  });
 
-    const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
-    const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
-    const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
-    const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
-
-    const sha = isPlainObject(payload) ? toStringTrim(payload['sha']) : '';
-    if (!ownerLogin || !repoName || !sha) return;
-
-    await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, sha);
+  registerRequestEvents(app, {
+    handlePush,
+    handlePullRequest,
+    handleCheck,
+    handleStatus,
+    handleIssueLifecycle,
+    handleIssueClosed,
+    handleIssueLabelChange,
+    handleIssueComment,
   });
 }
