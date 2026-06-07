@@ -13,19 +13,10 @@ import {
 import { createRequestPr as createRequestPRRaw } from './pr/create.js';
 import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
 import {
-  ensureAutomatedApprovalReviewForCurrentHead as ensureAutomatedApprovalReviewForCurrentHeadApplication,
-  type AutomatedApprovalReviewCallbacks,
-  type AutomatedApprovalReviewOptions,
-} from './application/automated-approval-review.js';
-import {
   autoApprovedPrHeadKey as autoApprovedPrHeadKeyApplication,
   hasAutoApprovedPrHead as hasAutoApprovedPrHeadApplication,
   markAutoApprovedPrHead as markAutoApprovedPrHeadApplication,
 } from './application/auto-approved-head-tracking.js';
-import {
-  hasAutoApprovalReviewForHead as hasAutoApprovalReviewForHeadApplication,
-  type AutoApprovalReviewDetectionCallbacks,
-} from './application/auto-approval-review-detection.js';
 import {
   hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr as hasAllowedCurrentHeadManualApprovalForStandaloneDirectPrApplication,
   hasAllowedStandaloneDirectPrApprovalForCurrentHead as hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication,
@@ -150,24 +141,10 @@ import {
   type DirectPrRequestTypeResolutionCallbacks,
 } from './application/direct-pr-request-type-resolution.js';
 import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
-import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
-import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
 import { type ApprovalCommentHandlingCallbacks } from './application/approval-comment-handling.js';
 import { type OwnerApprovalCommentHandlingCallbacks } from './application/owner-approval-comment-handling.js';
-import {
-  maybeHandleStandaloneDirectPrApproval as maybeHandleStandaloneDirectPrApprovalApplication,
-  type StandaloneDirectPrApprovalCallbacks,
-} from './application/direct-pr-standalone-approval.js';
-import {
-  maybeHandleDirectPrApprovalForMerge as maybeHandleDirectPrApprovalForMergeApplication,
-  type DirectPrLinkedIssueApprovalCallbacks,
-} from './application/direct-pr-linked-issue-approval.js';
-import {
-  handleDirectPrApprovalComment as handleDirectPrApprovalCommentApplication,
-  type DirectPrApprovalCommentHandlingCallbacks,
-} from './application/direct-pr-approval-comment-handling.js';
 import {
   detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
   enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
@@ -214,7 +191,6 @@ import {
   uniqLogins as uniqLoginsPure,
 } from './domain/login-utils.js';
 import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
-import { getUnknownManualApprovers, getVisibleApprovalText } from './domain/approval-policy.js';
 import {
   readContactApprovalMeta,
   readParentApprovalMeta,
@@ -260,15 +236,14 @@ import {
   composeCheckCompletedHandlerCallbacks,
   createApprovalRuntime,
   createAutoMergeRuntime,
+  createDirectPrRuntime,
   createRequestLifecycleRuntime,
   composeDefaultBranchApprovedPrBranchUpdateCallbacks,
   composeDefaultBranchCheckSuiteReevaluationCallbacks,
   composeDefaultBranchDirectPrReevaluationCallbacks,
-  composeDirectPrApprovalCommentHandlingCallbacks,
   composeIssueStateReviewerOperationsCallbacks,
   composeIssueWorkflowGuardCallbacks,
   composeOwnerApprovalCommentHandlingCallbacks,
-  composeStandaloneDirectPrApprovalCallbacks,
   composeWorkflowApprovalCallbacks,
 } from './composition/index.js';
 import type { Context, Probot } from 'probot';
@@ -1337,80 +1312,6 @@ function buildAutoApprovalReviewMarker(headSha: string): string {
   return buildAutoApprovalReviewMarkerPure(headSha);
 }
 
-function buildAutomatedApprovalReviewCallbacks(): AutomatedApprovalReviewCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo
-> {
-  return {
-    toStringTrim,
-    isPlainObject,
-    getVisibleApprovalText,
-    hasAutoApprovedPrHead,
-    hasAutoApprovalReviewForHead,
-    markAutoApprovedPrHead,
-    addApprovedLabelToPr,
-    autoApprovedPrHeadKey,
-    logCreated: (context: BotContext<RequestEvents>, prNumber: number, headSha: string): void => {
-      log(
-        context,
-        'info',
-        {
-          prNumber,
-          headSha,
-        },
-        'automated PR approval review created'
-      );
-    },
-    logCreateFailed: (
-      context: BotContext<RequestEvents>,
-      prNumber: number,
-      status: number | undefined,
-      message: string,
-      responseData: unknown
-    ): void => {
-      log(
-        context,
-        'warn',
-        {
-          prNumber,
-          status,
-          message,
-          responseData,
-        },
-        'failed to create automated PR approval review'
-      );
-    },
-    logDedupedInFlight: (context: BotContext<RequestEvents>, prNumber: number, headSha: string): void => {
-      log(
-        context,
-        'info',
-        {
-          prNumber,
-          headSha,
-        },
-        'automated PR approval review deduped: already in flight'
-      );
-    },
-  };
-}
-
-async function ensureAutomatedApprovalReviewForCurrentHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision,
-  options: AutomatedApprovalReviewOptions = {}
-): Promise<boolean> {
-  return await ensureAutomatedApprovalReviewForCurrentHeadApplication(
-    context,
-    repoInfo,
-    pr,
-    decision,
-    options,
-    buildAutomatedApprovalReviewCallbacks()
-  );
-}
-
 async function listPullRequestReviews(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -1463,29 +1364,6 @@ function buildBranchMaintenanceApprovalCallbacks(): BranchMaintenanceApprovalCal
   return {
     hasApprovedLabelOnPr,
     isSnapshotManagedRequestPr,
-  };
-}
-
-async function hasAutoApprovalReviewForHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number,
-  headSha: string
-): Promise<boolean> {
-  return await hasAutoApprovalReviewForHeadApplication(
-    context,
-    repoInfo,
-    prNumber,
-    headSha,
-    buildAutoApprovalReviewDetectionCallbacks()
-  );
-}
-
-function buildAutoApprovalReviewDetectionCallbacks(): AutoApprovalReviewDetectionCallbacks<BotContext<RequestEvents>> {
-  return {
-    buildAutoApprovalReviewMarker,
-    listPullRequestReviews,
-    toStringTrim,
   };
 }
 
@@ -2493,120 +2371,6 @@ function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks
   };
 }
 
-function buildStandaloneDirectPrReviewHandoverOptions(): {
-  resolveEffectiveConstants: (context: BotContext<RequestEvents>) => EffectiveConstants;
-  prAsIssueLike: (pr: PullRequestLike) => IssueLike;
-  listChangedYamlFilesForPrWithFallback: (
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    pr: PullRequestLike,
-    baseBranch?: string
-  ) => Promise<string[]>;
-  resolveDirectPrRequestTypes: (
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    pr: PullRequestLike,
-    options?: DirectPrApprovalOptions
-  ) => Promise<string[]>;
-  getUnknownManualApprovers: (decision: ApprovalDecision) => string[];
-  resolveReviewAssigneesForRequestTypes: (
-    context: BotContext<RequestEvents>,
-    issue: IssueLike,
-    requestTypes: string[]
-  ) => string[];
-  ensureAssigneesPresent: (
-    context: BotContext<RequestEvents>,
-    params: IssueParams,
-    assignees: string[]
-  ) => Promise<void>;
-  ensureLabelsPresentOnce: (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]) => Promise<void>;
-  calcStandaloneDirectPrSnapshotHash: (pr: PullRequestLike, changedFiles: string[]) => string;
-  buildReviewHandoverBody: (
-    context: BotContext<RequestEvents>,
-    snapshotHash?: string,
-    options?: { target?: 'issue' | 'pull_request' }
-  ) => string;
-  toStringTrim: (value: unknown) => string;
-  logHandover: (args: {
-    context: BotContext<RequestEvents>;
-    prNumber: number;
-    requestTypes: string[];
-    changedFiles: string[];
-    assignees: string[];
-    snapshotHash: string;
-    decisionStatus: string;
-  }) => void;
-} {
-  return {
-    resolveEffectiveConstants,
-    prAsIssueLike,
-    listChangedYamlFilesForPrWithFallback,
-    resolveDirectPrRequestTypes,
-    getUnknownManualApprovers,
-    resolveReviewAssigneesForRequestTypes,
-    ensureAssigneesPresent,
-    ensureLabelsPresentOnce,
-    calcStandaloneDirectPrSnapshotHash,
-    buildReviewHandoverBody,
-    toStringTrim,
-    logHandover: ({ context, prNumber, requestTypes, changedFiles, assignees, snapshotHash, decisionStatus }): void => {
-      log(
-        context,
-        'info',
-        {
-          prNumber,
-          requestTypes,
-          changedFiles,
-          assignees,
-          snapshotHash,
-          decisionStatus,
-        },
-        'direct-pr:handover-to-review'
-      );
-    },
-  };
-}
-
-function buildStandaloneDirectPrApprovalCallbacks(): StandaloneDirectPrApprovalCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike,
-  ReturnType<typeof buildStandaloneDirectPrReviewHandoverOptions>
-> {
-  return composeStandaloneDirectPrApprovalCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    PullRequestLike,
-    ReturnType<typeof buildStandaloneDirectPrReviewHandoverOptions>
-  >({
-    evaluateDirectPrOnApproval,
-    hasAllowedStandaloneDirectPrApprovalForCurrentHead,
-    ensureAutomatedApprovalReviewForCurrentHead,
-    postApprovalRejectedOnce,
-    hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr,
-    addApprovedLabelToPr,
-    handoverStandaloneDirectPrToReview,
-    isCrossRepositoryPullRequest,
-    buildStandaloneDirectPrReviewHandoverOptions,
-    log,
-  });
-}
-
-async function maybeHandleStandaloneDirectPrApproval(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  options: DirectPrApprovalOptions = {}
-): Promise<ApprovalHandlingResult> {
-  return await maybeHandleStandaloneDirectPrApprovalApplication(
-    context,
-    repoInfo,
-    pr,
-    options,
-    buildStandaloneDirectPrApprovalCallbacks()
-  );
-}
-
 const approvalRuntime = createApprovalRuntime<
   BotContext<RequestEvents>,
   RepoInfo,
@@ -2707,6 +2471,60 @@ const handleAuthorUpdateComment = requestLifecycleRuntime.handleAuthorUpdateComm
 const createRequestPrWithRecovery = requestLifecycleRuntime.createRequestPrWithRecovery;
 const closeOutdatedRequestPrs = requestLifecycleRuntime.closeOutdatedRequestPrs;
 
+let tryMergeApprovedPrOrUpdateBranchForDirectPr = async (
+  _context: BotContext<RequestEvents>,
+  _repoInfo: RepoInfo,
+  _pr: PullRequestLike,
+  _reason: string
+): Promise<void> => {};
+
+const directPrRuntime = createDirectPrRuntime<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  IssueLike,
+  PullRequestLike,
+  EffectiveConstants,
+  TemplateLike,
+  FormData
+>({
+  log,
+  toStringTrim,
+  resolveEffectiveConstants,
+  prAsIssueLike,
+  isCrossRepositoryPullRequest,
+  isAuthorizedApprover,
+  postOnce,
+  hasAutoApprovedPrHead,
+  markAutoApprovedPrHead,
+  autoApprovedPrHeadKey,
+  addApprovedLabelToPr,
+  buildAutoApprovalReviewMarker,
+  listPullRequestReviews,
+  resolveDirectPrRequestTypes,
+  resolveAllowedApproversForRequestTypes,
+  evaluateDirectPrOnApproval,
+  hasAllowedStandaloneDirectPrApprovalForCurrentHead,
+  hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr,
+  resolvePullRequestRequestAuthorId,
+  applyApprovedRequestState,
+  listOpenPullRequests,
+  parseLinkedIssueNumberFromPr,
+  ensureReviewLabelsPresentOnIssue,
+  tryMergeApprovedPrOrUpdateBranch: async (context, repoInfo, pr, reason): Promise<void> =>
+    await tryMergeApprovedPrOrUpdateBranchForDirectPr(context, repoInfo, pr, reason),
+  listChangedYamlFilesForPrWithFallback,
+  resolveReviewAssigneesForRequestTypes,
+  ensureAssigneesPresent,
+  ensureLabelsPresentOnce,
+  calcStandaloneDirectPrSnapshotHash,
+  buildReviewHandoverBody,
+});
+
+const maybeHandleStandaloneDirectPrApproval = directPrRuntime.maybeHandleStandaloneDirectPrApproval;
+const handleDirectPrApprovalComment = directPrRuntime.handleDirectPrApprovalComment;
+const maybeHandleDirectPrApprovalForMerge = directPrRuntime.maybeHandleDirectPrApprovalForMerge;
+
 function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizationCallbacks<
   BotContext<RequestEvents>,
   IssueParams,
@@ -2736,59 +2554,6 @@ function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizatio
     createRequestPrWithRecovery,
     postOnce,
   });
-}
-
-function buildDirectPrLinkedIssueApprovalCallbacks(): DirectPrLinkedIssueApprovalCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  IssueParams,
-  IssueLike,
-  PullRequestLike,
-  EffectiveConstants
-> {
-  return {
-    resolvePullRequestRequestAuthorId,
-    evaluateDirectPrOnApproval,
-    ensureAutomatedApprovalReviewForCurrentHead,
-    applyApprovedRequestState,
-    resolveEffectiveConstants,
-    postApprovalRejectedOnce,
-    rejectRequestFromApprovalHook: async (
-      context: BotContext<RequestEvents>,
-      params: IssueParams,
-      issue: IssueLike,
-      decision: ApprovalDecision
-    ): Promise<void> =>
-      await rejectRequestFromApprovalHook(context, params, issue, decision, {
-        closeLinkedPrs: true,
-        minimizeTag: 'nsreq:on-approval:issue-rejected',
-        listOpenPullRequests,
-        parseLinkedIssueNumberFromPr,
-      }),
-    postApprovalUnknownOnce,
-    log,
-  };
-}
-
-async function maybeHandleDirectPrApprovalForMerge(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  issueParams: IssueParams,
-  issue: IssueLike,
-  _template: TemplateLike,
-  _parsedFormData: FormData,
-  pr: PullRequestLike
-): Promise<ApprovalHandlingResult> {
-  return await maybeHandleDirectPrApprovalForMergeApplication(
-    context,
-    repoInfo,
-    issueParams,
-    issue,
-    _template,
-    _parsedFormData,
-    pr,
-    buildDirectPrLinkedIssueApprovalCallbacks()
-  );
 }
 
 function buildSafeResourceSlug(resourceName: unknown): string {
@@ -3313,7 +3078,7 @@ export default function requestHandler(app: Probot): void {
   });
 
   const runOneSequentialDirectRegistryPrMaintenance = autoMergeRuntime.runOneSequentialDirectRegistryPrMaintenance;
-  const tryMergeApprovedPrOrUpdateBranch = autoMergeRuntime.tryMergeApprovedPrOrUpdateBranch;
+  tryMergeApprovedPrOrUpdateBranchForDirectPr = autoMergeRuntime.tryMergeApprovedPrOrUpdateBranch;
   const tryAutoMerge = autoMergeRuntime.tryAutoMerge;
   const handleBlockingRegistryHeadConclusion = autoMergeRuntime.handleBlockingRegistryHeadConclusion;
 
@@ -3344,53 +3109,6 @@ export default function requestHandler(app: Probot): void {
       baseBranch,
       buildDefaultBranchDirectPrReevaluationCallbacks(),
       reason
-    );
-  }
-
-  function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommentHandlingCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    IssueParams,
-    PullRequestLike,
-    IssueLike,
-    EffectiveConstants
-  > {
-    return composeDirectPrApprovalCommentHandlingCallbacks<
-      BotContext<RequestEvents>,
-      RepoInfo,
-      IssueParams,
-      PullRequestLike,
-      IssueLike,
-      EffectiveConstants
-    >({
-      resolveEffectiveConstants,
-      prAsIssueLike,
-      ensureReviewLabelsPresentOnIssue,
-      resolveDirectPrRequestTypes,
-      resolveAllowedApproversForRequestTypes,
-      evaluateDirectPrOnApproval,
-      postApprovalRejectedOnce,
-      isAuthorizedApprover,
-      ensureAutomatedApprovalReviewForCurrentHead,
-      isCrossRepositoryPullRequest,
-      tryMergeApprovedPrOrUpdateBranch,
-      postOnce,
-      log,
-    });
-  }
-
-  async function handleDirectPrApprovalComment(
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    pr: PullRequestLike,
-    commenter: string
-  ): Promise<void> {
-    await handleDirectPrApprovalCommentApplication(
-      context,
-      repoInfo,
-      pr,
-      commenter,
-      buildDirectPrApprovalCommentHandlingCallbacks()
     );
   }
 
