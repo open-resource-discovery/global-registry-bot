@@ -94,20 +94,6 @@ import {
   type DefaultBranchApprovedPrBranchUpdateCallbacks,
 } from './application/default-branch-approved-pr-branch-update.js';
 import {
-  processAuthorUpdateComment as processAuthorUpdateCommentApplication,
-  processRequestIssueLifecycle as processRequestIssueLifecycleApplication,
-  type RequestIssueAuthorUpdateCallbacks,
-  type RequestIssueLifecycleCallbacks,
-} from './application/request-issue-lifecycle.js';
-import {
-  closeOutdatedRequestPrs as closeOutdatedRequestPrsApplication,
-  type OutdatedRequestPrCleanupCallbacks,
-} from './application/outdated-request-pr-cleanup.js';
-import {
-  createRequestPrWithRecovery as createRequestPrWithRecoveryApplication,
-  type RequestPrCreationRecoveryCallbacks,
-} from './application/request-pr-creation-recovery.js';
-import {
   addApprovedLabelToPr as addApprovedLabelToPrApplication,
   applyApprovedRequestState as applyApprovedRequestStateApplication,
   ensureAssigneesPresent as ensureAssigneesPresentApplication,
@@ -274,6 +260,7 @@ import {
   composeCheckCompletedHandlerCallbacks,
   createApprovalRuntime,
   createAutoMergeRuntime,
+  createRequestLifecycleRuntime,
   composeDefaultBranchApprovedPrBranchUpdateCallbacks,
   composeDefaultBranchCheckSuiteReevaluationCallbacks,
   composeDefaultBranchDirectPrReevaluationCallbacks,
@@ -281,9 +268,6 @@ import {
   composeIssueStateReviewerOperationsCallbacks,
   composeIssueWorkflowGuardCallbacks,
   composeOwnerApprovalCommentHandlingCallbacks,
-  composeRequestIssueAuthorUpdateCallbacks,
-  composeRequestIssueLifecycleCallbacks,
-  composeRequestPrCreationRecoveryCallbacks,
   composeStandaloneDirectPrApprovalCallbacks,
   composeWorkflowApprovalCallbacks,
 } from './composition/index.js';
@@ -2670,6 +2654,59 @@ const resolveManualReviewApproverOverrideFromApprovalHook =
   approvalRuntime.resolveManualReviewApproverOverrideFromApprovalHook;
 const resolveAdditionalIssueApproversFromApprovalHook = approvalRuntime.resolveAdditionalIssueApproversFromApprovalHook;
 
+const requestLifecycleRuntime = createRequestLifecycleRuntime<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  PullRequestLike,
+  EffectiveConstants,
+  ValidateRequestIssueResult
+>({
+  log,
+  isDebugEnabled: DBG,
+  hasIssueFormInputs,
+  loadTemplateWithLabelRefresh,
+  buildTemplateLoadErrorMessage,
+  postOnce,
+  setStateLabel,
+  parseForm,
+  isRequestIssue,
+  toLabelNames,
+  detectSingleRoutingLabel,
+  ensureRoutingLockMarker,
+  enforceRoutingLabelLock,
+  removeRejectedStatusLabel,
+  buildCompatibleRequestSnapshotHashes,
+  calcSnapshotHash,
+  validateRequestIssue,
+  checkParentChainExistsInFlatStructure,
+  resolveEffectiveRequestType,
+  getApprovedParentOwnerLogin,
+  isSubContextRequestType,
+  extractResourceNameFromForm,
+  head,
+  renderConfiguredRequestBranchName,
+  createRequestPr,
+  extractHashFromPrBody,
+  findOpenIssuePrs,
+  resolveEffectiveConstants,
+  maybeRequireParentOwnerApproval,
+  maybeRequireSystemContactOwnerApproval,
+  maybeHandleApprovalDecision,
+  buildApprovalDecisionDispatchOptions,
+  finalizeApprovedRequest,
+  resolveManualReviewApproverOverrideFromApprovalHook,
+  resolveAdditionalIssueApproversFromApprovalHook,
+  buildReviewHandoverOptions,
+});
+
+const processIssueEvent = requestLifecycleRuntime.processIssueEvent;
+const handleAuthorUpdateComment = requestLifecycleRuntime.handleAuthorUpdateComment;
+const createRequestPrWithRecovery = requestLifecycleRuntime.createRequestPrWithRecovery;
+const closeOutdatedRequestPrs = requestLifecycleRuntime.closeOutdatedRequestPrs;
+
 function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizationCallbacks<
   BotContext<RequestEvents>,
   IssueParams,
@@ -2777,221 +2814,11 @@ function renderConfiguredRequestBranchName(
     .replace('{issue}', String(issue.number || ''));
 }
 
-async function createRequestPrWithRecovery(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike,
-  resourceName: string
-): Promise<{ number: number }> {
-  return await createRequestPrWithRecoveryApplication(
-    context,
-    params,
-    issue,
-    parsedFormData,
-    template,
-    resourceName,
-    buildRequestPrCreationRecoveryCallbacks()
-  );
-}
-
-function buildRequestPrCreationRecoveryCallbacks(): RequestPrCreationRecoveryCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  IssueLike,
-  TemplateLike,
-  FormData
-> {
-  return composeRequestPrCreationRecoveryCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    IssueLike,
-    TemplateLike,
-    FormData
-  >({
-    createRequestPr: async (
-      context: BotContext<RequestEvents>,
-      repoInfo: RepoInfo,
-      issue: IssueLike,
-      parsedFormData: FormData,
-      options: { template: TemplateLike }
-    ): Promise<{ number: number }> => await createRequestPr(context, repoInfo, issue, parsedFormData, options),
-    getHttpStatus,
-    renderConfiguredRequestBranchName,
-  });
-}
-
 function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {
   const who = normalizeLogin(login).toLowerCase();
   if (!who) return false;
 
   return (allowedApprovers || []).some((u) => normalizeLogin(u).toLowerCase() === who);
-}
-
-function buildRequestIssueLifecycleCallbacks(
-  app: Probot
-): RequestIssueLifecycleCallbacks<
-  BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
-  IssueParams,
-  IssueLike,
-  TemplateLike,
-  FormData,
-  ValidateRequestIssueResult
-> {
-  return composeRequestIssueLifecycleCallbacks<
-    BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
-    IssueParams,
-    IssueLike,
-    TemplateLike,
-    FormData,
-    ValidateRequestIssueResult
-  >({
-    isJestWorker: Boolean(process.env.JEST_WORKER_ID),
-    isDebugEnabled: DBG,
-    hasIssueFormInputs,
-    loadTemplateWithLabelRefresh,
-    buildTemplateLoadErrorMessage,
-    postOnce,
-    setStateLabel,
-    parseForm,
-    isRequestIssue,
-    log,
-    toLabelNames,
-    detectSingleRoutingLabel,
-    ensureRoutingLockMarker,
-    enforceRoutingLabelLock,
-    removeRejectedStatusLabel,
-    buildCompatibleRequestSnapshotHashes,
-    calcSnapshotHash,
-    normalizeIssueTitle,
-    closeOutdatedRequestPrs,
-    validateRequestIssue,
-    checkParentChainExistsInFlatStructure,
-    resolveEffectiveRequestType,
-    maybeRequireParentOwnerApproval,
-    maybeRequireSystemContactOwnerApproval,
-    getApprovedParentOwnerLogin,
-    isSubContextRequestType,
-    maybeHandleApprovalDecision: async (
-      context,
-      params,
-      issue,
-      template,
-      parsedFormData,
-      requestType,
-      namespace,
-      options
-    ): Promise<ApprovalHandlingResult> =>
-      await maybeHandleApprovalDecision(
-        context,
-        params,
-        issue,
-        template,
-        parsedFormData,
-        requestType,
-        namespace,
-        options as ReturnType<typeof buildApprovalDecisionDispatchOptions>
-      ),
-    buildApprovalDecisionDispatchOptions,
-    finalizeApprovedRequest,
-    resolveManualReviewApproverOverrideFromApprovalHook,
-    resolveAdditionalIssueApproversFromApprovalHook,
-    handoverToCpa: async (context, params, issue, nsType, namespace, labels, options): Promise<void> =>
-      await handoverToCpa(
-        context,
-        params,
-        issue,
-        nsType,
-        namespace,
-        labels,
-        options as ReturnType<typeof buildReviewHandoverOptions>
-      ),
-    buildReviewHandoverOptions: (): Record<string, unknown> =>
-      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
-    appLog: app.log || console,
-  });
-}
-
-function buildRequestIssueAuthorUpdateCallbacks(
-  app: Probot
-): RequestIssueAuthorUpdateCallbacks<
-  BotContext<RequestEvents>,
-  IssueParams,
-  IssueLike,
-  TemplateLike,
-  FormData,
-  ValidateRequestIssueResult
-> {
-  return composeRequestIssueAuthorUpdateCallbacks<
-    BotContext<RequestEvents>,
-    IssueParams,
-    IssueLike,
-    TemplateLike,
-    FormData,
-    ValidateRequestIssueResult
-  >({
-    validateRequestIssue,
-    parseForm,
-    calcSnapshotHash,
-    checkParentChainExistsInFlatStructure,
-    postOnce,
-    setStateLabel,
-    closeOutdatedRequestPrs,
-    resolveEffectiveRequestType,
-    maybeRequireParentOwnerApproval,
-    log,
-    isDebugEnabled: DBG,
-    maybeRequireSystemContactOwnerApproval,
-    getApprovedParentOwnerLogin,
-    isSubContextRequestType,
-    maybeHandleApprovalDecision: async (
-      context,
-      params,
-      issue,
-      template,
-      parsedFormData,
-      requestType,
-      namespace,
-      options
-    ): Promise<ApprovalHandlingResult> =>
-      await maybeHandleApprovalDecision(
-        context,
-        params,
-        issue,
-        template,
-        parsedFormData,
-        requestType,
-        namespace,
-        options as ReturnType<typeof buildApprovalDecisionDispatchOptions>
-      ),
-    buildApprovalDecisionDispatchOptions,
-    finalizeApprovedRequest,
-    resolveManualReviewApproverOverrideFromApprovalHook,
-    resolveAdditionalIssueApproversFromApprovalHook,
-    handoverToCpa: async (context, params, issue, nsType, namespace, labels, options): Promise<void> =>
-      await handoverToCpa(
-        context,
-        params,
-        issue,
-        nsType,
-        namespace,
-        labels,
-        options as ReturnType<typeof buildReviewHandoverOptions>
-      ),
-    buildReviewHandoverOptions: (): Record<string, unknown> =>
-      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
-    appLog: app.log || console,
-  });
-}
-
-async function processIssueEvent(
-  app: Probot,
-  context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
-  params: IssueParams,
-  issue: IssueLike
-): Promise<void> {
-  await processRequestIssueLifecycleApplication(context, params, issue, buildRequestIssueLifecycleCallbacks(app));
 }
 
 function buildIssueStateReviewerOperationsCallbacks(): IssueStateReviewerOperationsCallbacks<
@@ -3133,24 +2960,6 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
     finalizeApprovedRequest,
     toStringTrim,
   });
-}
-
-async function handleAuthorUpdateComment(
-  app: Probot,
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData
-): Promise<void> {
-  await processAuthorUpdateCommentApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    buildRequestIssueAuthorUpdateCallbacks(app)
-  );
 }
 
 function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestEvents>): string {
@@ -3431,70 +3240,6 @@ async function handleIssueLabelChangeWorkflowGuard(
   );
 }
 
-async function normalizeIssueTitle(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData
-): Promise<void> {
-  try {
-    const resourceName = extractResourceNameFromForm(parsedFormData, template);
-    const rawPrefix = toStringTrim(template?.title || template?.name || 'Request');
-    const prefix = head(rawPrefix);
-
-    if (!prefix || !resourceName) return;
-
-    const desiredTitle = `${prefix}: ${resourceName}`;
-    if (toStringTrim(issue.title) === desiredTitle) return;
-
-    await createGitHubIssueUpdateGateway(context).updateIssue({
-      owner: params.owner,
-      repo: params.repo,
-      issue_number: params.issue_number,
-      title: desiredTitle,
-    });
-
-    issue.title = desiredTitle;
-  } catch (err: unknown) {
-    log(context, 'warn', { err: err instanceof Error ? err.message : String(err) }, 'Failed to normalize issue title');
-  }
-}
-
-async function closeOutdatedRequestPrs(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  template: TemplateLike,
-  options: { parsedFormData?: FormData; currentHash?: string; acceptedHashes?: string[] } = {}
-): Promise<void> {
-  await closeOutdatedRequestPrsApplication(
-    context,
-    params,
-    template,
-    options,
-    buildOutdatedRequestPrCleanupCallbacks()
-  );
-}
-
-function buildOutdatedRequestPrCleanupCallbacks(): OutdatedRequestPrCleanupCallbacks<
-  BotContext<RequestEvents>,
-  PullRequestLike,
-  TemplateLike,
-  FormData,
-  EffectiveConstants
-> {
-  return {
-    parseForm,
-    readIssueBodyForProcessing,
-    buildCompatibleRequestSnapshotHashes,
-    calcSnapshotHash,
-    extractHashFromPrBody,
-    findOpenIssuePrs,
-    resolveEffectiveConstants,
-    postOnce,
-  };
-}
-
 export default function requestHandler(app: Probot): void {
   const getStaticConfig = createStaticConfigContextLoader<BotContext<RequestEvents>>(app.log || console);
 
@@ -3664,7 +3409,6 @@ export default function requestHandler(app: Probot): void {
     return !bodyOrLabelChanged;
   };
 
-  // normalizeIssueTitle moved to outer scope
   const isApprovalCommentForContext = (context: BotContext<RequestEvents>, strippedText: string): boolean => {
     const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
     const wf = cfg?.workflow ?? {};
