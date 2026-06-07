@@ -61,29 +61,9 @@ import {
   postCheckSuiteRegistryValidationComments as postCheckSuiteRegistryValidationCommentsApplication,
   type CheckSuiteCiCommentingCallbacks,
 } from './application/check-suite-ci-commenting.js';
-import {
-  handleCheckCompletedEvent as handleCheckCompletedEventApplication,
-  type CheckCompletedHandlerCallbacks,
-} from './application/check-completed-handler.js';
-import {
-  maybeApprovePendingWorkflowRunsForRegistryPrWithRetryApplication,
-  maybeApprovePendingWorkflowRunsForPrNumbersApplication,
-  type WorkflowApprovalCallbacks,
-} from './application/workflow-approval.js';
+import { handleCheckCompletedEvent as handleCheckCompletedEventApplication } from './application/check-completed-handler.js';
 import { extractParentContactCandidates, lookupGithubLoginsByEmail } from './application/parent-contact-resolution.js';
 import { checkParentChainExistsInFlatStructureApplication } from './application/parent-chain-validation.js';
-import {
-  maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
-  type DefaultBranchCheckSuiteReevaluationCallbacks,
-} from './application/default-branch-check-suite-reevaluation.js';
-import {
-  reevaluateOpenDirectPullRequestsAfterDefaultBranchPush as reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication,
-  type DefaultBranchDirectPrReevaluationCallbacks,
-} from './application/default-branch-direct-pr-reevaluation.js';
-import {
-  updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry as updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication,
-  type DefaultBranchApprovedPrBranchUpdateCallbacks,
-} from './application/default-branch-approved-pr-branch-update.js';
 import {
   addApprovedLabelToPr as addApprovedLabelToPrApplication,
   applyApprovedRequestState as applyApprovedRequestStateApplication,
@@ -233,18 +213,14 @@ import { createPushEventHandler } from './events/push.js';
 import {
   composeApprovalCommentHandlingCallbacks,
   composeApprovedRequestFinalizationCallbacks,
-  composeCheckCompletedHandlerCallbacks,
   createApprovalRuntime,
   createAutoMergeRuntime,
+  createCheckWorkflowRuntime,
   createDirectPrRuntime,
   createRequestLifecycleRuntime,
-  composeDefaultBranchApprovedPrBranchUpdateCallbacks,
-  composeDefaultBranchCheckSuiteReevaluationCallbacks,
-  composeDefaultBranchDirectPrReevaluationCallbacks,
   composeIssueStateReviewerOperationsCallbacks,
   composeIssueWorkflowGuardCallbacks,
   composeOwnerApprovalCommentHandlingCallbacks,
-  composeWorkflowApprovalCallbacks,
 } from './composition/index.js';
 import type { Context, Probot } from 'probot';
 import { createHash } from 'node:crypto';
@@ -1417,7 +1393,6 @@ function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: st
   return hasAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
-const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
 
 type SequentialRegistryPrResult = {
@@ -1724,20 +1699,6 @@ function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): bool
   return !prBase || prBase === target;
 }
 
-async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string
-): Promise<boolean> {
-  return await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication(
-    context,
-    repoInfo,
-    baseBranch,
-    DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS,
-    buildDefaultBranchApprovedPrBranchUpdateCallbacks()
-  );
-}
-
 function normalizeRepoPath(path: unknown): string {
   return toStringTrim(path)
     .replace(/\\/g, '/')
@@ -1938,61 +1899,6 @@ function isSafeRegistryWorkflowApprovalFile(context: BotContext<RequestEvents>, 
   return true;
 }
 
-function buildWorkflowApprovalCallbacks(): WorkflowApprovalCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike,
-  PullRequestFileLike
-> {
-  return composeWorkflowApprovalCallbacks<BotContext<RequestEvents>, RepoInfo, PullRequestLike, PullRequestFileLike>({
-    isPullRequestOpen,
-    isSafeRegistryWorkflowApprovalFile,
-    listChangedFilesForPr,
-    parseLinkedIssueNumberFromPr,
-    isSnapshotManagedRequestPr,
-    evaluateDirectPrOnApproval,
-    hasAllowedStandaloneDirectPrApprovalForCurrentHead,
-    readFreshPullRequest,
-    isPlainObject,
-    log,
-    getErrorMessage,
-    getHttpStatus,
-    toStringTrim,
-  });
-}
-
-async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<boolean> {
-  return await maybeApprovePendingWorkflowRunsForRegistryPrWithRetryApplication(
-    context,
-    repoInfo,
-    pr,
-    reason,
-    buildWorkflowApprovalCallbacks()
-  );
-}
-
-async function maybeApprovePendingWorkflowRunsForPrNumbers(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumbers: number[],
-  headSha: string,
-  reason: string
-): Promise<boolean> {
-  return await maybeApprovePendingWorkflowRunsForPrNumbersApplication(
-    context,
-    repoInfo,
-    prNumbers,
-    headSha,
-    reason,
-    buildWorkflowApprovalCallbacks()
-  );
-}
-
 async function isPullRequestBehindCurrentBase(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2153,30 +2059,6 @@ async function readRegistryDocForApproval(
   return await readRegistryDocForApprovalApplication(context, repoInfo, pr, filePath, {
     readPullRequestHeadFileText,
     isPlainObject,
-  });
-}
-
-function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchApprovedPrBranchUpdateCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike
-> {
-  return composeDefaultBranchApprovedPrBranchUpdateCallbacks<BotContext<RequestEvents>, RepoInfo, PullRequestLike>({
-    isSequentialRegistryPrActiveBlocking,
-    listOpenPullRequests,
-    isSequentialRegistryPrHeadSkipped,
-    listChangedYamlFilesForPrWithFallback,
-    isSnapshotManagedRequestPr,
-    isPullRequestApprovedForBranchMaintenance,
-    waitForPullRequestMergeability,
-    isPullRequestOpen,
-    isPullRequestDirty,
-    readMergeableState,
-    shouldUpdatePullRequestBranch,
-    requestPullRequestBranchUpdate,
-    markSequentialRegistryPrHeadSkipped,
-    getErrorMessage,
-    log,
   });
 }
 
@@ -3008,26 +2890,6 @@ async function handleIssueLabelChangeWorkflowGuard(
 export default function requestHandler(app: Probot): void {
   const getStaticConfig = createStaticConfigContextLoader<BotContext<RequestEvents>>(app.log || console);
 
-  const buildDefaultBranchCheckSuiteReevaluationCallbacks = (): DefaultBranchCheckSuiteReevaluationCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    SequentialRegistryPrResult
-  > =>
-    composeDefaultBranchCheckSuiteReevaluationCallbacks<
-      BotContext<RequestEvents>,
-      RepoInfo,
-      SequentialRegistryPrResult
-    >({
-      readDefaultBranchFromPayload,
-      getErrorMessage,
-      getHttpStatus,
-      getStaticConfig: async (context: BotContext<RequestEvents>, options: { forceReload: true }): Promise<unknown> =>
-        await getStaticConfig(context, options),
-      reevaluateOpenDirectPullRequestsAfterDefaultBranchPush,
-      updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry,
-      log,
-    });
-
   const autoMergeRuntime = createAutoMergeRuntime({
     getStaticConfig,
     evaluateHeadGreenForApprovalReevaluation,
@@ -3082,35 +2944,66 @@ export default function requestHandler(app: Probot): void {
   const tryAutoMerge = autoMergeRuntime.tryAutoMerge;
   const handleBlockingRegistryHeadConclusion = autoMergeRuntime.handleBlockingRegistryHeadConclusion;
 
-  function buildDefaultBranchDirectPrReevaluationCallbacks(): DefaultBranchDirectPrReevaluationCallbacks<
+  const checkWorkflowRuntime = createCheckWorkflowRuntime<
     BotContext<RequestEvents>,
     RepoInfo,
+    PullRequestLike,
+    PullRequestFileLike,
+    CheckRunLike,
+    CheckSuiteLike,
     SequentialRegistryPrResult
-  > {
-    return composeDefaultBranchDirectPrReevaluationCallbacks<
-      BotContext<RequestEvents>,
-      RepoInfo,
-      SequentialRegistryPrResult
-    >({
-      runOneSequentialDirectRegistryPrMaintenance,
-      log,
-    });
-  }
+  >({
+    log,
+    getErrorMessage,
+    getHttpStatus,
+    toStringTrim,
+    isDebugEnabled: DBG,
+    getStaticConfig,
+    isPullRequestOpen,
+    isSafeRegistryWorkflowApprovalFile,
+    listChangedFilesForPr,
+    parseLinkedIssueNumberFromPr,
+    isSnapshotManagedRequestPr,
+    evaluateDirectPrOnApproval,
+    hasAllowedStandaloneDirectPrApprovalForCurrentHead,
+    readFreshPullRequest,
+    isPlainObject,
+    isSequentialRegistryPrActiveBlocking,
+    listOpenPullRequests,
+    isSequentialRegistryPrHeadSkipped,
+    listChangedYamlFilesForPrWithFallback,
+    isPullRequestApprovedForBranchMaintenance,
+    waitForPullRequestMergeability,
+    isPullRequestDirty,
+    readMergeableState,
+    shouldUpdatePullRequestBranch,
+    requestPullRequestBranchUpdate,
+    markSequentialRegistryPrHeadSkipped,
+    readDefaultBranchFromPayload,
+    runOneSequentialDirectRegistryPrMaintenance,
+    readCheckRunFromPayload,
+    readCheckSuiteFromPayload,
+    readRepoInfoFromPayload,
+    readCheckRunPrNumbers,
+    resolveCheckSuitePrNumbers,
+    readCheckSuiteId,
+    listAllCheckRunsForSuite,
+    readCheckRunId,
+    readFirstRegistryValidationArtifactsForSuiteRuns,
+    collapseBotCommentsByPrefix,
+    postCheckSuiteRegistryValidationComments,
+    tryAutoMerge,
+    handleBlockingRegistryHeadConclusion,
+    isBlockingCheckConclusion,
+  });
 
-  async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    baseBranch: string,
-    reason = 'default-branch-push:direct-pr-reevaluation'
-  ): Promise<SequentialRegistryPrResult> {
-    return await reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication(
-      context,
-      repoInfo,
-      baseBranch,
-      buildDefaultBranchDirectPrReevaluationCallbacks(),
-      reason
-    );
-  }
+  const maybeApprovePendingWorkflowRunsForRegistryPrWithRetry =
+    checkWorkflowRuntime.maybeApprovePendingWorkflowRunsForRegistryPrWithRetry;
+  const updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry =
+    checkWorkflowRuntime.updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry;
+  const reevaluateOpenDirectPullRequestsAfterDefaultBranchPush =
+    checkWorkflowRuntime.reevaluateOpenDirectPullRequestsAfterDefaultBranchPush;
+  const buildCheckCompletedHandlerCallbacks = checkWorkflowRuntime.buildCheckCompletedHandlerCallbacks;
 
   const shouldSkipIssueEditedEvent = (
     context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
@@ -3287,66 +3180,6 @@ export default function requestHandler(app: Probot): void {
     log,
     isDebugEnabled: DBG,
   });
-
-  const maybeHandleDefaultBranchCheckSuiteSuccess = async (
-    context: BotContext<RequestEvents>,
-    payload: unknown,
-    checkSuite: CheckSuiteLike | null,
-    repoInfo: RepoInfo
-  ): Promise<void> => {
-    await maybeHandleDefaultBranchCheckSuiteSuccessApplication(
-      context,
-      payload,
-      checkSuite,
-      repoInfo,
-      buildDefaultBranchCheckSuiteReevaluationCallbacks()
-    );
-  };
-
-  const buildCheckCompletedHandlerCallbacks = (): CheckCompletedHandlerCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    CheckRunLike,
-    CheckSuiteLike,
-    {
-      byFile: Map<string, string[]>;
-      machineReadableSources: RegistryValidationMachineReadableSource[];
-    },
-    RegistryValidationMachineReadableSource
-  > =>
-    composeCheckCompletedHandlerCallbacks<
-      BotContext<RequestEvents>,
-      RepoInfo,
-      CheckRunLike,
-      CheckSuiteLike,
-      {
-        byFile: Map<string, string[]>;
-        machineReadableSources: RegistryValidationMachineReadableSource[];
-      },
-      RegistryValidationMachineReadableSource
-    >({
-      readCheckRunFromPayload,
-      readCheckSuiteFromPayload,
-      readRepoInfoFromPayload,
-      readCheckRunPrNumbers,
-      resolveCheckSuitePrNumbers,
-      readCheckSuiteId,
-      listAllCheckRunsForSuite,
-      readCheckRunId,
-      readFirstRegistryValidationArtifactsForSuiteRuns,
-      collapseBotCommentsByPrefix,
-      postCheckSuiteRegistryValidationComments,
-      maybeHandleDefaultBranchCheckSuiteSuccess,
-      tryAutoMerge,
-      maybeApprovePendingWorkflowRunsForPrNumbers,
-      handleBlockingRegistryHeadConclusion,
-      isBlockingCheckConclusion,
-      readDefaultBranchFromPayload,
-      getStaticConfig: async (context: BotContext<RequestEvents>): Promise<unknown> => await getStaticConfig(context),
-      log,
-      isDebugEnabled: DBG,
-      toStringTrim,
-    });
 
   const handlePush = createPushEventHandler<BotContext<'push'>, RepoInfo, SequentialRegistryPrResult>({
     readRepoInfoFromPayload,
