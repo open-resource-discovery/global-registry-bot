@@ -54,25 +54,6 @@ import {
   type BranchUpdateOrchestrationCallbacks,
 } from './application/branch-update-orchestration.js';
 import {
-  requestPullRequestBranchUpdateRespectingSequentialRegistryQueue as requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication,
-  type BranchUpdateSequentialHandoffCallbacks,
-} from './application/branch-update-sequential-handoff.js';
-import {
-  runOneSequentialDirectRegistryPrMaintenance as runOneSequentialDirectRegistryPrMaintenanceApplication,
-  type SequentialRegistryPrQueueCallbacks,
-} from './application/sequential-registry-pr-queue.js';
-import {
-  advanceSequentialRegistryPrQueueAfterTerminalState as advanceSequentialRegistryPrQueueAfterTerminalStateApplication,
-  handleBlockingRegistryHeadConclusion as handleBlockingRegistryHeadConclusionApplication,
-  releaseSequentialRegistryPrIfNotApprovedAfterGreen as releaseSequentialRegistryPrIfNotApprovedAfterGreenApplication,
-  type SequentialRegistryPrTerminalCallbacks,
-} from './application/sequential-registry-pr-terminal.js';
-import {
-  runAutoMergeEvaluation as runAutoMergeEvaluationApplication,
-  tryAutoMerge as tryAutoMergeApplication,
-  type AutoMergeTriggerCallbacks,
-} from './application/auto-merge-trigger.js';
-import {
   readCheckRunFromPayload as readCheckRunFromPayloadApplication,
   readCheckRunPrNumbers as readCheckRunPrNumbersApplication,
   readCheckSuiteFromPayload as readCheckSuiteFromPayloadApplication,
@@ -136,8 +117,6 @@ import {
   removeExactLabelsFromIssue as removeExactLabelsFromIssueApplication,
   removeProgressStatusLabels as removeProgressStatusLabelsApplication,
   removeRejectedStatusLabel as removeRejectedStatusLabelApplication,
-  resolveAdditionalIssueApproversFromApprovalHook as resolveAdditionalIssueApproversFromApprovalHookApplication,
-  resolveManualReviewApproverOverrideFromApprovalHook as resolveManualReviewApproverOverrideFromApprovalHookApplication,
   type IssueStateReviewerOperationsCallbacks,
 } from './application/issue-state-reviewer-operations.js';
 import {
@@ -166,7 +145,6 @@ import {
   isSequentialRegistryPrHeadSkipped,
   markSequentialRegistryPrActive as markSequentialRegistryPrActiveState,
   markSequentialRegistryPrHeadSkipped as markSequentialRegistryPrHeadSkippedState,
-  type SequentialRegistryPrActive as SequentialRegistryPrActiveState,
 } from './application/sequential-registry-pr-state.js';
 import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
 import {
@@ -186,25 +164,12 @@ import {
   type DirectPrRequestTypeResolutionCallbacks,
 } from './application/direct-pr-request-type-resolution.js';
 import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
-import { tryMergeApprovedPrOrUpdateBranch as tryMergeApprovedPrOrUpdateBranchApplication } from './application/merge-inflight.js';
-import {
-  runMergeApprovedPrOrUpdateBranch as runMergeApprovedPrOrUpdateBranchApplication,
-  type MergeApprovedPrOrUpdateBranchCallbacks,
-} from './application/merge-approved-pr-or-update-branch.js';
 import { handoverStandaloneDirectPrToReview } from './application/pr-review-handover.js';
 import { handoverToCpa } from './application/review-handover.js';
-import { maybeHandleApprovalDecision } from './application/approval-decision-dispatch.js';
 import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from './application/approval-outcome-posting.js';
-import {
-  handleApprovalComment as handleApprovalCommentApplication,
-  type ApprovalCommentHandlingCallbacks,
-} from './application/approval-comment-handling.js';
-import {
-  handleParentOwnerApprovalIfNeeded as handleParentOwnerApprovalIfNeededApplication,
-  handleSystemContactOwnerApprovalIfNeeded as handleSystemContactOwnerApprovalIfNeededApplication,
-  type OwnerApprovalCommentHandlingCallbacks,
-} from './application/owner-approval-comment-handling.js';
+import { type ApprovalCommentHandlingCallbacks } from './application/approval-comment-handling.js';
+import { type OwnerApprovalCommentHandlingCallbacks } from './application/owner-approval-comment-handling.js';
 import {
   maybeHandleStandaloneDirectPrApproval as maybeHandleStandaloneDirectPrApprovalApplication,
   type StandaloneDirectPrApprovalCallbacks,
@@ -218,10 +183,6 @@ import {
   type DirectPrApprovalCommentHandlingCallbacks,
 } from './application/direct-pr-approval-comment-handling.js';
 import {
-  processPullRequestForAutoMerge as processPullRequestForAutoMergeApplication,
-  type PullRequestAutoMergeEntryCallbacks,
-} from './application/pull-request-auto-merge-entry.js';
-import {
   detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
   enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
   ensureRoutingLockMarker as ensureRoutingLockMarkerApplication,
@@ -234,15 +195,10 @@ import {
   clearParentOwnerActionState as clearParentOwnerActionStateApplication,
   ensureContactApprovalMarker as ensureContactApprovalMarkerApplication,
   ensureParentApprovalMarker as ensureParentApprovalMarkerApplication,
-  maybeRequireParentOwnerApproval as maybeRequireParentOwnerApprovalApplication,
-  maybeRequireSystemContactOwnerApproval as maybeRequireSystemContactOwnerApprovalApplication,
   setParentOwnerActionState as setParentOwnerActionStateApplication,
   type OwnerApprovalRequirementsCallbacks,
 } from './application/owner-approval-requirements.js';
-import {
-  finalizeApprovedRequest as finalizeApprovedRequestApplication,
-  type ApprovedRequestFinalizationCallbacks,
-} from './application/approved-request-finalization.js';
+import { type ApprovedRequestFinalizationCallbacks } from './application/approved-request-finalization.js';
 import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
 import {
   isPullRequestBehindBase as isPullRequestBehindBasePure,
@@ -285,7 +241,20 @@ import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './d
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
 import { DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
+import { getErrorMessage, getHttpStatus, isPlainObject } from './infrastructure/errors.js';
 import { log as infraLog } from './infrastructure/logger.js';
+import {
+  createGitHubGateway,
+  createGitHubIssueUpdateGateway,
+  type GitHubGateway,
+} from './infrastructure/github-gateway.js';
+import {
+  readDefaultBranchFromPayload,
+  readDefaultBranchFromPush,
+  readPayloadLabelName,
+  readPushChangedFiles,
+  readRepoInfoFromPayload,
+} from './infrastructure/request-context.js';
 import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
 import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
 import { registerRequestEvents } from './events/index.js';
@@ -302,8 +271,9 @@ import { createPushEventHandler } from './events/push.js';
 import {
   composeApprovalCommentHandlingCallbacks,
   composeApprovedRequestFinalizationCallbacks,
-  composeAutoMergeTriggerCallbacks,
   composeCheckCompletedHandlerCallbacks,
+  createApprovalRuntime,
+  createAutoMergeRuntime,
   composeDefaultBranchApprovedPrBranchUpdateCallbacks,
   composeDefaultBranchCheckSuiteReevaluationCallbacks,
   composeDefaultBranchDirectPrReevaluationCallbacks,
@@ -495,14 +465,8 @@ type EffectiveConstants = {
 
 const log = infraLog;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function getHttpStatus(err: unknown): number | undefined {
-  if (!isPlainObject(err)) return undefined;
-  const status = err['status'];
-  return typeof status === 'number' ? status : undefined;
+function github<E extends RequestEvents>(context: BotContext<E>): GitHubGateway {
+  return createGitHubGateway(context);
 }
 
 function toStringTrim(value: unknown): string {
@@ -605,7 +569,7 @@ function buildCheckSuiteAnnotationsCallbacks(): CheckSuiteAnnotationsCallbacks<
         per_page: number;
         page: number;
       }
-    ): Promise<{ data?: unknown }> => await context.octokit.checks.listForSuite(args),
+    ): Promise<{ data?: unknown }> => await github(context).checks.listCheckRunsForSuite(args),
     listCheckRunAnnotations: async (
       context: BotContext<RequestEvents>,
       args: {
@@ -615,7 +579,7 @@ function buildCheckSuiteAnnotationsCallbacks(): CheckSuiteAnnotationsCallbacks<
         per_page: number;
         page: number;
       }
-    ): Promise<{ data?: unknown }> => await context.octokit.checks.listAnnotations(args),
+    ): Promise<{ data?: unknown }> => await github(context).checks.listCheckRunAnnotations(args),
     onCheckRunAnnotationsLoaded: (
       context: BotContext<RequestEvents>,
       args: {
@@ -1034,7 +998,8 @@ function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<BotContex
         per_page: number;
         page: number;
       }
-    ): Promise<{ data?: PullRequestLike[] }> => await context.octokit.pulls.list(args),
+    ): Promise<{ data?: PullRequestLike[] }> =>
+      (await github(context).pullRequests.listPullRequests(args)) as { data?: PullRequestLike[] },
   };
 }
 
@@ -1148,37 +1113,6 @@ function buildReviewHandoverBody(
 ): string {
   const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
   return buildReviewHandoverBodyPure(docsLinks, snapshotHash, options);
-}
-
-function buildReviewHandoverOptions(): {
-  resolveEffectiveConstants: (context: BotContext<RequestEvents>) => EffectiveConstants;
-  resolveApproverRoutingForRequestType: (
-    context: BotContext<RequestEvents>,
-    requestType: string | undefined,
-    approverUsernames: string[],
-    approverPoolUsernames: string[]
-  ) => ReturnType<typeof resolveApproverRoutingForRequestType>;
-  pickAutoAssigneeFromPool: (issue: IssueLike, pool: string[]) => string[];
-  uniqLogins: (logins: string[]) => string[];
-  toStringTrim: (value: unknown) => string;
-  ensureAssigneesPresent: (
-    context: BotContext<RequestEvents>,
-    params: IssueParams,
-    assignees: string[]
-  ) => Promise<void>;
-  ensureLabelsPresentOnce: (context: BotContext<RequestEvents>, params: IssueParams, labels: string[]) => Promise<void>;
-  buildReviewHandoverBody: (context: BotContext<RequestEvents>, snapshotHash?: string) => string;
-} {
-  return {
-    resolveEffectiveConstants,
-    resolveApproverRoutingForRequestType,
-    pickAutoAssigneeFromPool,
-    uniqLogins,
-    toStringTrim,
-    ensureAssigneesPresent,
-    ensureLabelsPresentOnce,
-    buildReviewHandoverBody,
-  };
 }
 
 async function ensureReviewLabelsPresentOnIssue(
@@ -1630,10 +1564,6 @@ type SequentialRegistryPrResult = {
   blockedByActive: boolean;
 };
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}`;
 }
@@ -1716,7 +1646,7 @@ function buildBranchUpdateDecisionCallbacks(): BranchUpdateDecisionCallbacks<Bot
     getBranch: async (
       context: BotContext<RequestEvents>,
       args: { owner: string; repo: string; branch: string }
-    ): Promise<{ data?: { commit?: { sha?: string | null } } }> => await context.octokit.repos.getBranch(args),
+    ): Promise<{ data?: { commit?: { sha?: string | null } } }> => await github(context).repos.getBranch(args),
     compareCommitsWithBasehead: async (
       context: BotContext<RequestEvents>,
       args: { owner: string; repo: string; basehead: string }
@@ -1742,15 +1672,11 @@ async function readFreshPullRequest(
   prNumber: number
 ): Promise<PullRequestLike | null> {
   try {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data?: PullRequestLike }>;
-      }
-    ).get({
+    const res = (await github(context).pullRequests.getPullRequest({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       pull_number: prNumber,
-    });
+    })) as { data?: PullRequestLike };
 
     return res.data || null;
   } catch (error: unknown) {
@@ -1835,51 +1761,6 @@ function buildPullRequestMergeabilityCallbacks(): PullRequestMergeabilityCallbac
   };
 }
 
-function buildMergeApprovedPrOrUpdateBranchCallbacks(): MergeApprovedPrOrUpdateBranchCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike
-> {
-  return {
-    waitForPullRequestMergeability,
-    shouldUpdatePullRequestBranch,
-    requestPullRequestBranchUpdateRespectingSequentialRegistryQueue,
-    hasAutoApprovedPrHead,
-    isPullRequestApprovedForBranchMaintenance,
-    isCrossRepositoryPullRequest,
-    evaluateHeadGreenForApprovalReevaluation,
-    tryMergeIfGreen,
-    readFreshPullRequest,
-    log,
-    getErrorMessage,
-    getHttpStatus,
-  };
-}
-
-async function tryMergeApprovedPrOrUpdateBranch(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<void> {
-  await tryMergeApprovedPrOrUpdateBranchApplication(context, repoInfo, pr, reason, runMergeApprovedPrOrUpdateBranch);
-}
-
-async function runMergeApprovedPrOrUpdateBranch(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<void> {
-  await runMergeApprovedPrOrUpdateBranchApplication(
-    context,
-    repoInfo,
-    pr,
-    reason,
-    buildMergeApprovedPrOrUpdateBranchCallbacks()
-  );
-}
-
 function parsePositiveIssueNumber(value: string | undefined): number | null {
   if (!value) return null;
 
@@ -1938,13 +1819,13 @@ async function listOpenPullRequests(
   let page = 1;
 
   while (true) {
-    const { data } = await context.octokit.pulls.list({
+    const { data } = (await github(context).pullRequests.listPullRequests({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       state: 'open',
       per_page: 100,
       page,
-    });
+    })) as { data?: PullRequestLike[] };
 
     const prs = (data || []) as unknown as PullRequestLike[];
     if (!prs.length) break;
@@ -1959,97 +1840,8 @@ async function listOpenPullRequests(
   return out;
 }
 
-async function processPullRequestForAutoMerge(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<void> {
-  await processPullRequestForAutoMergeApplication(context, repoInfo, pr, buildPullRequestAutoMergeEntryCallbacks());
-}
-
-function buildPullRequestAutoMergeEntryCallbacks(): PullRequestAutoMergeEntryCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  IssueParams,
-  IssueLike,
-  TemplateLike,
-  FormData,
-  PullRequestLike
-> {
-  return {
-    isSequentialDirectRegistryPr,
-    shouldDeferSequentialDirectRegistryPrProcessing,
-    parseLinkedIssueNumberFromPr,
-    readFreshPullRequest,
-    maybeHandleStandaloneDirectPrApproval,
-    tryMergeApprovedPrOrUpdateBranch,
-    buildIssueParams: (repoInfo: RepoInfo, issueNumber: number) => ({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      issue_number: issueNumber,
-    }),
-    readLinkedIssue: async (context: BotContext<RequestEvents>, params: IssueParams): Promise<IssueLike> => {
-      const res = await context.octokit.issues.get(params);
-      return res.data as unknown as IssueLike;
-    },
-    log,
-    getErrorMessage,
-    getHttpStatus,
-    isCrossRepositoryPullRequest,
-    hasIssueFormInputs,
-    loadTemplateWithLabelRefresh,
-    parseForm,
-    readIssueBodyForProcessing,
-    isRequestIssue,
-    buildCompatibleRequestSnapshotHashes,
-    calcSnapshotHash,
-    extractHashFromPrBody,
-    closeOutdatedRequestPrs,
-    maybeHandleDirectPrApprovalForMerge,
-  };
-}
-
 function isApprovalConfigChangePath(filePath: string): boolean {
   return /^\.github\/registry-bot\/config\.(?:[cm]?js|ts|ya?ml)$/i.test(normalizeRepoPath(filePath));
-}
-
-function readPushChangedFiles(payload: unknown): string[] {
-  if (!isPlainObject(payload)) return [];
-
-  const commits = Array.isArray(payload['commits']) ? payload['commits'] : [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const commit of commits) {
-    if (!isPlainObject(commit)) continue;
-
-    for (const key of ['added', 'modified', 'removed'] as const) {
-      const files = Array.isArray(commit[key]) ? commit[key] : [];
-      for (const file of files) {
-        const normalized = normalizeRepoPath(file);
-        if (!normalized || seen.has(normalized)) continue;
-        seen.add(normalized);
-        out.push(normalized);
-      }
-    }
-  }
-
-  return out;
-}
-
-async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason = 'default-branch-push:direct-pr-reevaluation'
-): Promise<SequentialRegistryPrResult> {
-  return await reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication(
-    context,
-    repoInfo,
-    baseBranch,
-    buildDefaultBranchDirectPrReevaluationCallbacks(),
-    reason
-  );
 }
 
 function isDefaultBranchPush(payload: unknown): boolean {
@@ -2060,17 +1852,6 @@ function isDefaultBranchPush(payload: unknown): boolean {
   const defaultBranch = repoObj ? toStringTrim(repoObj['default_branch']) : '';
 
   return Boolean(ref && defaultBranch && ref === `refs/heads/${defaultBranch}`);
-}
-
-function readDefaultBranchFromPayload(payload: unknown): string {
-  if (!isPlainObject(payload)) return '';
-
-  const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
-  return repoObj ? toStringTrim(repoObj['default_branch']) : '';
-}
-
-function readDefaultBranchFromPush(payload: unknown): string {
-  return readDefaultBranchFromPayload(payload);
 }
 
 function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): boolean {
@@ -2489,178 +2270,6 @@ async function isSequentialDirectRegistryPr(
   });
 }
 
-async function shouldDeferSequentialDirectRegistryPrProcessing(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<boolean> {
-  const active = getSequentialRegistryPrActive(repoInfo);
-  if (!active || active.prNumber === pr.number) return false;
-
-  if (!(await isSequentialRegistryPrActiveBlocking(context, repoInfo))) {
-    return false;
-  }
-
-  const currentActive = getSequentialRegistryPrActive(repoInfo);
-  if (!currentActive || currentActive.prNumber === pr.number) {
-    return false;
-  }
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      activePrNumber: currentActive.prNumber,
-      activeHeadSha: currentActive.startedHeadSha,
-    },
-    'sequential-registry-pr:auto-merge-deferred'
-  );
-
-  return true;
-}
-
-function buildBranchUpdateSequentialHandoffCallbacks(): BranchUpdateSequentialHandoffCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike,
-  SequentialRegistryPrActiveState | null
-> {
-  return {
-    isSequentialDirectRegistryPr,
-    requestPullRequestBranchUpdate,
-    getSequentialRegistryPrActive,
-    markSequentialRegistryPrActive,
-    runOneSequentialDirectRegistryPrMaintenance,
-  };
-}
-
-async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  return await requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication(
-    context,
-    repoInfo,
-    pr,
-    baseBranch,
-    reason,
-    buildBranchUpdateSequentialHandoffCallbacks()
-  );
-}
-
-function buildSequentialRegistryPrTerminalCallbacks(): SequentialRegistryPrTerminalCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike,
-  SequentialRegistryPrActiveState | null,
-  HeadGreenEvaluation
-> {
-  return {
-    readFreshPullRequest,
-    isPullRequestOpen,
-    getSequentialRegistryPrActive,
-    clearSequentialRegistryPrActive,
-    markSequentialRegistryPrHeadSkipped,
-    listOpenPullRequests,
-    pullRequestTargetsBranch,
-    listChangedYamlFilesForPrWithFallback,
-    runOneSequentialDirectRegistryPrMaintenance,
-    evaluateHeadGreenForApprovalReevaluation,
-    isPullRequestApprovedForBranchMaintenance,
-    log,
-  };
-}
-
-async function advanceSequentialRegistryPrQueueAfterTerminalState(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<void> {
-  await advanceSequentialRegistryPrQueueAfterTerminalStateApplication(
-    context,
-    repoInfo,
-    pr,
-    reason,
-    buildSequentialRegistryPrTerminalCallbacks()
-  );
-}
-
-function buildSequentialRegistryPrQueueCallbacks(): SequentialRegistryPrQueueCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  PullRequestLike,
-  HeadGreenEvaluation
-> {
-  return {
-    isSequentialRegistryPrActiveBlocking,
-    listOpenPullRequests,
-    parseLinkedIssueNumberFromPr,
-    isSnapshotManagedRequestPr,
-    pullRequestTargetsBranch,
-    isSequentialRegistryPrHeadSkipped,
-    listChangedYamlFilesForPrWithFallback,
-    readFreshPullRequest,
-    shouldUpdatePullRequestBranch,
-    isPullRequestApprovedForBranchMaintenance,
-    requestPullRequestBranchUpdate,
-    markSequentialRegistryPrActive,
-    markSequentialRegistryPrHeadSkipped,
-    evaluateHeadGreenForApprovalReevaluation,
-    processPullRequestForAutoMerge,
-    log,
-  };
-}
-
-async function runOneSequentialDirectRegistryPrMaintenance(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason: string
-): Promise<SequentialRegistryPrResult> {
-  return await runOneSequentialDirectRegistryPrMaintenanceApplication(
-    context,
-    repoInfo,
-    baseBranch,
-    reason,
-    buildSequentialRegistryPrQueueCallbacks()
-  );
-}
-
-async function handleBlockingRegistryHeadConclusion(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  headSha: string,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  return await handleBlockingRegistryHeadConclusionApplication(
-    context,
-    repoInfo,
-    headSha,
-    baseBranch,
-    reason,
-    buildSequentialRegistryPrTerminalCallbacks()
-  );
-}
-
-async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<void> {
-  await releaseSequentialRegistryPrIfNotApprovedAfterGreenApplication(
-    context,
-    repoInfo,
-    pr,
-    buildSequentialRegistryPrTerminalCallbacks()
-  );
-}
-
 async function readRepoFileTextAtRef(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -2705,21 +2314,6 @@ function buildDefaultBranchApprovedPrBranchUpdateCallbacks(): DefaultBranchAppro
     requestPullRequestBranchUpdate,
     markSequentialRegistryPrHeadSkipped,
     getErrorMessage,
-    log,
-  });
-}
-
-function buildDefaultBranchDirectPrReevaluationCallbacks(): DefaultBranchDirectPrReevaluationCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  SequentialRegistryPrResult
-> {
-  return composeDefaultBranchDirectPrReevaluationCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    SequentialRegistryPrResult
-  >({
-    runOneSequentialDirectRegistryPrMaintenance,
     log,
   });
 }
@@ -3014,53 +2608,6 @@ function buildStandaloneDirectPrApprovalCallbacks(): StandaloneDirectPrApprovalC
   });
 }
 
-function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommentHandlingCallbacks<
-  BotContext<RequestEvents>,
-  RepoInfo,
-  IssueParams,
-  PullRequestLike,
-  IssueLike,
-  EffectiveConstants
-> {
-  return composeDirectPrApprovalCommentHandlingCallbacks<
-    BotContext<RequestEvents>,
-    RepoInfo,
-    IssueParams,
-    PullRequestLike,
-    IssueLike,
-    EffectiveConstants
-  >({
-    resolveEffectiveConstants,
-    prAsIssueLike,
-    ensureReviewLabelsPresentOnIssue,
-    resolveDirectPrRequestTypes,
-    resolveAllowedApproversForRequestTypes,
-    evaluateDirectPrOnApproval,
-    postApprovalRejectedOnce,
-    isAuthorizedApprover,
-    ensureAutomatedApprovalReviewForCurrentHead,
-    isCrossRepositoryPullRequest,
-    tryMergeApprovedPrOrUpdateBranch,
-    postOnce,
-    log,
-  });
-}
-
-async function handleDirectPrApprovalComment(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  commenter: string
-): Promise<void> {
-  await handleDirectPrApprovalCommentApplication(
-    context,
-    repoInfo,
-    pr,
-    commenter,
-    buildDirectPrApprovalCommentHandlingCallbacks()
-  );
-}
-
 async function maybeHandleStandaloneDirectPrApproval(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
@@ -3075,6 +2622,53 @@ async function maybeHandleStandaloneDirectPrApproval(
     buildStandaloneDirectPrApprovalCallbacks()
   );
 }
+
+const approvalRuntime = createApprovalRuntime<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  PullRequestLike,
+  EffectiveConstants,
+  ValidateRequestIssueResult,
+  ContactApprovalMeta,
+  ParentApprovalMeta
+>({
+  runApprovalHook,
+  extractResourceNameFromForm,
+  listOpenPullRequests,
+  parseLinkedIssueNumberFromPr,
+  rejectRequestFromApprovalHook,
+  resolveEffectiveConstants,
+  resolveApproverRoutingForRequestType,
+  pickAutoAssigneeFromPool,
+  uniqLogins,
+  toStringTrim,
+  ensureAssigneesPresent,
+  ensureLabelsPresentOnce,
+  buildReviewHandoverBody,
+  resolveEffectiveRequestType,
+  buildApprovedRequestFinalizationCallbacks,
+  buildApprovalCommentHandlingCallbacks,
+  buildOwnerApprovalCommentHandlingCallbacks,
+  buildOwnerApprovalRequirementsCallbacks,
+  buildIssueStateReviewerOperationsCallbacks,
+});
+
+const buildApprovalDecisionDispatchOptions = approvalRuntime.buildApprovalDecisionDispatchOptions;
+const buildReviewHandoverOptions = approvalRuntime.buildReviewHandoverOptions;
+const maybeHandleApprovalDecision = approvalRuntime.maybeHandleApprovalDecision;
+const finalizeApprovedRequest = approvalRuntime.finalizeApprovedRequest;
+const maybeRequireParentOwnerApproval = approvalRuntime.maybeRequireParentOwnerApproval;
+const maybeRequireSystemContactOwnerApproval = approvalRuntime.maybeRequireSystemContactOwnerApproval;
+const handleApprovalComment = approvalRuntime.handleApprovalComment;
+const handleParentOwnerApprovalIfNeeded = approvalRuntime.handleParentOwnerApprovalIfNeeded;
+const handleSystemContactOwnerApprovalIfNeeded = approvalRuntime.handleSystemContactOwnerApprovalIfNeeded;
+const resolveManualReviewApproverOverrideFromApprovalHook =
+  approvalRuntime.resolveManualReviewApproverOverrideFromApprovalHook;
+const resolveAdditionalIssueApproversFromApprovalHook = approvalRuntime.resolveAdditionalIssueApproversFromApprovalHook;
 
 function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizationCallbacks<
   BotContext<RequestEvents>,
@@ -3105,103 +2699,6 @@ function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizatio
     createRequestPrWithRecovery,
     postOnce,
   });
-}
-
-async function finalizeApprovedRequest(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  options: {
-    approvalPrefix?: string;
-    approvalComment?: string;
-    autoApproved?: boolean;
-  }
-): Promise<void> {
-  await finalizeApprovedRequestApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    options,
-    buildApprovedRequestFinalizationCallbacks()
-  );
-}
-
-function buildApprovalDecisionDispatchOptions(): {
-  resolveApprovalDecision: (
-    dispatchContext: BotContext<RequestEvents>,
-    dispatchParams: IssueParams,
-    dispatchIssue: IssueLike,
-    dispatchTemplate: TemplateLike,
-    dispatchFormData: FormData,
-    dispatchRequestType: string,
-    dispatchNamespace: string
-  ) => Promise<ApprovalDecision | boolean>;
-  handleApprovedDecision: (
-    dispatchContext: BotContext<RequestEvents>,
-    dispatchParams: IssueParams,
-    dispatchIssue: IssueLike,
-    dispatchTemplate: TemplateLike,
-    dispatchFormData: FormData,
-    decision: ApprovalDecision
-  ) => Promise<void>;
-  handleRejectedDecision: (
-    dispatchContext: BotContext<RequestEvents>,
-    dispatchParams: IssueParams,
-    dispatchIssue: IssueLike,
-    decision: ApprovalDecision
-  ) => Promise<void>;
-} {
-  return {
-    resolveApprovalDecision: (
-      dispatchContext: BotContext<RequestEvents>,
-      dispatchParams: IssueParams,
-      dispatchIssue: IssueLike,
-      dispatchTemplate: TemplateLike,
-      dispatchFormData: FormData,
-      dispatchRequestType: string,
-      dispatchNamespace: string
-    ): Promise<ApprovalDecision | boolean> =>
-      runApprovalHook(
-        dispatchContext,
-        { owner: dispatchParams.owner, repo: dispatchParams.repo },
-        {
-          requestType: dispatchRequestType,
-          namespace: dispatchNamespace,
-          resourceName: extractResourceNameFromForm(dispatchFormData, dispatchTemplate),
-          formData: dispatchFormData,
-          issue: dispatchIssue,
-        }
-      ),
-    handleApprovedDecision: (
-      dispatchContext: BotContext<RequestEvents>,
-      dispatchParams: IssueParams,
-      dispatchIssue: IssueLike,
-      dispatchTemplate: TemplateLike,
-      dispatchFormData: FormData,
-      decision: ApprovalDecision
-    ): Promise<void> =>
-      finalizeApprovedRequest(dispatchContext, dispatchParams, dispatchIssue, dispatchTemplate, dispatchFormData, {
-        approvalPrefix: '',
-        approvalComment: decision.comment,
-        autoApproved: true,
-      }),
-    handleRejectedDecision: (
-      dispatchContext: BotContext<RequestEvents>,
-      dispatchParams: IssueParams,
-      dispatchIssue: IssueLike,
-      decision: ApprovalDecision
-    ): Promise<void> =>
-      rejectRequestFromApprovalHook(dispatchContext, dispatchParams, dispatchIssue, decision, {
-        closeLinkedPrs: true,
-        minimizeTag: undefined,
-        listOpenPullRequests,
-        parseLinkedIssueNumberFromPr,
-      }),
-  };
 }
 
 function buildDirectPrLinkedIssueApprovalCallbacks(): DirectPrLinkedIssueApprovalCallbacks<
@@ -3497,44 +2994,6 @@ async function processIssueEvent(
   await processRequestIssueLifecycleApplication(context, params, issue, buildRequestIssueLifecycleCallbacks(app));
 }
 
-async function resolveAdditionalIssueApproversFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType?: string
-): Promise<string[]> {
-  return await resolveAdditionalIssueApproversFromApprovalHookApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    requestType,
-    buildIssueStateReviewerOperationsCallbacks()
-  );
-}
-
-async function resolveManualReviewApproverOverrideFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType?: string
-): Promise<string[]> {
-  return await resolveManualReviewApproverOverrideFromApprovalHookApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    requestType,
-    buildIssueStateReviewerOperationsCallbacks()
-  );
-}
-
 function buildIssueStateReviewerOperationsCallbacks(): IssueStateReviewerOperationsCallbacks<
   BotContext<RequestEvents>,
   IssueParams,
@@ -3676,25 +3135,6 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
   });
 }
 
-async function handleApprovalComment(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  commenter: string
-): Promise<void> {
-  await handleApprovalCommentApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    commenter,
-    buildApprovalCommentHandlingCallbacks()
-  );
-}
-
 async function handleAuthorUpdateComment(
   app: Probot,
   context: BotContext<RequestEvents>,
@@ -3771,14 +3211,6 @@ async function loadTemplateWithLabelRefresh(
   }
 }
 
-function readPayloadLabelName(payload: unknown): string {
-  if (!isPlainObject(payload)) return '';
-  const l = payload['label'];
-  if (typeof l === 'string') return toStringTrim(l);
-  if (isPlainObject(l)) return toStringTrim(l['name']);
-  return '';
-}
-
 async function tryLoadTemplateForLabels(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -3827,44 +3259,6 @@ async function ensureContactApprovalMarker(
   );
 }
 
-async function maybeRequireSystemContactOwnerApproval(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  requestType: string,
-  validatedNamespace: string
-): Promise<boolean> {
-  return await maybeRequireSystemContactOwnerApprovalApplication(
-    context,
-    params,
-    issue,
-    parsedFormData,
-    requestType,
-    validatedNamespace,
-    buildOwnerApprovalRequirementsCallbacks()
-  );
-}
-
-async function handleSystemContactOwnerApprovalIfNeeded(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  commenter: string
-): Promise<boolean> {
-  return await handleSystemContactOwnerApprovalIfNeededApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    commenter,
-    buildOwnerApprovalCommentHandlingCallbacks()
-  );
-}
-
 async function ensureParentApprovalMarker(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -3876,25 +3270,6 @@ async function ensureParentApprovalMarker(
     params,
     issue,
     meta,
-    buildOwnerApprovalRequirementsCallbacks()
-  );
-}
-
-async function maybeRequireParentOwnerApproval(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  validatedNamespace: string,
-  requestType: string
-): Promise<boolean> {
-  return await maybeRequireParentOwnerApprovalApplication(
-    context,
-    params,
-    issue,
-    template,
-    validatedNamespace,
-    requestType,
     buildOwnerApprovalRequirementsCallbacks()
   );
 }
@@ -3911,7 +3286,7 @@ function buildOwnerApprovalRequirementsCallbacks(): OwnerApprovalRequirementsCal
     normalizeKey,
     labelsMatching,
     updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
-      await context.octokit.issues.update({ ...params, body });
+      await createGitHubIssueUpdateGateway(context).updateIssue({ ...params, body });
     },
     readYamlFromRepo,
     extractParentContactCandidates,
@@ -3927,25 +3302,6 @@ function buildOwnerApprovalRequirementsCallbacks(): OwnerApprovalRequirementsCal
     setStateLabel,
     log,
   };
-}
-
-async function handleParentOwnerApprovalIfNeeded(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  commenter: string
-): Promise<boolean> {
-  return await handleParentOwnerApprovalIfNeededApplication(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    commenter,
-    buildOwnerApprovalCommentHandlingCallbacks()
-  );
 }
 
 function buildCompatibleRequestSnapshotHashes(
@@ -4092,7 +3448,7 @@ async function normalizeIssueTitle(
     const desiredTitle = `${prefix}: ${resourceName}`;
     if (toStringTrim(issue.title) === desiredTitle) return;
 
-    await context.octokit.issues.update({
+    await createGitHubIssueUpdateGateway(context).updateIssue({
       owner: params.owner,
       repo: params.repo,
       issue_number: params.issue_number,
@@ -4139,21 +3495,6 @@ function buildOutdatedRequestPrCleanupCallbacks(): OutdatedRequestPrCleanupCallb
   };
 }
 
-function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
-  if (!isPlainObject(payload)) return null;
-
-  const repoObj = payload['repository'];
-  if (!isPlainObject(repoObj)) return null;
-
-  const repoName = toStringTrim(repoObj['name']);
-  const ownerObj = isPlainObject(repoObj['owner']) ? repoObj['owner'] : null;
-  const ownerLogin = ownerObj ? toStringTrim(ownerObj['login']) : '';
-
-  if (!ownerLogin || !repoName) return null;
-
-  return { owner: ownerLogin, repo: repoName };
-}
-
 export default function requestHandler(app: Probot): void {
   const getStaticConfig = createStaticConfigContextLoader<BotContext<RequestEvents>>(app.log || console);
 
@@ -4177,34 +3518,136 @@ export default function requestHandler(app: Probot): void {
       log,
     });
 
-  const buildAutoMergeTriggerCallbacks = (): AutoMergeTriggerCallbacks<
+  const autoMergeRuntime = createAutoMergeRuntime({
+    getStaticConfig,
+    evaluateHeadGreenForApprovalReevaluation,
+    listOpenPullRequests,
+    readFreshPullRequest,
+    isSequentialDirectRegistryPr,
+    getSequentialRegistryPrActive,
+    clearSequentialRegistryPrActive,
+    markSequentialRegistryPrHeadSkipped,
+    markSequentialRegistryPrActive,
+    requestPullRequestBranchUpdate,
+    isSequentialRegistryPrActiveBlocking,
+    parseLinkedIssueNumberFromPr,
+    isSnapshotManagedRequestPr,
+    pullRequestTargetsBranch,
+    isSequentialRegistryPrHeadSkipped,
+    listChangedYamlFilesForPrWithFallback,
+    shouldUpdatePullRequestBranch,
+    isPullRequestApprovedForBranchMaintenance,
+    waitForPullRequestMergeability,
+    hasAutoApprovedPrHead,
+    isCrossRepositoryPullRequest,
+    tryMergeIfGreen,
+    maybeHandleStandaloneDirectPrApproval,
+    buildIssueParams: (repoInfo: RepoInfo, issueNumber: number) => ({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: issueNumber,
+    }),
+    readLinkedIssue: async (context: BotContext<RequestEvents>, params: IssueParams): Promise<IssueLike> => {
+      const res = await context.octokit.issues.get(params);
+      return res.data as unknown as IssueLike;
+    },
+    log,
+    getErrorMessage,
+    getHttpStatus,
+    hasIssueFormInputs,
+    loadTemplateWithLabelRefresh,
+    parseForm,
+    readIssueBodyForProcessing,
+    isRequestIssue,
+    buildCompatibleRequestSnapshotHashes,
+    calcSnapshotHash,
+    extractHashFromPrBody,
+    closeOutdatedRequestPrs,
+    maybeHandleDirectPrApprovalForMerge,
+    isPullRequestOpen,
+  });
+
+  const runOneSequentialDirectRegistryPrMaintenance = autoMergeRuntime.runOneSequentialDirectRegistryPrMaintenance;
+  const tryMergeApprovedPrOrUpdateBranch = autoMergeRuntime.tryMergeApprovedPrOrUpdateBranch;
+  const tryAutoMerge = autoMergeRuntime.tryAutoMerge;
+  const handleBlockingRegistryHeadConclusion = autoMergeRuntime.handleBlockingRegistryHeadConclusion;
+
+  function buildDefaultBranchDirectPrReevaluationCallbacks(): DefaultBranchDirectPrReevaluationCallbacks<
     BotContext<RequestEvents>,
     RepoInfo,
-    PullRequestLike,
-    SequentialRegistryPrActiveState | null,
-    HeadGreenEvaluation
-  > =>
-    composeAutoMergeTriggerCallbacks<
+    SequentialRegistryPrResult
+  > {
+    return composeDefaultBranchDirectPrReevaluationCallbacks<
       BotContext<RequestEvents>,
       RepoInfo,
-      PullRequestLike,
-      SequentialRegistryPrActiveState | null,
-      HeadGreenEvaluation
+      SequentialRegistryPrResult
     >({
-      getStaticConfig,
-      evaluateHeadGreenForApprovalReevaluation,
-      listOpenPullRequests,
-      processPullRequestForAutoMerge,
-      releaseSequentialRegistryPrIfNotApprovedAfterGreen,
-      advanceSequentialRegistryPrQueueAfterTerminalState,
-      readFreshPullRequest,
-      isSequentialDirectRegistryPr,
-      getSequentialRegistryPrActive,
-      clearSequentialRegistryPrActive,
-      markSequentialRegistryPrHeadSkipped,
       runOneSequentialDirectRegistryPrMaintenance,
       log,
     });
+  }
+
+  async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
+    context: BotContext<RequestEvents>,
+    repoInfo: RepoInfo,
+    baseBranch: string,
+    reason = 'default-branch-push:direct-pr-reevaluation'
+  ): Promise<SequentialRegistryPrResult> {
+    return await reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication(
+      context,
+      repoInfo,
+      baseBranch,
+      buildDefaultBranchDirectPrReevaluationCallbacks(),
+      reason
+    );
+  }
+
+  function buildDirectPrApprovalCommentHandlingCallbacks(): DirectPrApprovalCommentHandlingCallbacks<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    IssueParams,
+    PullRequestLike,
+    IssueLike,
+    EffectiveConstants
+  > {
+    return composeDirectPrApprovalCommentHandlingCallbacks<
+      BotContext<RequestEvents>,
+      RepoInfo,
+      IssueParams,
+      PullRequestLike,
+      IssueLike,
+      EffectiveConstants
+    >({
+      resolveEffectiveConstants,
+      prAsIssueLike,
+      ensureReviewLabelsPresentOnIssue,
+      resolveDirectPrRequestTypes,
+      resolveAllowedApproversForRequestTypes,
+      evaluateDirectPrOnApproval,
+      postApprovalRejectedOnce,
+      isAuthorizedApprover,
+      ensureAutomatedApprovalReviewForCurrentHead,
+      isCrossRepositoryPullRequest,
+      tryMergeApprovedPrOrUpdateBranch,
+      postOnce,
+      log,
+    });
+  }
+
+  async function handleDirectPrApprovalComment(
+    context: BotContext<RequestEvents>,
+    repoInfo: RepoInfo,
+    pr: PullRequestLike,
+    commenter: string
+  ): Promise<void> {
+    await handleDirectPrApprovalCommentApplication(
+      context,
+      repoInfo,
+      pr,
+      commenter,
+      buildDirectPrApprovalCommentHandlingCallbacks()
+    );
+  }
 
   const shouldSkipIssueEditedEvent = (
     context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
@@ -4382,22 +3825,6 @@ export default function requestHandler(app: Probot): void {
     log,
     isDebugEnabled: DBG,
   });
-
-  const runAutoMergeEvaluation = (
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    normalizedHeadSha: string
-  ): Promise<boolean> => {
-    return runAutoMergeEvaluationApplication(context, repoInfo, normalizedHeadSha, buildAutoMergeTriggerCallbacks());
-  };
-
-  const tryAutoMerge = async (
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    headSha: string
-  ): Promise<void> => {
-    await tryAutoMergeApplication(context, repoInfo, headSha, runAutoMergeEvaluation, buildAutoMergeTriggerCallbacks());
-  };
 
   const maybeHandleDefaultBranchCheckSuiteSuccess = async (
     context: BotContext<RequestEvents>,

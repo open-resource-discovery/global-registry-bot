@@ -1,3 +1,9 @@
+import {
+  createGitHubIssueAssigneesGateway,
+  createGitHubIssueLabelsGateway,
+  type GitHubIssueAssigneesGatewayContext,
+  type GitHubIssueLabelsGatewayContext,
+} from './infrastructure/github-gateway.js';
 import { getStateLabelsFromConfig, getApproversFromConfig } from './constants.js';
 
 type LabelLike = string | { name?: string | null };
@@ -16,11 +22,8 @@ type IssueParams = {
 };
 
 type OctokitLike = {
-  issues: {
-    removeLabel: (args: IssueParams & { name: string }) => Promise<unknown>;
-    addLabels: (args: IssueParams & { labels: string[] }) => Promise<unknown>;
-    addAssignees: (args: IssueParams & { assignees: string[] }) => Promise<unknown>;
-  };
+  issues: GitHubIssueLabelsGatewayContext['octokit']['issues'] &
+    GitHubIssueAssigneesGatewayContext['octokit']['issues'];
 };
 
 type LoggerLike = {
@@ -116,7 +119,7 @@ export async function setStateLabel(
   if (shouldRemove && remove) {
     try {
       // removeLabel expects { owner, repo, issue_number, name }
-      await context.octokit.issues.removeLabel({ ...params, name: remove });
+      await createGitHubIssueLabelsGateway(context).removeIssueLabel({ ...params, name: remove });
     } catch (err: unknown) {
       if (isSecondaryRateLimit(err)) {
         context.log?.warn?.(
@@ -131,7 +134,7 @@ export async function setStateLabel(
   if (newLabels.length === 0) return;
 
   try {
-    await context.octokit.issues.addLabels({ ...params, labels: newLabels });
+    await createGitHubIssueLabelsGateway(context).addIssueLabels({ ...params, labels: newLabels });
   } catch (err: unknown) {
     if (isSecondaryRateLimit(err)) {
       context.log?.warn?.(
@@ -159,7 +162,10 @@ export async function ensureAssigneesOnce(
   if (!missing.length) return;
 
   try {
-    await context.octokit.issues.addAssignees({ ...params, assignees: missing });
+    await createGitHubIssueAssigneesGateway(context).addIssueAssignees({
+      ...params,
+      assignees: missing,
+    });
   } catch {
     // keep behavior: ignore
   }

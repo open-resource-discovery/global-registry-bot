@@ -1,4 +1,9 @@
 import type { DefaultBranchCheckSuiteReevaluationCallbacks } from '../application/default-branch-check-suite-reevaluation.js';
+import {
+  createGitHubRepoBranchGateway,
+  type GitHubRepoBranchGatewayContext,
+  type RepoBranchResult,
+} from '../infrastructure/github-gateway.js';
 
 type RepoInfoBase = {
   owner: string;
@@ -11,21 +16,9 @@ type BranchLookupArgs = {
   branch: string;
 };
 
-type BranchLookupResult = {
-  data?: {
-    commit?: {
-      sha?: string | null;
-    };
-  };
-};
+type BranchLookupResult = RepoBranchResult;
 
-type BranchLookupContextBase = {
-  octokit: {
-    repos: {
-      getBranch: (args: BranchLookupArgs) => Promise<BranchLookupResult>;
-    };
-  };
-};
+type BranchLookupContextBase = GitHubRepoBranchGatewayContext;
 
 type SequentialRegistryPrResultBase = {
   updated: boolean;
@@ -61,7 +54,7 @@ export function composeDefaultBranchCheckSuiteReevaluationCallbacks<
     readDefaultBranchFromPayload: dependencies.readDefaultBranchFromPayload,
 
     getBranch: async (context: ContextType, args: BranchLookupArgs): Promise<BranchLookupResult> =>
-      await context.octokit.repos.getBranch(args),
+      await createGitHubRepoBranchGateway(context).getBranch(args),
 
     logBranchHeadReadFailed: (
       context: ContextType,

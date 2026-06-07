@@ -1,3 +1,5 @@
+export { createApprovalRuntime } from './approval-runtime-composition.js';
+export { createAutoMergeRuntime } from './auto-merge-runtime-composition.js';
 export { composeAutoMergeTriggerCallbacks } from './auto-merge-composition.js';
 export { composeCheckCompletedHandlerCallbacks } from './checks-composition.js';
 export {

@@ -1,4 +1,10 @@
 import type { IssueWorkflowGuardCallbacks } from '../application/issue-workflow-guard.js';
+import {
+  createGitHubIssueLabelsGateway,
+  createGitHubIssueUpdateGateway,
+  type GitHubIssueLabelsGatewayContext,
+  type GitHubIssueUpdateGatewayContext,
+} from '../infrastructure/github-gateway.js';
 
 type IssueParamsBase = {
   owner: string;
@@ -24,14 +30,7 @@ type EffectiveConstantsBase = {
   approverPoolUsernames: string[];
 };
 
-type IssueUpdateContextBase = {
-  octokit: {
-    issues: {
-      update: (params: IssueParamsBase & { body: string }) => Promise<unknown>;
-      addLabels: (params: IssueParamsBase & { labels: string[] }) => Promise<unknown>;
-    };
-  };
-};
+type IssueUpdateContextBase = GitHubIssueLabelsGatewayContext & GitHubIssueUpdateGatewayContext;
 
 export type IssueWorkflowGuardCompositionDependencies<
   ContextType extends IssueUpdateContextBase,
@@ -81,13 +80,13 @@ export function composeIssueWorkflowGuardCallbacks<
     normalizeKey: dependencies.normalizeKey,
     postOnce: dependencies.postOnce,
     updateIssueBody: async (context: ContextType, params: IssueParamsType, body: string): Promise<void> => {
-      await context.octokit.issues.update({ ...params, body });
+      await createGitHubIssueUpdateGateway(context).updateIssue({ ...params, body });
     },
     fetchIssueLabels: dependencies.fetchIssueLabels,
     toLabelNames: dependencies.toLabelNames,
     removeExactLabelsFromIssue: dependencies.removeExactLabelsFromIssue,
     addLabels: async (context: ContextType, params: IssueParamsType, labels: string[]): Promise<void> => {
-      await context.octokit.issues.addLabels({ ...params, labels });
+      await createGitHubIssueLabelsGateway(context).addIssueLabels({ ...params, labels });
     },
     labelsMatching: dependencies.labelsMatching,
     loadTemplateWithLabelRefresh: dependencies.loadTemplateWithLabelRefresh,

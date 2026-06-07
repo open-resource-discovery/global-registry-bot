@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import { createGitHubRepoContentGateway, type GitHubRepoContentGatewayContext } from './github-gateway.js';
 
 export type RepoInfoBase = {
   owner: string;
@@ -10,17 +11,7 @@ export type RepoContentFile = {
   encoding?: string;
 };
 
-type RepoContentResult = {
-  data?: unknown;
-};
-
-type RepoFilesContext = {
-  octokit: {
-    repos: {
-      getContent: (params: { owner: string; repo: string; path: string }) => Promise<RepoContentResult>;
-    };
-  };
-};
+type RepoFilesContext = GitHubRepoContentGatewayContext;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -46,7 +37,7 @@ export async function readRepoFileText<ContextType extends RepoFilesContext, Rep
   if (!path) return null;
 
   try {
-    const res = await context.octokit.repos.getContent({
+    const res = await createGitHubRepoContentGateway(context).getRepoContent({
       owner: repo.owner,
       repo: repo.repo,
       path,
