@@ -381,6 +381,199 @@ test('invalid config reporting tolerates non-Error failures while listing and cr
   expect(context.log.warn).toHaveBeenCalledWith({ err: 'create failed' }, 'failed to create static config error issue');
 });
 
+test('normalizeEnabled handles string false/unknown and non-boolean values; normalizeMethod handles non-primitive — covers lines 36-37,40,48', async () => {
+  const owner = 'o_norm_edge';
+  const repo = 'r_norm_edge';
+
+  const cfg = `
+pr:
+  autoMerge:
+    enabled: 'false'
+    method: ~
+`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: cfg },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // 'false' (string) → normalizeEnabled returns false (line 36)
+  expect(res.config.pr?.autoMerge?.enabled).toBe(false);
+  // null from YAML ~ → normalizeMethod returns null (line 45 fast-path, not 48)
+});
+
+test('normalizeEnabled returns null for unrecognized string — covers line 37', async () => {
+  const owner = 'o_norm_unk';
+  const repo = 'r_norm_unk';
+
+  const cfg = `
+pr:
+  autoMerge:
+    enabled: maybe
+    method: ~
+`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: cfg },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // 'maybe'.toLowerCase() is not 'true'/'false' → normalizeEnabled returns null (line 37)
+  expect(res.config.pr?.autoMerge?.enabled).toBeNull();
+});
+
+test('normalizeEnabled returns null for number; normalizeMethod returns null for object — covers lines 40,48', async () => {
+  const owner = 'o_norm_num';
+  const repo = 'r_norm_num';
+
+  // YAML: enabled as integer 42, method as a mapping (object)
+  const cfg = `
+pr:
+  autoMerge:
+    enabled: 42
+    method:
+      nested: value
+`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: cfg },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // 42 is not string/boolean → normalizeEnabled returns null (line 40)
+  expect(res.config.pr?.autoMerge?.enabled).toBeNull();
+  // {} object → normalizeMethod returns null (line 48)
+  expect(res.config.pr?.autoMerge?.method).toBeNull();
+});
+
+test('buildRequests normalizes approvers array — covers line 319', async () => {
+  const owner = 'o_approvers';
+  const repo = 'r_approvers';
+
+  const cfg = `
+requests:
+  mytype:
+    folderName: data
+    schema: schema/foo.json
+    issueTemplate: .github/ISSUE_TEMPLATE/foo.yml
+    approvers:
+      - alice
+      - bob
+`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: cfg },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // approversRaw is ['alice', 'bob'] → normalizeStringArray (line 319)
+  expect(res.config.requests?.mytype?.approvers).toEqual(['alice', 'bob']);
+});
+
+test('loads config from org repo when repo config is missing — covers lines 645-646', async () => {
+  const owner = 'o_orgcfg';
+  const repo = 'r_orgcfg';
+
+  const orgCfg = `
+requests:
+  orgtype:
+    folderName: data/org
+    schema: schema/org.json
+    issueTemplate: .github/ISSUE_TEMPLATE/org.yml
+`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'err', status: 404 },
+      [`${owner}/${repo}:${CFG_YML}`]: { kind: 'err', status: 404 },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+      [`${owner}/.github:${CFG_YAML}`]: { kind: 'file', text: orgCfg },
+      [`${owner}/.github:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // repo config missing → falls back to org config → lines 645-646 hit
+  expect(res.source).toMatch(/^org:/);
+  expect(res.config.requests?.orgtype?.folderName).toBe('data/org');
+});
+
+test('issues.update failure is logged when updating existing invalid-config issue — covers line 491', async () => {
+  const owner = 'o_update_fail';
+  const repo = 'r_update_fail';
+
+  const { context, update } = mkContext({
+    owner,
+    repo,
+    openIssues: [{ number: 5, title: 'registry-bot: invalid static config.yaml' }],
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: `requests: bad` },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  update.mockRejectedValueOnce(new Error('update api failed'));
+
+  await loadStaticConfig(context, { validate: true, updateIssue: true, forceReload: true });
+
+  // Line 491: catch block when issues.update throws
+  expect(context.log.warn).toHaveBeenCalledWith(
+    { err: 'update api failed', issue_number: 5 },
+    'failed to update static config error issue'
+  );
+});
+
+test('createComment failure is logged when closing resolved config issue — covers line 561', async () => {
+  const owner = 'o_comment_fail';
+  const repo = 'r_comment_fail';
+
+  const { context, createComment } = mkContext({
+    owner,
+    repo,
+    openIssues: [{ number: 3, title: 'registry-bot: invalid static config.yaml' }],
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: {
+        kind: 'file',
+        text: `
+requests:
+  sample:
+    folderName: data
+    schema: schema/sample.json
+    issueTemplate: .github/ISSUE_TEMPLATE/sample.yml
+`,
+      },
+      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+    },
+  });
+
+  createComment.mockRejectedValueOnce(new Error('comment api failed'));
+
+  await loadStaticConfig(context, { validate: true, updateIssue: true, forceReload: true });
+
+  // Line 561: catch block when createComment throws in closeStaticConfigIssueIfResolved
+  expect(context.log.warn).toHaveBeenCalledWith(
+    { err: 'comment api failed' },
+    'failed to close static config error issue after successful validation'
+  );
+});
+
 test('default config without validation logs debug and ignores hook loading failures with non-status errors', async () => {
   const owner = 'o_default_debug';
   const repo = 'r_default_debug';

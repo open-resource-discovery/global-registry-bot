@@ -24,7 +24,5 @@ export function buildReviewHandoverBody(
 
 ---
 
-${instruction}${docsSection}${snapshotMarker}
-
-<!-- nsreq:handover -->`;
+${instruction}${docsSection}${snapshotMarker}`;
 }
