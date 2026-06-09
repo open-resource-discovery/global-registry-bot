@@ -29,14 +29,12 @@ The bot is generic. Repository-specific behavior is configured in the target rep
 
 ```text
 GitHub Webhook
-  -> Probot App
-    -> Target Config Loader
-      -> Issue Template Parser
-      -> JSON Schema Validator
-      -> Optional Hook Worker
-        -> Optional external validation API
-    -> GitHub Issue / PR / Label / Review APIs
-    -> Registry YAML Pull Request
+  -> Probot event facade (`events/`)
+    -> Request composition root (`index.ts`)
+      -> Runtime wiring (`composition/*-runtime-composition.ts`)
+        -> Application workflows (`application/`)
+          -> Domain logic (`domain/`)
+          -> Infrastructure adapters (`infrastructure/`)
 ```
 
 GitHub remains the system of record. The bot stores request state through GitHub issues, pull requests, comments, labels, reviews, and hidden metadata markers in issue bodies. The bot does not maintain a separate persistent database for request content.
@@ -243,6 +241,7 @@ For integration testing, install the GitHub App on an example registry repositor
 
 ## Operational notes
 
+- Webhook requests are acknowledged quickly, heavier bot work may continue asynchronously in the background to avoid GitHub webhook delivery timeouts.
 - The bot validates config on default-branch updates.
 - Existing issues remain compatible when templates gain new required fields.
 - Failed or blocked direct PR heads are skipped temporarily so the sequential queue can continue.
