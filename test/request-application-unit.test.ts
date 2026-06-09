@@ -1295,3 +1295,207 @@ describe('isPullRequestApprovedForBranchMaintenance', () => {
     expect(result).toBe(false);
   });
 });
+
+// ---- auto-merge-trigger --------------------------------------------------------
+import { runAutoMergeEvaluation, tryAutoMerge } from '../src/handlers/request/application/auto-merge-trigger.js';
+
+const atCtx = {};
+const atRepoInfo = { owner: 'org', repo: 'repo' };
+
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+function mkAutoMergeTriggerCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+  return {
+    getStaticConfig: jest.fn(() => Promise.resolve({})),
+    evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+      Promise.resolve({ green: true, reason: 'all-green', latestRuns: [], blockingRuns: [] })
+    ),
+    listOpenPullRequests: jest.fn(() => Promise.resolve([])),
+    processPullRequestForAutoMerge: jest.fn(() => Promise.resolve()),
+    releaseSequentialRegistryPrIfNotApprovedAfterGreen: jest.fn(() => Promise.resolve()),
+    advanceSequentialRegistryPrQueueAfterTerminalState: jest.fn(() => Promise.resolve()),
+    readFreshPullRequest: jest.fn(() => Promise.resolve(null)),
+    isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(false)),
+    getSequentialRegistryPrActive: jest.fn(() => null),
+    clearSequentialRegistryPrActive: jest.fn(),
+    markSequentialRegistryPrHeadSkipped: jest.fn(),
+    runOneSequentialDirectRegistryPrMaintenance: jest.fn(() => Promise.resolve({})),
+    log: jest.fn(),
+    ...overrides,
+  } as any;
+}
+
+describe('runAutoMergeEvaluation — deferred vs terminal', () => {
+  test('returns false when checks are still running (check-runs-not-completed) — deferred', async () => {
+    const cbs = mkAutoMergeTriggerCallbacks({
+      evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+        Promise.resolve({
+          green: false,
+          reason: 'check-runs-not-completed',
+          latestRuns: [{ status: 'in_progress' }],
+          blockingRuns: [{ status: 'in_progress' }],
+        })
+      ),
+    });
+    const result = await runAutoMergeEvaluation(atCtx, atRepoInfo, 'sha-deferred', cbs);
+    expect(result).toBe(false);
+    expect(cbs.listOpenPullRequests).not.toHaveBeenCalled();
+    expect(
+      (cbs.log as jest.Mock).mock.calls.some(
+        ([, , , msg]: unknown[]) => msg === 'auto-merge:evaluation deferred: checks still running'
+      )
+    ).toBe(true);
+  });
+
+  test('returns true when not-green for a reason other than checks-not-completed — terminal', async () => {
+    const cbs = mkAutoMergeTriggerCallbacks({
+      evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+        Promise.resolve({ green: false, reason: 'status-not-green', latestRuns: [], blockingRuns: [] })
+      ),
+    });
+    const result = await runAutoMergeEvaluation(atCtx, atRepoInfo, 'sha-not-green', cbs);
+    expect(result).toBe(true);
+  });
+
+  test('returns true when green and candidates processed — terminal', async () => {
+    const cbs = mkAutoMergeTriggerCallbacks();
+    const result = await runAutoMergeEvaluation(atCtx, atRepoInfo, 'sha-green', cbs);
+    expect(result).toBe(true);
+  });
+});
+
+describe('tryAutoMerge — recently-completed dedup', () => {
+  test('deferred evaluation does not block a subsequent call for the same SHA', async () => {
+    const cbs = mkAutoMergeTriggerCallbacks();
+    const deferredFn = jest.fn((): Promise<boolean> => Promise.resolve(false));
+    const terminalFn = jest.fn((): Promise<boolean> => Promise.resolve(true));
+    const sha = `sha-at-deferred-${Date.now()}`;
+
+    await tryAutoMerge(atCtx, atRepoInfo, sha, deferredFn, cbs);
+    await tryAutoMerge(atCtx, atRepoInfo, sha, terminalFn, cbs);
+
+    expect(deferredFn).toHaveBeenCalledTimes(1);
+    expect(terminalFn).toHaveBeenCalledTimes(1);
+    expect(
+      (cbs.log as jest.Mock).mock.calls.some(
+        ([, , , msg]: unknown[]) => msg === 'auto-merge:evaluation skipped: recently completed'
+      )
+    ).toBe(false);
+  });
+
+  test('terminal evaluation blocks a subsequent call for the same SHA', async () => {
+    const cbs = mkAutoMergeTriggerCallbacks();
+    const terminalFn = jest.fn((): Promise<boolean> => Promise.resolve(true));
+    const sha = `sha-at-terminal-${Date.now()}`;
+
+    await tryAutoMerge(atCtx, atRepoInfo, sha, terminalFn, cbs);
+    await tryAutoMerge(atCtx, atRepoInfo, sha, terminalFn, cbs);
+
+    expect(terminalFn).toHaveBeenCalledTimes(1);
+    expect(
+      (cbs.log as jest.Mock).mock.calls.some(
+        ([, , , msg]: unknown[]) => msg === 'auto-merge:evaluation skipped: recently completed'
+      )
+    ).toBe(true);
+  });
+
+  test('failed evaluation does not mark SHA as recently completed', async () => {
+    const sha = `sha-error-${Date.now()}`;
+    const cbs = mkAutoMergeTriggerCallbacks();
+    const failingFn = jest.fn((): Promise<boolean> => Promise.reject(new Error('eval-boom')));
+    const terminalFn = jest.fn((): Promise<boolean> => Promise.resolve(true));
+
+    await expect(tryAutoMerge(atCtx, atRepoInfo, sha, failingFn, cbs)).rejects.toThrow('eval-boom');
+
+    // SHA must NOT be recently-completed — the next call must actually run
+    await tryAutoMerge(atCtx, atRepoInfo, sha, terminalFn, cbs);
+    expect(terminalFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- check-completed-handler ---------------------------------------------------
+import { handleCheckCompletedEvent } from '../src/handlers/request/application/check-completed-handler.js';
+
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+function mkCheckCompletedCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+  return {
+    readCheckRunFromPayload: jest.fn(() => null),
+    readCheckSuiteFromPayload: jest.fn(() => null),
+    readRepoInfoFromPayload: jest.fn(() => ({ owner: 'org', repo: 'repo' })),
+    readCheckRunPrNumbers: jest.fn((): number[] => []),
+    resolveCheckSuitePrNumbers: jest.fn((): Promise<number[]> => Promise.resolve([])),
+    readCheckSuiteId: jest.fn(() => null),
+    listAllCheckRunsForSuite: jest.fn(() => Promise.resolve([])),
+    readCheckRunId: jest.fn(() => null),
+    readFirstRegistryValidationArtifactsForSuiteRuns: jest.fn(() => Promise.resolve(null)),
+    readPullRequestHtmlUrl: jest.fn(() => Promise.resolve('')),
+    collapseBotCommentsByPrefix: jest.fn(() => Promise.resolve()),
+    postCheckSuiteRegistryValidationComments: jest.fn(() => Promise.resolve()),
+    maybeHandleDefaultBranchCheckSuiteSuccess: jest.fn(() => Promise.resolve()),
+    tryAutoMerge: jest.fn(() => Promise.resolve()),
+    maybeApprovePendingWorkflowRunsForPrNumbers: jest.fn(() => Promise.resolve(false)),
+    handleBlockingRegistryHeadConclusion: jest.fn(() => Promise.resolve(false)),
+    isBlockingCheckConclusion: jest.fn((): boolean => false),
+    readDefaultBranchFromPayload: jest.fn((): string => 'main'),
+    getStaticConfig: jest.fn(() => Promise.resolve({})),
+    log: jest.fn(),
+    isDebugEnabled: false,
+    ...overrides,
+  } as any;
+}
+
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+function mkCheckRunPayload(sha = 'sha-abc', conclusion = 'success') {
+  return {
+    action: 'completed',
+    check_run: { id: 1, status: 'completed', conclusion, head_sha: sha, pull_requests: [] },
+    repository: { owner: { login: 'org' }, name: 'repo' },
+  } as any;
+}
+
+describe('handleCheckCompletedEvent — check_run.completed with no PR mapping', () => {
+  test('skips tryAutoMerge and logs deferred when prNumbers is empty — cross-repo PR scenario', async () => {
+    const run = { id: 1, status: 'completed', conclusion: 'success', head_sha: 'sha-no-pr', pull_requests: [] };
+    const cbs = mkCheckCompletedCallbacks({
+      readCheckRunFromPayload: jest.fn(() => run),
+      readCheckRunPrNumbers: jest.fn((): number[] => []),
+    });
+    await handleCheckCompletedEvent({}, mkCheckRunPayload('sha-no-pr'), 'check_run.completed', cbs);
+    expect(cbs.tryAutoMerge).not.toHaveBeenCalled();
+    expect(
+      (cbs.log as jest.Mock).mock.calls.some(
+        ([, , , msg]: unknown[]) => msg === 'checks:check-run-deferred-no-pr-mapping'
+      )
+    ).toBe(true);
+  });
+
+  test('calls tryAutoMerge when check_run has a PR mapping', async () => {
+    const run = {
+      id: 1,
+      status: 'completed',
+      conclusion: 'success',
+      head_sha: 'sha-with-pr',
+      pull_requests: [{ number: 42 }],
+    };
+    const cbs = mkCheckCompletedCallbacks({
+      readCheckRunFromPayload: jest.fn(() => run),
+      readCheckRunPrNumbers: jest.fn((): number[] => [42]),
+    });
+    await handleCheckCompletedEvent({}, mkCheckRunPayload('sha-with-pr'), 'check_run.completed', cbs);
+    expect(cbs.tryAutoMerge).toHaveBeenCalledWith({}, { owner: 'org', repo: 'repo' }, 'sha-with-pr');
+  });
+
+  test('check_suite.completed with prNumbers still calls tryAutoMerge', async () => {
+    const suite = { id: 9, status: 'completed', conclusion: 'success', head_sha: 'sha-suite', head_branch: 'main' };
+    const cbs = mkCheckCompletedCallbacks({
+      readCheckSuiteFromPayload: jest.fn(() => suite),
+      resolveCheckSuitePrNumbers: jest.fn((): Promise<number[]> => Promise.resolve([599])),
+    });
+    const payload = {
+      action: 'completed',
+      check_suite: suite,
+      repository: { owner: { login: 'org' }, name: 'repo' },
+    };
+    await handleCheckCompletedEvent({}, payload, 'check_suite.completed', cbs);
+    expect(cbs.tryAutoMerge).toHaveBeenCalledWith({}, { owner: 'org', repo: 'repo' }, 'sha-suite');
+  });
+});

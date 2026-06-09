@@ -99,6 +99,8 @@ export type AutoMergeTriggerCallbacks<
   log: (context: ContextType, level: 'info' | 'warn', obj: unknown, msg: string) => void;
 };
 
+// Returns true when the evaluation is terminal (should mark SHA as recently completed),
+// false when deferred (checks still running — caller must NOT mark recently completed).
 export async function runAutoMergeEvaluation<
   ContextType,
   RepoInfoType extends RepoInfoBase,
@@ -116,7 +118,7 @@ export async function runAutoMergeEvaluation<
     ActiveStateType,
     HeadGreenEvaluationType
   >
-): Promise<void> {
+): Promise<boolean> {
   await callbacks.getStaticConfig(context);
 
   const greenResult = await callbacks.evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
@@ -137,7 +139,23 @@ export async function runAutoMergeEvaluation<
     'auto-merge:head-green'
   );
 
-  if (!greenResult.green) return;
+  if (!greenResult.green) {
+    if (greenResult.reason === 'check-runs-not-completed') {
+      callbacks.log(
+        context,
+        'info',
+        {
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          headSha: normalizedHeadSha,
+          blockingRuns: greenResult.blockingRuns,
+        },
+        'auto-merge:evaluation deferred: checks still running'
+      );
+      return false;
+    }
+    return true;
+  }
 
   const candidates = (await callbacks.listOpenPullRequests(context, repoInfo)).filter(
     (pr) => toStringTrim(pr.head?.sha) === normalizedHeadSha
@@ -210,6 +228,8 @@ export async function runAutoMergeEvaluation<
       }
     }
   }
+
+  return true;
 }
 
 export async function tryAutoMerge<
@@ -222,7 +242,11 @@ export async function tryAutoMerge<
   context: ContextType,
   repoInfo: RepoInfoType,
   headSha: string,
-  runAutoMergeEvaluationFn: (context: ContextType, repoInfo: RepoInfoType, normalizedHeadSha: string) => Promise<void>,
+  runAutoMergeEvaluationFn: (
+    context: ContextType,
+    repoInfo: RepoInfoType,
+    normalizedHeadSha: string
+  ) => Promise<boolean>,
   callbacks: AutoMergeTriggerCallbacks<
     ContextType,
     RepoInfoType,
@@ -279,10 +303,14 @@ export async function tryAutoMerge<
     return;
   }
 
-  const pending = runAutoMergeEvaluationFn(context, repoInfo, normalizedHeadSha).finally(() => {
-    AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
-    markAutoMergeEvaluationRecentlyCompleted(key);
-  });
+  const pending: Promise<void> = Promise.resolve()
+    .then(() => runAutoMergeEvaluationFn(context, repoInfo, normalizedHeadSha))
+    .then((isTerminal) => {
+      if (isTerminal) markAutoMergeEvaluationRecentlyCompleted(key);
+    })
+    .finally(() => {
+      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
+    });
 
   AUTO_MERGE_EVALUATION_INFLIGHT.set(key, pending);
   await pending;
