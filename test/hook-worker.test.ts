@@ -23,6 +23,7 @@ let hookWorker: (task: Task) => Promise<HookWorkerResult>;
 let originalFetch: unknown;
 let originalExit: NodeJS.Process['exit'];
 let originalKill: NodeJS.Process['kill'];
+let originalEnableFlag: string | undefined;
 
 let seq = 0;
 
@@ -62,12 +63,21 @@ beforeEach((): void => {
   originalFetch = getGlobalFetch();
   originalExit = process.exit;
   originalKill = process.kill;
+  originalEnableFlag = process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  // Enable JS hooks for all existing happy-path tests by default.
+  // Security regression tests below explicitly unset the flag.
+  process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = 'true';
 });
 
 afterEach((): void => {
   setGlobalFetch(originalFetch);
   process.exit = originalExit;
   process.kill = originalKill;
+  if (originalEnableFlag === undefined) {
+    delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  } else {
+    process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = originalEnableFlag;
+  }
 });
 
 test('returns found=false when function does not exist', async (): Promise<void> => {
@@ -236,4 +246,85 @@ test('process.exit is disabled; calling it becomes __hookError', async (): Promi
       __hookError: expect.stringContaining('process.exit is disabled'),
     })
   );
+});
+
+// --- Security: REGISTRY_BOT_ENABLE_JS_HOOKS fail-closed ---
+
+test('JS hooks are disabled by default: worker returns found=false without executing code', async (): Promise<void> => {
+  delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+
+  const executed: string[] = [];
+
+  const task = mkTask({
+    code: `
+      export default {
+        onValidate() {
+          // This string would appear in executed[] if the code ran
+          return ['EXECUTED'];
+        }
+      };
+    `,
+    fn: 'onValidate',
+    args: { requestType: 'product' },
+  });
+
+  const res = await hookWorker(task);
+
+  expect(res.found).toBe(false);
+  expect(res.value).toBeUndefined();
+  expect(res.logs).toEqual([]);
+  expect(executed).toHaveLength(0);
+});
+
+test('JS hooks disabled: malicious dynamic import(node:child_process) never executes', async (): Promise<void> => {
+  delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+
+  const task = mkTask({
+    code: `
+      export default {
+        async onValidate() {
+          const cp = await import('node:child_process');
+          cp.execSync('echo pwned');
+          return [];
+        }
+      };
+    `,
+    fn: 'onValidate',
+    args: {},
+  });
+
+  const res = await hookWorker(task);
+
+  // Worker must return early without executing — never reach the import()
+  expect(res.found).toBe(false);
+  expect(res.value).toBeUndefined();
+});
+
+test('JS hooks disabled: code accessing process.env.PRIVATE_KEY never executes', async (): Promise<void> => {
+  const prev = process.env['PRIVATE_KEY'];
+  process.env['PRIVATE_KEY'] = 'super-secret-value';
+  delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+
+  try {
+    const task = mkTask({
+      code: `
+        export default {
+          onValidate() {
+            return [process.env.PRIVATE_KEY ?? 'not-leaked'];
+          }
+        };
+      `,
+      fn: 'onValidate',
+      args: {},
+    });
+
+    const res = await hookWorker(task);
+
+    // Worker returns early; code never ran so PRIVATE_KEY was never read
+    expect(res.found).toBe(false);
+    expect(res.value).toBeUndefined();
+  } finally {
+    if (prev === undefined) delete process.env['PRIVATE_KEY'];
+    else process.env['PRIVATE_KEY'] = prev;
+  }
 });

@@ -172,6 +172,14 @@ function disableProcessExitAndKill(): void {
 }
 
 export default async function hookWorker(task: Task): Promise<HookWorkerResult> {
+  // Fail-closed: JS hooks are disabled unless explicitly opted in.
+  // Only enable in fully trusted self-hosted environments where repo admins are trusted.
+  // A proper isolated sandbox (separate process, container) is required before enabling
+  // this in multi-tenant or public deployments.
+  if (process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] !== 'true') {
+    return { found: false, value: undefined, logs: [] };
+  }
+
   disableProcessExitAndKill();
 
   const { log, logs } = makeCapturingLog();

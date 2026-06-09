@@ -227,6 +227,9 @@ test('missing config reports missing issue (updates existing) and loads hooks fr
   const owner = 'o_missing_orghooks';
   const repo = 'r_missing_orghooks';
 
+  const prevFlag = process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = 'true';
+
   const orgRepo = '.github';
 
   const { context, update } = mkContext({
@@ -261,17 +264,22 @@ test('missing config reports missing issue (updates existing) and loads hooks fr
     })
   );
 
-  expect(res.hooks).toEqual(
-    expect.objectContaining({
-      __type: 'registry-bot-hooks:esm',
-      __path: CFG_JS,
-      __code: `export default { hello: "world" }`,
-      __hash: expect.stringMatching(/^[0-9a-f]{16}$/),
-    })
-  );
+  try {
+    expect(res.hooks).toEqual(
+      expect.objectContaining({
+        __type: 'registry-bot-hooks:esm',
+        __path: CFG_JS,
+        __code: `export default { hello: "world" }`,
+        __hash: expect.stringMatching(/^[0-9a-f]{16}$/),
+      })
+    );
 
-  expect(res.hooksSource).toContain(CFG_JS);
-  expect(res.hooksSource).toEqual(expect.stringMatching(/config\.js#[0-9a-f]{16}$/));
+    expect(res.hooksSource).toContain(CFG_JS);
+    expect(res.hooksSource).toEqual(expect.stringMatching(/config\.js#[0-9a-f]{16}$/));
+  } finally {
+    if (prevFlag === undefined) delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+    else process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = prevFlag;
+  }
 });
 
 test('throws if GitHub getContent fails with non-404', async () => {
@@ -293,7 +301,9 @@ test('falls back from repo yaml directory entry to repo yml config, closes nothi
   const owner = 'o_repo_yml_hooks';
   const repo = 'r_repo_yml_hooks';
   const prevDebug = process.env.DEBUG_NS;
+  const prevFlag = process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
   process.env.DEBUG_NS = '1';
+  process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = 'true';
 
   try {
     const { context, createComment, update } = mkContext({
@@ -348,6 +358,8 @@ requests:
     expect(update).not.toHaveBeenCalled();
   } finally {
     process.env.DEBUG_NS = prevDebug;
+    if (prevFlag === undefined) delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+    else process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = prevFlag;
   }
 });
 
@@ -578,43 +590,53 @@ test('default config without validation logs debug and ignores hook loading fail
   const owner = 'o_default_debug';
   const repo = 'r_default_debug';
 
-  const { context } = mkContext({
-    owner,
-    repo,
-    files: {
-      [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'err', status: 404 },
-      [`${owner}/${repo}:${CFG_YML}`]: { kind: 'err', status: 404 },
-      [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
-      [`${owner}/.github:${CFG_YAML}`]: { kind: 'err', status: 404 },
-      [`${owner}/.github:${CFG_YML}`]: { kind: 'err', status: 404 },
-      [`${owner}/.github:${CFG_JS}`]: { kind: 'err', status: 404 },
-    },
-  });
+  // This test exercises the catch block in loadJsConfigFromRepo (non-404 error path),
+  // which is only reachable when JS hooks are explicitly enabled.
+  const prevFlag = process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = 'true';
 
-  context.octokit.repos.getContent.mockImplementation(
-    ({ owner: ownerArg, repo: repoArg, path }: { owner: string; repo: string; path: string }) => {
-      if (ownerArg === owner && repoArg === repo && path === CFG_JS) {
-        throw new Error('hooks boom');
+  try {
+    const { context } = mkContext({
+      owner,
+      repo,
+      files: {
+        [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'err', status: 404 },
+        [`${owner}/${repo}:${CFG_YML}`]: { kind: 'err', status: 404 },
+        [`${owner}/${repo}:${CFG_JS}`]: { kind: 'err', status: 404 },
+        [`${owner}/.github:${CFG_YAML}`]: { kind: 'err', status: 404 },
+        [`${owner}/.github:${CFG_YML}`]: { kind: 'err', status: 404 },
+        [`${owner}/.github:${CFG_JS}`]: { kind: 'err', status: 404 },
+      },
+    });
+
+    context.octokit.repos.getContent.mockImplementation(
+      ({ owner: ownerArg, repo: repoArg, path }: { owner: string; repo: string; path: string }) => {
+        if (ownerArg === owner && repoArg === repo && path === CFG_JS) {
+          throw new Error('hooks boom');
+        }
+        throw httpErr(404);
       }
-      throw httpErr(404);
-    }
-  );
+    );
 
-  const res = await loadStaticConfig(context, {
-    validate: false,
-    updateIssue: true,
-    forceReload: true,
-  });
+    const res = await loadStaticConfig(context, {
+      validate: false,
+      updateIssue: true,
+      forceReload: true,
+    });
 
-  expect(res.source).toBe('default');
-  expect(res.hooks).toBeNull();
-  expect(res.hooksSource).toBeNull();
-  expect(context.log.debug).toHaveBeenCalledWith(
-    { source: 'default' },
-    'no static registry-bot config found; using DEFAULT_CONFIG without validation'
-  );
-  expect(context.log.warn).toHaveBeenCalledWith(
-    { err: 'hooks boom' },
-    'failed to load JS registry-bot config; continuing without hooks'
-  );
+    expect(res.source).toBe('default');
+    expect(res.hooks).toBeNull();
+    expect(res.hooksSource).toBeNull();
+    expect(context.log.debug).toHaveBeenCalledWith(
+      { source: 'default' },
+      'no static registry-bot config found; using DEFAULT_CONFIG without validation'
+    );
+    expect(context.log.warn).toHaveBeenCalledWith(
+      { err: 'hooks boom' },
+      'failed to load JS registry-bot config; continuing without hooks'
+    );
+  } finally {
+    if (prevFlag === undefined) delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+    else process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = prevFlag;
+  }
 });
