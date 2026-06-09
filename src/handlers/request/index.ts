@@ -1,4 +1,4 @@
-import { setStateLabel as setStateLabelRaw, ensureAssigneesOnce as ensureAssigneesOnceRaw } from './state.js';
+import { setStateLabel as setStateLabelRaw } from './state.js';
 import { postOnce as postOnceRaw, collapseBotCommentsByPrefix as collapseBotCommentsByPrefixRaw } from './comments.js';
 import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './template.js';
 import {
@@ -11,11 +11,218 @@ import {
   findOpenIssuePrs as findOpenIssuePRsRaw,
 } from './pr/snapshot.js';
 import { createRequestPr as createRequestPRRaw } from './pr/create.js';
+import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
+import {
+  autoApprovedPrHeadKey as autoApprovedPrHeadKeyApplication,
+  hasAutoApprovedPrHead as hasAutoApprovedPrHeadApplication,
+  markAutoApprovedPrHead as markAutoApprovedPrHeadApplication,
+} from './application/auto-approved-head-tracking.js';
+import {
+  hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr as hasAllowedCurrentHeadManualApprovalForStandaloneDirectPrApplication,
+  hasAllowedStandaloneDirectPrApprovalForCurrentHead as hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication,
+  type DirectPrReviewApprovalCallbacks,
+} from './application/direct-pr-review-approval.js';
+import { type DirectPrChangedResourceApprovalCallbacks } from './application/direct-pr-changed-resource-approval.js';
+import {
+  evaluateDirectPrOnApproval as evaluateDirectPrOnApprovalApplication,
+  type DirectPrApprovalEvaluationCallbacks,
+} from './application/direct-pr-approval-evaluation.js';
+import {
+  evaluateHeadGreenForApprovalReevaluation as evaluateHeadGreenForApprovalReevaluationApplication,
+  type HeadGreenEvaluationCallbacks,
+} from './application/head-green-evaluation.js';
+import {
+  isPullRequestApprovedForBranchMaintenance as isPullRequestApprovedForBranchMaintenanceApplication,
+  type BranchMaintenanceApprovalCallbacks,
+} from './application/branch-maintenance-approval.js';
+import {
+  runBranchUpdateBenignFailureRetry as runBranchUpdateBenignFailureRetryApplication,
+  type BranchUpdateBenignRetryCallbacks,
+  type BranchUpdateBenignRetryOutcome,
+} from './application/branch-update-benign-retry.js';
+import {
+  requestPullRequestBranchUpdate as requestPullRequestBranchUpdateApplication,
+  type BranchUpdateOrchestrationCallbacks,
+} from './application/branch-update-orchestration.js';
+import {
+  readCheckRunFromPayload as readCheckRunFromPayloadApplication,
+  readCheckRunPrNumbers as readCheckRunPrNumbersApplication,
+  readCheckSuiteFromPayload as readCheckSuiteFromPayloadApplication,
+  readCheckSuiteId as readCheckSuiteIdApplication,
+  resolveCheckSuitePrNumbers as resolveCheckSuitePrNumbersApplication,
+  type CheckPrResolutionCallbacks,
+} from './application/check-pr-resolution.js';
+import {
+  listAllCheckRunsForSuite as listAllCheckRunsForSuiteApplication,
+  readFirstRegistryValidationArtifactsForSuiteRuns as readFirstRegistryValidationArtifactsForSuiteRunsApplication,
+  type CheckSuiteAnnotationsCallbacks,
+} from './application/check-suite-annotations.js';
+import {
+  postCheckSuiteRegistryValidationComments as postCheckSuiteRegistryValidationCommentsApplication,
+  type CheckSuiteCiCommentingCallbacks,
+} from './application/check-suite-ci-commenting.js';
+import { handleCheckCompletedEvent as handleCheckCompletedEventApplication } from './application/check-completed-handler.js';
+import { extractParentContactCandidates, lookupGithubLoginsByEmail } from './application/parent-contact-resolution.js';
+import { checkParentChainExistsInFlatStructureApplication } from './application/parent-chain-validation.js';
+import {
+  addApprovedLabelToPr as addApprovedLabelToPrApplication,
+  applyApprovedRequestState as applyApprovedRequestStateApplication,
+  ensureAssigneesPresent as ensureAssigneesPresentApplication,
+  ensureLabelsPresentOnce as ensureLabelsPresentOnceApplication,
+  ensureReviewLabelsPresentOnIssue as ensureReviewLabelsPresentOnIssueApplication,
+  fetchIssueLabels as fetchIssueLabelsApplication,
+  removeExactLabelsFromIssue as removeExactLabelsFromIssueApplication,
+  removeProgressStatusLabels as removeProgressStatusLabelsApplication,
+  removeRejectedStatusLabel as removeRejectedStatusLabelApplication,
+  type IssueStateReviewerOperationsCallbacks,
+} from './application/issue-state-reviewer-operations.js';
+import {
+  buildRegistryValidationAggregatePrCommentBody as buildRegistryValidationAggregatePrCommentBodyApplication,
+  type RequestValidationPostingCallbacks,
+} from './application/request-validation-posting.js';
+import {
+  buildPullRequestHeadReadCandidates as buildPullRequestHeadReadCandidatesApplication,
+  isChangedYamlCandidate as isChangedYamlCandidateApplication,
+  listChangedYamlFilesForPr as listChangedYamlFilesForPrApplication,
+  listChangedYamlFilesForPrAgainstCurrentBase as listChangedYamlFilesForPrAgainstCurrentBaseApplication,
+  listChangedYamlFilesForPrWithFallback as listChangedYamlFilesForPrWithFallbackApplication,
+  listChangedYamlFilesPage as listChangedYamlFilesPageApplication,
+  type PullRequestHeadReadCandidate,
+  readPullRequestHeadFileText as readPullRequestHeadFileTextApplication,
+  readPullRequestHeadTreeEntries as readPullRequestHeadTreeEntriesApplication,
+  readRecursiveGitTreeEntries as readRecursiveGitTreeEntriesApplication,
+  readRepoFileTextAtRef as readRepoFileTextAtRefApplication,
+  registryYamlTreeEntryPath as registryYamlTreeEntryPathApplication,
+} from './application/pr-head-changed-file-discovery.js';
+import { readRegistryDocForApproval as readRegistryDocForApprovalApplication } from './application/registry-doc-for-approval.js';
+import { isSequentialDirectRegistryPr as isSequentialDirectRegistryPrApplication } from './application/sequential-direct-registry-pr-detection.js';
+import {
+  clearSequentialRegistryPrActive,
+  getSequentialRegistryPrActive,
+  isSequentialRegistryPrHeadSkipped,
+  markSequentialRegistryPrActive as markSequentialRegistryPrActiveState,
+  markSequentialRegistryPrHeadSkipped as markSequentialRegistryPrHeadSkippedState,
+} from './application/sequential-registry-pr-state.js';
+import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
+import {
+  waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
+  type PullRequestMergeabilityCallbacks,
+} from './application/pull-request-mergeability.js';
+import {
+  resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
+  type PullRequestAuthorResolutionCallbacks,
+} from './application/pull-request-author-resolution.js';
+import {
+  resolveAllowedApproversForRequestTypes as resolveAllowedApproversForRequestTypesApplication,
+  type DirectPrApproverResolutionCallbacks,
+} from './application/direct-pr-approver-resolution.js';
+import {
+  resolveDirectPrRequestTypes as resolveDirectPrRequestTypesApplication,
+  type DirectPrRequestTypeResolutionCallbacks,
+} from './application/direct-pr-request-type-resolution.js';
+import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
+import { handoverToCpa } from './application/review-handover.js';
+import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
+import { type ApprovalCommentHandlingCallbacks } from './application/approval-comment-handling.js';
+import { type OwnerApprovalCommentHandlingCallbacks } from './application/owner-approval-comment-handling.js';
+import {
+  detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
+  enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
+  ensureRoutingLockMarker as ensureRoutingLockMarkerApplication,
+  handleClosedIssueWorkflowGuard as handleClosedIssueWorkflowGuardApplication,
+  handleIssueLabelChangeWorkflowGuard as handleIssueLabelChangeWorkflowGuardApplication,
+  type IssueWorkflowGuardCallbacks,
+} from './application/issue-workflow-guard.js';
+import {
+  assignParentOwnersForApproval as assignParentOwnersForApprovalApplication,
+  clearParentOwnerActionState as clearParentOwnerActionStateApplication,
+  ensureContactApprovalMarker as ensureContactApprovalMarkerApplication,
+  ensureParentApprovalMarker as ensureParentApprovalMarkerApplication,
+  setParentOwnerActionState as setParentOwnerActionStateApplication,
+  type OwnerApprovalRequirementsCallbacks,
+} from './application/owner-approval-requirements.js';
+import { type ApprovedRequestFinalizationCallbacks } from './application/approved-request-finalization.js';
+import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
+import {
+  isPullRequestBehindBase as isPullRequestBehindBasePure,
+  isPullRequestDirty as isPullRequestDirtyPure,
+  isPullRequestOpen as isPullRequestOpenPure,
+  readMergeableState as readMergeableStatePure,
+} from './domain/pull-request-merge-state.js';
+import {
+  isCrossRepositoryPullRequest as isCrossRepositoryPullRequestPure,
+  resolvePullRequestHeadRepoInfo as resolvePullRequestHeadRepoInfoPure,
+  sameRepoInfo as sameRepoInfoPure,
+} from './domain/pull-request-repo-info.js';
+import {
+  isPullRequestBehindCurrentBase as isPullRequestBehindCurrentBaseApplication,
+  readBranchHeadSha as readBranchHeadShaApplication,
+  type BranchUpdateDecisionCallbacks,
+} from './application/branch-update-decision.js';
+import {
+  matchRequestTypesForFile as matchRequestTypesForFilePure,
+  pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
+} from './domain/direct-pr-resource-mapping.js';
+import { type ApprovalDecision } from './domain/approval-decision.js';
+import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
+import {
+  normalizeLogin as normalizeLoginPure,
+  toStringTrim as toStringTrimPure,
+  uniqLogins as uniqLoginsPure,
+} from './domain/login-utils.js';
+import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
+import {
+  readContactApprovalMeta,
+  readParentApprovalMeta,
+  type ContactApprovalMeta,
+  type ParentApprovalMeta,
+} from './domain/approval-markers.js';
+import { readIssueBodyForProcessing } from './domain/issue-body-processing.js';
+import { type RegistryValidationMachineReadableSource } from './domain/registry-validation-annotations.js';
+import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
-import { loadStaticConfig, DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
+import { DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
 import { getDocLinksFromConfig } from './constants.js';
+import { getErrorMessage, getHttpStatus, isPlainObject } from './infrastructure/errors.js';
+import { log as infraLog } from './infrastructure/logger.js';
+import {
+  createGitHubGateway,
+  createGitHubIssueUpdateGateway,
+  type GitHubGateway,
+} from './infrastructure/github-gateway.js';
+import {
+  readDefaultBranchFromPayload,
+  readDefaultBranchFromPush,
+  readPayloadLabelName,
+  readPushChangedFiles,
+  readRepoInfoFromPayload,
+} from './infrastructure/request-context.js';
+import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
+import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
+import { registerRequestEvents } from './events/index.js';
+import { createIssueCommentEventHandler } from './events/issue-comments.js';
+import {
+  createIssueClosedEventHandler,
+  createIssueLabelChangeEventHandler,
+  createIssueLifecycleEventHandler,
+} from './events/issues.js';
+import { createPullRequestEventHandler } from './events/pull-requests.js';
+import { createCheckEventHandler } from './events/checks.js';
+import { createStatusEventHandler } from './events/status.js';
+import { createPushEventHandler } from './events/push.js';
+import {
+  composeApprovalCommentHandlingCallbacks,
+  composeApprovedRequestFinalizationCallbacks,
+  createApprovalRuntime,
+  createAutoMergeRuntime,
+  createCheckWorkflowRuntime,
+  createDirectPrRuntime,
+  createRequestLifecycleRuntime,
+  composeIssueStateReviewerOperationsCallbacks,
+  composeIssueWorkflowGuardCallbacks,
+  composeOwnerApprovalCommentHandlingCallbacks,
+} from './composition/index.js';
 import type { Context, Probot } from 'probot';
-import YAML from 'yaml';
 import { createHash } from 'node:crypto';
 
 const DBG = process.env.DEBUG_NS === '1';
@@ -42,10 +249,6 @@ type ResourceBotContextExt = {
   resourceBotConfig?: NormalizedStaticConfig;
   resourceBotHooks?: RegistryBotHooks | null;
   resourceBotHooksSource?: string | null;
-};
-
-type StaticConfigLoadOptions = {
-  forceReload?: boolean;
 };
 
 type BotContext<E extends RequestEvents> = Context<E> & ResourceBotContextExt;
@@ -133,11 +336,6 @@ type PullRequestFileLike = {
   status?: string | null;
 };
 
-type PullRequestCommitLike = {
-  author?: UserLike | null;
-  committer?: UserLike | null;
-};
-
 type PullRequestReviewLike = {
   id?: number | null;
   state?: string | null;
@@ -145,13 +343,6 @@ type PullRequestReviewLike = {
   submitted_at?: string | null;
   user?: UserLike | null;
   commit_id?: string | null;
-};
-
-type RefCheckRunLike = {
-  id?: number | null;
-  name?: string | null;
-  status?: string | null;
-  conclusion?: string | null;
 };
 
 type CheckRunPullRequestRef = { number?: number | null };
@@ -166,37 +357,14 @@ type CheckRunLike = {
   pull_requests?: CheckRunPullRequestRef[] | null;
 };
 
-type CheckRunAnnotationLike = {
-  path?: string | null;
-  message?: string | null;
-  title?: string | null;
-  annotation_level?: string | null;
-  raw_details?: string | null;
-};
-
 type GitTreeEntryLike = {
   path?: string | null;
   type?: string | null;
   sha?: string | null;
 };
 
-type GitTreeLike = {
-  tree?: GitTreeEntryLike[];
-};
-
 type DirectPrApprovalOptions = {
   baseBranch?: string;
-};
-
-type AutomatedApprovalReviewOptions = {
-  skipApprovedLabelStateCleanup?: boolean;
-};
-
-type HeadGreenRunSummary = {
-  id?: number;
-  name: string;
-  status: string;
-  conclusion: string;
 };
 
 type HeadGreenEvaluation = {
@@ -230,711 +398,22 @@ type EffectiveConstants = {
   approverPoolUsernames: string[];
 };
 
-type MachineReadableIssue = Readonly<{
-  field: string;
-  message: string;
-  filePath?: string;
-}>;
+const log = infraLog;
 
-type RegistryValidationMachineReadableSource = Readonly<{
-  filePath: string;
-  message: string;
-  schemaPath?: string;
-}>;
-
-type SchemaFieldAliasLookup = Map<string, string>;
-
-function normalizeMachineReadableIssues(value: unknown): MachineReadableIssue[] {
-  const items = Array.isArray(value) ? value : [];
-  const out: MachineReadableIssue[] = [];
-  const seen = new Set<string>();
-
-  for (const item of items) {
-    if (!isPlainObject(item)) continue;
-
-    const message = toStringTrim(item['message']);
-    const field = toStringTrim(item['field'] ?? item['path']) || 'details';
-    const filePath = toStringTrim(item['filePath']);
-
-    if (!message) continue;
-
-    const key = `${field}\u0000${filePath}\u0000${message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    out.push({
-      field,
-      message,
-      ...(filePath ? { filePath } : {}),
-    });
-  }
-
-  return out;
-}
-
-function buildMachineReadableMetadataBlock(issues: MachineReadableIssue[]): string {
-  const normalized = normalizeMachineReadableIssues(issues);
-  if (!normalized.length) return '';
-
-  return `
-##
-<details>
-<summary>Show as JSON (Robots Friendly)</summary>
-
-\`\`\`json
-${JSON.stringify(normalized, null, 2)}
-\`\`\`
-</details>`;
-}
-
-function buildDetectedIssuesBody(message: string, issues: MachineReadableIssue[] = []): string {
-  return `## Detected issues
-
-${message}${buildMachineReadableMetadataBlock(issues)}`;
-}
-
-function singleMachineReadableIssue(field: string, message: string, filePath = ''): MachineReadableIssue[] {
-  const normalizedMessage = toStringTrim(message);
-  const normalizedField = toStringTrim(field) || 'details';
-  const normalizedFilePath = toStringTrim(filePath);
-
-  return normalizedMessage
-    ? [
-        {
-          field: normalizedField,
-          message: normalizedMessage,
-          ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
-        },
-      ]
-    : [];
-}
-
-const SCHEMA_FIELD_ALIAS_CACHE = new Map<string, Promise<SchemaFieldAliasLookup>>();
-const MERGE_INFLIGHT = new Map<string, Promise<void>>();
-const AUTO_APPROVED_PR_HEADS = new Set<string>();
-
-const AUTO_APPROVAL_REVIEW_INFLIGHT = new Map<string, Promise<boolean>>();
-const AUTO_MERGE_EVALUATION_INFLIGHT = new Map<string, Promise<void>>();
-
-const AUTO_MERGE_EVALUATION_RECENT_UNTIL = new Map<string, number>();
-const AUTO_MERGE_EVALUATION_RECENT_TTL_MS = 30_000;
-
-const WORKFLOW_APPROVAL_RETRY_INFLIGHT = new Map<string, NodeJS.Timeout>();
-const WORKFLOW_APPROVAL_RETRY_DELAYS_MS = [10_000, 30_000];
-
-const WORKFLOW_APPROVAL_LAST_RUNS = new Map<string, WorkflowRunLike[]>();
-
-function workflowApprovalHeadKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`.toLowerCase();
-}
-
-function rememberWorkflowApprovalRuns(repoInfo: RepoInfo, pr: PullRequestLike, runs: WorkflowRunLike[]): void {
-  WORKFLOW_APPROVAL_LAST_RUNS.set(workflowApprovalHeadKey(repoInfo, pr), runs || []);
-}
-
-function shouldRetryWorkflowApproval(repoInfo: RepoInfo, pr: PullRequestLike): boolean {
-  const runs = WORKFLOW_APPROVAL_LAST_RUNS.get(workflowApprovalHeadKey(repoInfo, pr));
-
-  // Retry only when no run was visible yet. If GitHub already returned queued/completed/failed runs,
-  // there is no pending approval run to wait for.
-  return Array.isArray(runs) && runs.length === 0;
-}
-
-function workflowApprovalRetryKey(repoInfo: RepoInfo, pr: PullRequestLike, attempt: number): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}:${attempt}`.toLowerCase();
-}
-
-const CHANGED_FILES_CONTEXT_CACHE = new WeakMap<object, Map<string, Promise<PullRequestFileLike[]>>>();
-
-function changedFilesCacheKey(repoInfo: RepoInfo, prNumber: number): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}`.toLowerCase();
-}
-
-async function listAllChangedFilesForPrCached(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<PullRequestFileLike[]> {
-  let perContext = CHANGED_FILES_CONTEXT_CACHE.get(context as object);
-
-  if (!perContext) {
-    perContext = new Map<string, Promise<PullRequestFileLike[]>>();
-    CHANGED_FILES_CONTEXT_CACHE.set(context as object, perContext);
-  }
-
-  const key = changedFilesCacheKey(repoInfo, prNumber);
-  const existing = perContext.get(key);
-  if (existing) return await existing;
-
-  const pending = (async (): Promise<PullRequestFileLike[]> => {
-    const out: PullRequestFileLike[] = [];
-    let page = 1;
-
-    while (true) {
-      const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
-      if (!files.length) break;
-
-      out.push(...files);
-
-      if (files.length < 100) break;
-      page += 1;
-      if (page > 20) break;
-    }
-
-    return out;
-  })();
-
-  perContext.set(key, pending);
-  return await pending;
-}
-
-type WorkflowLabelKey =
-  | 'global'
-  | 'authorAction'
-  | 'approverAction'
-  | 'parentOwnerAction'
-  | 'approvalRequested'
-  | 'approvalSuccessful'
-  | 'approvalRejected'
-  | 'autoMergeCandidate';
-
-function readWorkflowLabelsConfig(context: BotContext<RequestEvents>): Record<string, unknown> {
-  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
-  const wf = cfg?.workflow ?? {};
-
-  if (!isPlainObject(wf)) return {};
-
-  const labels = (wf as Record<string, unknown>)['labels'];
-  return isPlainObject(labels) ? labels : {};
-}
-
-function resolveWorkflowLabels(context: BotContext<RequestEvents>, key: WorkflowLabelKey): string[] {
-  const raw = readWorkflowLabelsConfig(context)[key];
-
-  if (Array.isArray(raw)) {
-    return raw.map(toStringTrim).filter(Boolean);
-  }
-
-  const single = toStringTrim(raw);
-  return single ? [single] : [];
-}
-
-function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: WorkflowLabelKey): string {
-  return resolveWorkflowLabels(context, key)[0] || '';
-}
-
-function resolveAuthorActionLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'authorAction');
-}
-
-function resolveApproverActionLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'approverAction');
-}
-
-function resolveParentOwnerActionLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'parentOwnerAction');
-}
-
-function resolveApprovedLabels(context: BotContext<RequestEvents>): string[] {
-  return resolveWorkflowLabels(context, 'approvalSuccessful');
-}
-
-function resolveApprovedLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'approvalSuccessful');
-}
-
-function resolveRejectedLabels(context: BotContext<RequestEvents>): string[] {
-  return resolveWorkflowLabels(context, 'approvalRejected');
-}
-
-function resolveRejectedLabel(context: BotContext<RequestEvents>): string {
-  return resolveWorkflowLabel(context, 'approvalRejected');
-}
-
-const normalizeKey = (s: unknown): string => {
-  const base = toStringTrim(s).toLowerCase();
-  return base.replaceAll(/[^\w]+/g, '-').replaceAll(/(?:^-+|-+$)/g, '');
-};
-
-const labelsMatching = (labels: string[], expected: string): string[] => {
-  const expectedKey = normalizeKey(expected);
-  if (!expectedKey) return [];
-
-  return (labels || []).filter((l) => {
-    const k = normalizeKey(l);
-    return k === expectedKey || k.includes(expectedKey) || expectedKey.includes(k);
-  });
-};
-
-function labelsMatchingAny(labels: string[], expectedLabels: string[]): string[] {
-  const out: string[] = [];
-
-  for (const expected of expectedLabels.map(toStringTrim).filter(Boolean)) {
-    out.push(...labelsMatching(labels, expected));
-  }
-
-  return Array.from(new Set(out));
-}
-
-function normalizeSchemaFieldAlias(value: unknown): string {
-  const raw = toStringTrim(value);
-  if (!raw) return '';
-
-  return raw
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '');
-}
-
-function addSchemaFieldAlias(lookup: SchemaFieldAliasLookup, aliasValue: unknown, propertyName: string): void {
-  const alias = normalizeSchemaFieldAlias(aliasValue);
-  if (!alias || lookup.has(alias)) return;
-
-  lookup.set(alias, propertyName);
-
-  if (alias.endsWith('s') && alias.length > 1) {
-    const singular = alias.slice(0, -1);
-    if (singular && !lookup.has(singular)) lookup.set(singular, propertyName);
-  } else {
-    const plural = `${alias}s`;
-    if (!lookup.has(plural)) lookup.set(plural, propertyName);
-  }
-}
-
-function collectSchemaFieldAliasesForProperty(
-  propertyName: string,
-  propertyDef: unknown,
-  lookup: SchemaFieldAliasLookup
-): void {
-  addSchemaFieldAlias(lookup, propertyName, propertyName);
-  if (!isPlainObject(propertyDef)) return;
-
-  addSchemaFieldAlias(lookup, propertyDef['title'], propertyName);
-  addSchemaFieldAlias(lookup, propertyDef['x-form-field'], propertyName);
-  collectSchemaFieldAliases(propertyDef, lookup);
-}
-
-function collectSchemaFieldAliasesFromProperties(props: Record<string, unknown>, lookup: SchemaFieldAliasLookup): void {
-  for (const [propertyName, propertyDef] of Object.entries(props)) {
-    collectSchemaFieldAliasesForProperty(propertyName, propertyDef, lookup);
-  }
-}
-
-function collectSchemaFieldAliasesFromArray(items: unknown[], lookup: SchemaFieldAliasLookup): void {
-  for (const item of items) {
-    collectSchemaFieldAliases(item, lookup);
-  }
-}
-
-function collectSchemaFieldAliases(schemaObj: unknown, lookup: SchemaFieldAliasLookup): void {
-  if (!isPlainObject(schemaObj)) return;
-
-  const props = isPlainObject(schemaObj['properties']) ? schemaObj['properties'] : null;
-  if (props) collectSchemaFieldAliasesFromProperties(props, lookup);
-
-  for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
-    const items = schemaObj[key];
-    if (!Array.isArray(items)) continue;
-
-    collectSchemaFieldAliasesFromArray(items, lookup);
-  }
-
-  const defs = isPlainObject(schemaObj['$defs']) ? schemaObj['$defs'] : null;
-  if (defs) {
-    for (const value of Object.values(defs)) {
-      collectSchemaFieldAliases(value, lookup);
-    }
-  }
-}
-
-async function loadSchemaFieldAliasLookup(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  schemaPath: string
-): Promise<SchemaFieldAliasLookup> {
-  const rawPath = toStringTrim(schemaPath);
-  if (!rawPath) return new Map<string, string>();
-
-  const cleaned = rawPath.replace(/^\.?\//, '');
-  const candidates = rawPath.startsWith('/')
-    ? [rawPath.replace(/^\/+/, '')]
-    : [cleaned.startsWith('.github/') ? cleaned : `.github/registry-bot/${cleaned}`, cleaned];
-
-  const cacheKey = `${repoInfo.owner}/${repoInfo.repo}:${JSON.stringify(candidates)}`;
-  const cached = SCHEMA_FIELD_ALIAS_CACHE.get(cacheKey);
-  if (cached) return await cached;
-
-  const pending = (async (): Promise<SchemaFieldAliasLookup> => {
-    for (const candidate of candidates) {
-      const raw = await readRepoFileText(context, repoInfo, candidate);
-      if (!raw) continue;
-
-      try {
-        const parsed = JSON.parse(raw) as unknown;
-        const lookup = new Map<string, string>();
-        collectSchemaFieldAliases(parsed, lookup);
-        return lookup;
-      } catch {
-        continue;
-      }
-    }
-
-    return new Map<string, string>();
-  })();
-
-  SCHEMA_FIELD_ALIAS_CACHE.set(cacheKey, pending);
-  return await pending;
-}
-
-async function resolveMachineReadableRegistryField(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  fieldHint: string,
-  schemaPath?: string
-): Promise<string> {
-  const fallback = toStringTrim(fieldHint) || 'details';
-  const normalizedSchemaPath = toStringTrim(schemaPath);
-
-  if (!normalizedSchemaPath || fallback === 'details') return fallback;
-
-  const lookup = await loadSchemaFieldAliasLookup(context, repoInfo, normalizedSchemaPath);
-  if (!lookup.size) return fallback;
-
-  return lookup.get(normalizeSchemaFieldAlias(fallback)) || fallback;
-}
-
-async function buildRegistryValidationMachineReadableIssues(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  items: RegistryValidationMachineReadableSource[]
-): Promise<MachineReadableIssue[]> {
-  const out: MachineReadableIssue[] = [];
-
-  for (const item of items || []) {
-    const message = normalizeMsg(item.message);
-    if (!message) continue;
-
-    const fieldHint = extractFieldFromMsg(item.message) || 'details';
-    const field = await resolveMachineReadableRegistryField(context, repoInfo, fieldHint, item.schemaPath);
-    const normalizedFilePath = toStringTrim(item.filePath);
-
-    out.push({
-      field,
-      message,
-      ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
-    });
-  }
-
-  return normalizeMachineReadableIssues(out);
-}
-
-function normalizeApprovalHookErrorsForComment(decision: ApprovalDecision): MachineReadableIssue[] {
-  const raw = Array.isArray(decision.errors) ? decision.errors : [];
-  const mapped = raw.map((entry) => ({
-    field: toStringTrim(entry?.field) || 'details',
-    message: toStringTrim(entry?.message),
-  }));
-
-  const normalized = normalizeMachineReadableIssues(mapped);
-  if (normalized.length) return normalized;
-
-  const fallbackMessage =
-    toStringTrim(decision.message) || toStringTrim(decision.reason) || toStringTrim(decision.comment);
-  const fallbackField = toStringTrim(decision.path) || 'details';
-
-  return fallbackMessage ? [{ field: fallbackField, message: fallbackMessage }] : [];
-}
-
-function buildApprovalHookIssueList(issues: MachineReadableIssue[]): string {
-  const normalized = normalizeMachineReadableIssues(issues);
-  if (!normalized.length) return '';
-
-  const grouped = new Map<string, string[]>();
-
-  for (const issue of normalized) {
-    const key = toStringTrim(issue.field) || 'details';
-    const arr = grouped.get(key) ?? [];
-    if (!arr.includes(issue.message)) arr.push(issue.message);
-    grouped.set(key, arr);
-  }
-
-  const keys = Array.from(grouped.keys()).sort((a, b) => {
-    if (a === 'details') return 1;
-    if (b === 'details') return -1;
-    return a.localeCompare(b);
-  });
-
-  const lines: string[] = [];
-  for (const key of keys) {
-    lines.push(`### ${toSectionTitle(key)}`);
-    for (const msg of grouped.get(key) ?? []) {
-      lines.push(`- ${msg}`);
-    }
-    lines.push('');
-  }
-
-  return lines.join('\n').trim();
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function getHttpStatus(err: unknown): number | undefined {
-  if (!isPlainObject(err)) return undefined;
-  const status = err['status'];
-  return typeof status === 'number' ? status : undefined;
+function github<E extends RequestEvents>(context: BotContext<E>): GitHubGateway {
+  return createGitHubGateway(context);
 }
 
 function toStringTrim(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
-  return '';
+  return toStringTrimPure(value);
 }
 
 function normalizeLogin(value: unknown): string {
-  return toStringTrim(value).replace(/^@+/, '').trim();
+  return normalizeLoginPure(value);
 }
 
 function uniqLogins(values: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const v of values || []) {
-    const s = normalizeLogin(v);
-    if (!s) continue;
-    const k = s.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(s);
-  }
-  return out;
-}
-
-type RepoContentFile = { content?: string; encoding?: string };
-
-function isRepoContentFile(v: unknown): v is RepoContentFile {
-  return isPlainObject(v) && typeof v['content'] === 'string';
-}
-
-async function readRepoFileText(
-  context: BotContext<RequestEvents>,
-  repo: RepoInfo,
-  path: string
-): Promise<string | null> {
-  const p = toStringTrim(path).replace(/^\/+/, '');
-  if (!p) return null;
-
-  try {
-    const res = await context.octokit.repos.getContent({ owner: repo.owner, repo: repo.repo, path: p });
-    const data = (res as unknown as { data?: unknown }).data;
-
-    if (Array.isArray(data) || !isRepoContentFile(data)) return null;
-
-    const enc = typeof data.encoding === 'string' ? data.encoding : 'base64';
-    return Buffer.from(String(data.content || ''), enc as BufferEncoding).toString('utf8');
-  } catch {
-    return null;
-  }
-}
-
-async function readYamlFromRepo(
-  context: BotContext<RequestEvents>,
-  repo: RepoInfo,
-  path: string
-): Promise<unknown | null> {
-  const txt = await readRepoFileText(context, repo, path);
-  if (!txt) return null;
-
-  try {
-    return YAML.parse(txt);
-  } catch {
-    return null;
-  }
-}
-
-const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function extractParentContactCandidates(value: unknown): { logins: string[]; emails: string[] } {
-  const logins: string[] = [];
-  const emails: string[] = [];
-
-  const pushLogin = (v: unknown): void => {
-    const s = normalizeLogin(v);
-    if (!s) return;
-    if (!LOGIN_RE.test(s)) return;
-    logins.push(s);
-  };
-
-  const pushEmail = (v: unknown): void => {
-    const s = toStringTrim(v);
-    if (!s) return;
-    const t = s.replace(/^<|>$/g, '').trim();
-    if (!EMAIL_RE.test(t)) return;
-    emails.push(t);
-  };
-
-  const fromString = (raw: string, strongLoginHint: boolean): void => {
-    const s = toStringTrim(raw);
-    if (!s) return;
-
-    const urlM =
-      /(?:https?:\/\/)?(?:www\.)?(?:github\.com|github\.tools\.sap)\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/gi;
-    for (const m of s.matchAll(urlM)) {
-      if (m?.[1]) pushLogin(m[1]);
-    }
-
-    const tokens = s
-      .split(/[,\s;]+/)
-      .map((t) => t.trim())
-      .filter(Boolean);
-
-    for (let t of tokens) {
-      t = t.replace(/^[<([{"']+|[>)\]},"']+$/g, '').trim();
-      if (!t) continue;
-
-      if (t.includes('@') && EMAIL_RE.test(t)) {
-        pushEmail(t);
-        continue;
-      }
-
-      if (t.startsWith('@')) {
-        const u = t.slice(1);
-        if (u && !u.includes('.') && LOGIN_RE.test(u)) pushLogin(u);
-        continue;
-      }
-
-      if ((strongLoginHint || tokens.length === 1) && !t.includes('.') && LOGIN_RE.test(t)) {
-        pushLogin(t);
-      }
-    }
-  };
-
-  const walk = (v: unknown, keyHint?: string): void => {
-    if (v === null || v === undefined) return;
-
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      const k = String(keyHint || '').toLowerCase();
-      const strong = ['github', 'login', 'username', 'user', 'owner', 'id', 'uid', 'account', 'gh'].some((x) =>
-        k.includes(x)
-      );
-      fromString(String(v), strong);
-      return;
-    }
-
-    if (Array.isArray(v)) {
-      for (const el of v) walk(el, keyHint);
-      return;
-    }
-
-    if (isPlainObject(v)) {
-      for (const [k, vv] of Object.entries(v)) walk(vv, k);
-      return;
-    }
-  };
-
-  walk(value);
-
-  return { logins: uniqLogins(logins), emails: Array.from(new Set(emails.map((e) => e.toLowerCase()))) };
-}
-
-const EMAIL_TO_LOGINS_CACHE = new Map<string, Promise<string[]>>();
-
-async function lookupGithubLoginsByEmail(context: BotContext<RequestEvents>, email: string): Promise<string[]> {
-  const e = toStringTrim(email).toLowerCase();
-  if (!e || !e.includes('@')) return [];
-
-  const cached = EMAIL_TO_LOGINS_CACHE.get(e);
-  if (cached) return await cached;
-
-  const p = (async (): Promise<string[]> => {
-    const found: string[] = [];
-    const q = `${e} in:email`;
-
-    try {
-      const res = await context.octokit.search.users({ q, per_page: 5 });
-      const items = (res as unknown as { data?: { items?: { login?: string }[] } })?.data?.items ?? [];
-      for (const it of items) {
-        const login = normalizeLogin(it?.login);
-        if (login) found.push(login);
-      }
-    } catch {
-      /* empty */
-    }
-
-    if (found.length) return uniqLogins(found);
-
-    try {
-      const gql = `
-        query($q: String!) {
-          search(type: USER, query: $q, first: 5) {
-            nodes { ... on User { login } }
-          }
-        }
-      `;
-      const r = await (
-        context.octokit as unknown as {
-          graphql: (q: string, v: unknown) => Promise<{ search?: { nodes?: { login?: string }[] } }>;
-        }
-      ).graphql(gql, { q });
-
-      const nodes = r?.search?.nodes ?? [];
-      for (const n of nodes) {
-        const login = normalizeLogin(n?.login);
-        if (login) found.push(login);
-      }
-    } catch {
-      /* empty */
-    }
-
-    return uniqLogins(found);
-  })();
-
-  EMAIL_TO_LOGINS_CACHE.set(e, p);
-  return await p;
-}
-
-async function resolveParentOwnerLoginsForTarget(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  template: TemplateLike,
-  validatedNamespace: string,
-  requestType: string
-): Promise<{ parent: string; owners: string[] }> {
-  const rt = toStringTrim(requestType).toLowerCase();
-  if (!rt.includes('namespace')) return { parent: '', owners: [] };
-
-  const target = toStringTrim(validatedNamespace);
-  const parts = target
-    .split('.')
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  if (parts.length <= 2) return { parent: '', owners: [] };
-
-  const parent = parts.slice(0, -1).join('.');
-  if (!parent) return { parent: '', owners: [] };
-
-  const rootRaw = toStringTrim(template?._meta?.root);
-  const root = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!root) return { parent, owners: [] };
-
-  const parentPath = `${root}/${parent}.yaml`;
-  const doc = await readYamlFromRepo(context, { owner: params.owner, repo: params.repo }, parentPath);
-  if (!isPlainObject(doc)) return { parent, owners: [] };
-
-  const rec = doc;
-  const contacts = rec['contacts'] ?? rec['contact'] ?? rec['owners'] ?? rec['owner'];
-
-  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
-
-  const resolved: string[] = [...directLogins];
-  for (const email of emails.slice(0, 10)) {
-    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
-  }
-
-  return { parent, owners: uniqLogins(resolved) };
+  return uniqLoginsPure(values);
 }
 
 function readCheckRunId(run: CheckRunLike | null): number | null {
@@ -953,40 +432,12 @@ type CheckSuiteLike = {
   pull_requests?: CheckSuitePullRequestRef[] | null;
 };
 
-type WorkflowRunPullRequestRef = {
-  number?: number | null;
-};
-
-type WorkflowRunLike = {
-  id?: number | null;
-  name?: string | null;
-  path?: string | null;
-  status?: string | null;
-  conclusion?: string | null;
-  head_sha?: string | null;
-  pull_requests?: WorkflowRunPullRequestRef[] | null;
-};
-
 function readCheckSuiteFromPayload(payload: unknown): CheckSuiteLike | null {
-  if (!isPlainObject(payload)) return null;
-  const suite = payload['check_suite'];
-  if (!isPlainObject(suite)) return null;
-  return suite as unknown as CheckSuiteLike;
+  return readCheckSuiteFromPayloadApplication<CheckSuiteLike>(payload, buildCheckPrResolutionCallbacks());
 }
 
 function readCheckSuiteId(suite: CheckSuiteLike | null): number | null {
-  const id = suite?.id;
-  return typeof id === 'number' && Number.isFinite(id) ? id : null;
-}
-
-function readCheckSuitePrNumbers(suite: CheckSuiteLike | null): number[] {
-  const prs = Array.isArray(suite?.pull_requests) ? suite?.pull_requests : [];
-  const out: number[] = [];
-  for (const pr of prs) {
-    const n = pr?.number;
-    if (typeof n === 'number' && Number.isFinite(n)) out.push(n);
-  }
-  return out;
+  return readCheckSuiteIdApplication(suite);
 }
 
 async function resolveCheckSuitePrNumbers(
@@ -995,69 +446,13 @@ async function resolveCheckSuitePrNumbers(
   suite: CheckSuiteLike | null,
   headSha: string
 ): Promise<number[]> {
-  const direct = readCheckSuitePrNumbers(suite);
-  if (direct.length) return Array.from(new Set(direct));
-
-  const sha = toStringTrim(headSha);
-  if (!sha) return [];
-
-  try {
-    const res = await context.octokit.repos.listPullRequestsAssociatedWithCommit({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      commit_sha: sha,
-      per_page: 100,
-    });
-
-    const data = (res as unknown as { data?: unknown }).data;
-    const items = Array.isArray(data) ? data : [];
-
-    const fromCommit = items
-      .map((pr) => {
-        if (!isPlainObject(pr)) return null;
-
-        const state = toStringTrim(pr['state']).toLowerCase();
-        const number = pr['number'];
-
-        if (state !== 'open') return null;
-        if (typeof number !== 'number' || !Number.isFinite(number)) return null;
-
-        return number;
-      })
-      .filter((n): n is number => typeof n === 'number');
-
-    if (fromCommit.length) return Array.from(new Set(fromCommit));
-  } catch {
-    // ignore and fall through to the repo scan fallback
-  }
-
-  const matches: number[] = [];
-  let page = 1;
-
-  while (true) {
-    const { data } = await context.octokit.pulls.list({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      state: 'open',
-      per_page: 100,
-      page,
-    });
-
-    const prs = (data || []) as unknown as PullRequestLike[];
-    if (!prs.length) break;
-
-    for (const pr of prs) {
-      if (toStringTrim(pr.head?.sha) !== sha) continue;
-      if (typeof pr.number !== 'number' || !Number.isFinite(pr.number)) continue;
-      matches.push(pr.number);
-    }
-
-    if (prs.length < 100) break;
-    page += 1;
-    if (page > 20) break;
-  }
-
-  return Array.from(new Set(matches));
+  return await resolveCheckSuitePrNumbersApplication(
+    context,
+    repoInfo,
+    suite,
+    headSha,
+    buildCheckPrResolutionCallbacks()
+  );
 }
 
 async function listAllCheckRunsForSuite(
@@ -1066,186 +461,84 @@ async function listAllCheckRunsForSuite(
   repo: string,
   checkSuiteId: number
 ): Promise<CheckRunLike[]> {
-  const all: CheckRunLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await context.octokit.checks.listForSuite({
-      owner,
-      repo,
-      check_suite_id: checkSuiteId,
-      per_page: 100,
-      page,
-    });
-
-    const data = (res as unknown as { data?: unknown }).data;
-    const runs = isPlainObject(data) && Array.isArray(data['check_runs']) ? (data['check_runs'] as unknown[]) : [];
-
-    all.push(...(runs as unknown as CheckRunLike[]));
-
-    if (runs.length < 100) break;
-    page += 1;
-    if (page > 20) break; // safety cap
-  }
-
-  return all;
+  return await listAllCheckRunsForSuiteApplication(
+    context,
+    owner,
+    repo,
+    checkSuiteId,
+    buildCheckSuiteAnnotationsCallbacks()
+  );
 }
 
-async function listAllCheckRunAnnotations(
+async function readFirstRegistryValidationArtifactsForSuiteRuns(
   context: BotContext<RequestEvents>,
   owner: string,
   repo: string,
-  checkRunId: number
-): Promise<CheckRunAnnotationLike[]> {
-  const all: CheckRunAnnotationLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await context.octokit.checks.listAnnotations({
-      owner,
-      repo,
-      check_run_id: checkRunId,
-      per_page: 100,
-      page,
-    });
-
-    const data = (res as unknown as { data?: unknown }).data;
-    const items = Array.isArray(data) ? (data as unknown[]) : [];
-
-    all.push(...(items as unknown as CheckRunAnnotationLike[]));
-
-    if (items.length < 100) break;
-    page += 1;
-
-    if (page > 20) break; // safety cap
-  }
-
-  return all;
+  runsForSuite: CheckRunLike[]
+): Promise<{
+  byFile: Map<string, string[]>;
+  machineReadableSources: RegistryValidationMachineReadableSource[];
+} | null> {
+  return await readFirstRegistryValidationArtifactsForSuiteRunsApplication(
+    context,
+    owner,
+    repo,
+    runsForSuite,
+    buildCheckSuiteAnnotationsCallbacks()
+  );
 }
 
-function isRegistryValidateAnnotation(a: CheckRunAnnotationLike): boolean {
-  const t = toStringTrim(a?.title).toLowerCase();
-  return t.startsWith('registry-validate');
+function buildCheckSuiteAnnotationsCallbacks(): CheckSuiteAnnotationsCallbacks<
+  BotContext<RequestEvents>,
+  CheckRunLike
+> {
+  return {
+    isPlainObject,
+    readCheckRunId,
+    listCheckRunsForSuite: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        check_suite_id: number;
+        per_page: number;
+        page: number;
+      }
+    ): Promise<{ data?: unknown }> => await github(context).checks.listCheckRunsForSuite(args),
+    listCheckRunAnnotations: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        check_run_id: number;
+        per_page: number;
+        page: number;
+      }
+    ): Promise<{ data?: unknown }> => await github(context).checks.listCheckRunAnnotations(args),
+    onCheckRunAnnotationsLoaded: (
+      context: BotContext<RequestEvents>,
+      args: {
+        checkRunId: number;
+        annotationsTotal: number;
+        relevant: number;
+      }
+    ): void => {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          { checkRunId: args.checkRunId, annotationsTotal: args.annotationsTotal, relevant: args.relevant },
+          'dbg:checks:annotations loaded (suite run)'
+        );
+      }
+    },
+  };
 }
 
-function stripRegistrySuffix(msg: string): string {
-  const i = msg.indexOf(' [file=');
-  return (i >= 0 ? msg.slice(0, i) : msg).trim();
-}
-
-function toSectionTitle(field: string): string {
-  const raw = toStringTrim(field);
-  if (!raw) return 'Details';
-
-  const lc = raw.toLowerCase();
-  if (lc === 'contact' || lc === 'contacts') return 'Contacts';
-
-  // Humanize
-  const spaced = raw
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .trim();
-
-  if (!spaced) return 'Details';
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function normalizeMsg(m: string): string {
-  const s = toStringTrim(m);
-
-  // Strip leading "/path" token if present
-  const firstSpace = s.indexOf(' ');
-  const maybePath = firstSpace > 0 ? s.slice(0, firstSpace) : '';
-  const rest = firstSpace > 0 ? s.slice(firstSpace + 1).trim() : s;
-
-  const msgOnly = maybePath.startsWith('/') ? rest : s;
-
-  // Normalize "must" -> "MUST"
-  return msgOnly.replace(/\bmust\b/gi, 'MUST');
-}
-
-function extractFieldFromMsg(m: string): string {
-  const s = toStringTrim(m);
-  if (!s) return '';
-
-  const ptr = /^\/([^/\s]+)(?:\/|\s|$)/.exec(s);
-  if (ptr?.[1]) return ptr[1];
-
-  const reqProp = /\b(?:required property|Property)\s*['"]([^'"]+)['"]/.exec(s);
-  if (reqProp?.[1]) return reqProp[1];
-
-  const addProp = /\badditional property\s*['"]([^'"]+)['"]/.exec(s);
-  if (addProp?.[1]) return addProp[1];
-
-  const labelReq = /^(.+?)\s+is\s+required\.\s*$/i.exec(s);
-  if (labelReq?.[1]) return normalizeKey(labelReq[1]);
-
-  const leadingField = /^([a-z][a-zA-Z0-9_-]*)\s+(?:must|MUST)\b/.exec(s);
-  if (leadingField?.[1]) return leadingField[1];
-
-  const dotted = /^([a-z][a-zA-Z0-9_-]*)(?:\[[^\]]*\])?\.[a-zA-Z0-9_-]+\s+is\s+required\./i.exec(s);
-  if (dotted?.[1]) return dotted[1];
-
-  return '';
-}
-
-function groupRegistryValidationMessages(messages: string[]): Map<string, string[]> {
-  const grouped = new Map<string, string[]>();
-
-  for (const raw of messages) {
-    const field = extractFieldFromMsg(raw) || 'details';
-    const msg = normalizeMsg(raw);
-    if (!msg) continue;
-
-    const arr = grouped.get(field) ?? [];
-    if (!arr.includes(msg)) arr.push(msg);
-    grouped.set(field, arr);
-  }
-
-  return grouped;
-}
-
-function sortRegistryValidationGroupKeys(grouped: Map<string, string[]>): string[] {
-  return Array.from(grouped.keys()).sort((a, b) => {
-    if (a === 'details') return 1;
-    if (b === 'details') return -1;
-    return a.localeCompare(b);
-  });
-}
-
-function appendRegistryValidationSections(lines: string[], grouped: Map<string, string[]>, headingLevel: string): void {
-  for (const key of sortRegistryValidationGroupKeys(grouped)) {
-    lines.push(`${headingLevel} ${toSectionTitle(key)}`);
-    for (const msg of grouped.get(key) ?? []) {
-      lines.push(`- ${msg}`);
-    }
-    lines.push('');
-  }
-}
-
-function appendRegistryValidationFileSection(lines: string[], filePath: string, messages: string[]): void {
-  lines.push(`### File: \`${filePath}\``, '');
-  appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '####');
-}
-
-async function buildRegistryValidationPrCommentBody(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  filePath: string,
-  messages: string[],
-  machineReadableSources: RegistryValidationMachineReadableSource[]
-): Promise<string> {
-  const lines: string[] = ['## Detected issues', '', `### File: \`${filePath}\``, ''];
-
-  appendRegistryValidationSections(lines, groupRegistryValidationMessages(messages), '###');
-
-  const body = lines.join('\n').trimEnd();
-  const machineReadable = await buildRegistryValidationMachineReadableIssues(context, repoInfo, machineReadableSources);
-
-  return `${body}
-
-${buildMachineReadableMetadataBlock(machineReadable)}`;
-}
+const normalizeKey = (s: unknown): string => {
+  const base = toStringTrim(s).toLowerCase();
+  return base.replaceAll(/[^\w]+/g, '-').replaceAll(/(?:^-+|-+$)/g, '');
+};
 
 async function buildRegistryValidationAggregatePrCommentBody(
   context: BotContext<RequestEvents>,
@@ -1253,47 +546,23 @@ async function buildRegistryValidationAggregatePrCommentBody(
   byFile: Map<string, string[]>,
   machineReadableSources: RegistryValidationMachineReadableSource[]
 ): Promise<string> {
-  const entries = Array.from(byFile.entries())
-    .filter(([, messages]) => Array.isArray(messages) && messages.length > 0)
-    .sort(([a], [b]) => a.localeCompare(b));
-
-  if (!entries.length) return '';
-  if (entries.length === 1) {
-    const [filePath, messages] = entries[0];
-    return await buildRegistryValidationPrCommentBody(
-      context,
-      repoInfo,
-      filePath,
-      messages,
-      machineReadableSources.filter((item) => toStringTrim(item.filePath) === toStringTrim(filePath))
-    );
-  }
-
-  const lines: string[] = ['## Detected issues', ''];
-
-  for (const [filePath, messages] of entries) {
-    appendRegistryValidationFileSection(lines, filePath, messages);
-  }
-
-  const machineReadable = await buildRegistryValidationMachineReadableIssues(context, repoInfo, machineReadableSources);
-
-  return `${lines.join('\n').trimEnd()}
-
-${buildMachineReadableMetadataBlock(machineReadable)}`;
+  return await buildRegistryValidationAggregatePrCommentBodyApplication(
+    context,
+    repoInfo,
+    byFile,
+    machineReadableSources,
+    buildRequestValidationPostingCallbacks()
+  );
 }
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type LoggerFn = (this: unknown, obj: unknown, msg?: string) => void;
-type LoggerLike = Partial<Record<LogLevel, LoggerFn>>;
-
-const log = (context: { log?: LoggerLike } | undefined, level: LogLevel, obj: unknown, msg: string): void => {
-  const logger = context?.log;
-  const fn = logger?.[level];
-
-  if (typeof fn === 'function') {
-    fn.call(logger, obj, msg);
-  }
-};
+function buildRequestValidationPostingCallbacks(): RequestValidationPostingCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo
+> {
+  return {
+    readRepoFileText,
+  };
+}
 
 const labelName = (l: unknown): string => {
   if (typeof l === 'string') return l;
@@ -1307,12 +576,6 @@ const toLabelNames = (labels: unknown): string[] =>
     .map((s) => toStringTrim(s))
     .filter(Boolean);
 
-const stripQuoteAndCode = (text: unknown): string =>
-  toStringTrim(text)
-    .replaceAll(/```[\s\S]*?```/g, '')
-    .replaceAll(/^>.*$/gm, '')
-    .trim();
-
 const ISSUE_FORM_FIELD_HEADING_RE = /^###\s+\S+/m;
 
 function hasIssueFormInputs(issue: IssueLike | null | undefined): boolean {
@@ -1324,36 +587,6 @@ const isBotSender = (sender: SenderLike | undefined | null): boolean =>
   sender?.type === 'Bot' || /(\[bot\]|-bot)$/i.test(sender?.login || '');
 
 const head = (s: unknown): string => toStringTrim(s).split(':')[0].trim();
-
-function normalizeApprovalCommandToken(value: unknown): string {
-  let s = toStringTrim(value).replace(/^\/+/, '').trim().toLowerCase();
-
-  const leadingTrimChars = new Set(['"', "'", '`', '(', '[', '{', '<']);
-  const trailingTrimChars = new Set(['"', "'", '`', ')', ']', '}', '>', '.', ',', '!', '?', ';', ':']);
-
-  while (s && leadingTrimChars.has(s[0])) s = s.slice(1).trim();
-  while (s && trailingTrimChars.has(s.at(-1) || '')) s = s.slice(0, -1).trim();
-
-  return s;
-}
-
-function isExplicitApprovalCommand(text: unknown, configuredKeyword?: string): boolean {
-  const lines = toStringTrim(text)
-    .split(/\r?\n/)
-    .map((line) => toStringTrim(line))
-    .filter(Boolean);
-
-  if (!lines.length) return false;
-
-  const allowed = new Set<string>(['approved', 'approve', 'lgtm']);
-  const cfg = normalizeApprovalCommandToken(configuredKeyword);
-  if (cfg) allowed.add(cfg);
-
-  return lines.some((line) => {
-    const normalized = normalizeApprovalCommandToken(line);
-    return Boolean(normalized) && allowed.has(normalized);
-  });
-}
 
 const resolveEffectiveConstants = (context: BotContext<RequestEvents>): EffectiveConstants => {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
@@ -1581,13 +814,6 @@ type SetStateLabelFn = (
   state: 'author' | 'review'
 ) => Promise<void>;
 
-type EnsureAssigneesOnceFn = (
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  assignees: string[]
-) => Promise<void>;
-
 type PostOnceFn = (
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -1620,19 +846,6 @@ type ValidateRequestIssueFn = (
   issue: IssueLike,
   options?: { template?: TemplateLike; formData?: FormData }
 ) => Promise<ValidateRequestIssueResult>;
-
-type ApprovalDecision = {
-  status?: 'approved' | 'rejected' | 'unknown';
-  path?: string;
-  reason?: string;
-  comment?: string;
-  message?: string;
-  approvers?: string[];
-  errors?: {
-    field?: string;
-    message?: string;
-  }[];
-};
 
 type ApprovalHandlingResult = 'approved' | 'rejected' | 'continue';
 
@@ -1679,7 +892,6 @@ type TryMergeIfGreenFn = (
 ) => Promise<boolean | void>;
 
 const setStateLabel = setStateLabelRaw as unknown as SetStateLabelFn;
-const ensureAssigneesOnce = ensureAssigneesOnceRaw as unknown as EnsureAssigneesOnceFn;
 const postOnce = postOnceRaw as unknown as PostOnceFn;
 const collapseBotCommentsByPrefix = collapseBotCommentsByPrefixRaw as unknown as CollapseBotCommentsByPrefixFn;
 const loadTemplate = loadTemplateRaw as unknown as LoadTemplateFn;
@@ -1693,24 +905,82 @@ const createRequestPr = createRequestPRRaw as unknown as CreateRequestPrFn;
 const tryMergeIfGreen = tryMergeIfGreenRaw as unknown as TryMergeIfGreenFn;
 
 function readCheckRunFromPayload(payload: unknown): CheckRunLike | null {
-  if (!isPlainObject(payload)) return null;
-
-  const run = payload['check_run'];
-  if (!isPlainObject(run)) return null;
-
-  return run as unknown as CheckRunLike;
+  return readCheckRunFromPayloadApplication<CheckRunLike>(payload, buildCheckPrResolutionCallbacks());
 }
 
 function readCheckRunPrNumbers(run: CheckRunLike | null): number[] {
-  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
-  const out: number[] = [];
+  return readCheckRunPrNumbersApplication(run);
+}
 
-  for (const pr of prs) {
-    const n = pr?.number;
-    if (typeof n === 'number' && Number.isFinite(n)) out.push(n);
-  }
+function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<BotContext<RequestEvents>, PullRequestLike> {
+  return {
+    isPlainObject,
+    listPullRequestsAssociatedWithCommit: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        commit_sha: string;
+        per_page: number;
+      }
+    ): Promise<{ data?: unknown }> => await context.octokit.repos.listPullRequestsAssociatedWithCommit(args),
+    listPulls: async (
+      context: BotContext<RequestEvents>,
+      args: {
+        owner: string;
+        repo: string;
+        state: 'open';
+        per_page: number;
+        page: number;
+      }
+    ): Promise<{ data?: PullRequestLike[] }> =>
+      (await github(context).pullRequests.listPullRequests(args)) as { data?: PullRequestLike[] },
+  };
+}
 
-  return Array.from(new Set(out));
+function buildCheckSuiteCiCommentingCallbacks(): CheckSuiteCiCommentingCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  RegistryValidationMachineReadableSource
+> {
+  return {
+    collapseBotCommentsByPrefix,
+    buildRegistryValidationAggregatePrCommentBody,
+    postOnce,
+    onBeforePost: (
+      context: BotContext<RequestEvents>,
+      args: { prNumber: number; files: string[]; bodyLength: number }
+    ): void => {
+      if (DBG) {
+        log(
+          context,
+          'debug',
+          { prNumber: args.prNumber, files: args.files, bodyLen: args.bodyLength },
+          'dbg:checks:posting PR comment'
+        );
+      }
+    },
+  };
+}
+
+async function postCheckSuiteRegistryValidationComments(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumbers: number[],
+  artifacts: {
+    byFile: Map<string, string[]>;
+    machineReadableSources: RegistryValidationMachineReadableSource[];
+  },
+  minimizeTag: string
+): Promise<void> {
+  await postCheckSuiteRegistryValidationCommentsApplication(
+    context,
+    repoInfo,
+    prNumbers,
+    artifacts,
+    minimizeTag,
+    buildCheckSuiteCiCommentingCallbacks()
+  );
 }
 
 function extractResourceNameFromForm(formData: FormData, template: TemplateLike): string {
@@ -1748,33 +1018,11 @@ async function fetchIssueLabels(
   context: BotContext<RequestEvents>,
   { owner, repo, issue_number }: IssueParams
 ): Promise<string[]> {
-  const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
-  const issue = data as unknown as IssueLike;
-  return toLabelNames(issue.labels);
-}
-
-const ENSURE_LABELS_INFLIGHT = new Map<string, Promise<void>>();
-const ON_APPROVAL_UNKNOWN_POST_INFLIGHT = new Map<string, Promise<void>>();
-
-function isAutoMergeEvaluationRecentlyCompleted(key: string): boolean {
-  const until = AUTO_MERGE_EVALUATION_RECENT_UNTIL.get(key);
-
-  if (!until) return false;
-
-  if (until <= Date.now()) {
-    AUTO_MERGE_EVALUATION_RECENT_UNTIL.delete(key);
-    return false;
-  }
-
-  return true;
-}
-
-function markAutoMergeEvaluationRecentlyCompleted(key: string): void {
-  AUTO_MERGE_EVALUATION_RECENT_UNTIL.set(key, Date.now() + AUTO_MERGE_EVALUATION_RECENT_TTL_MS);
-}
-
-function issueScopedKey(params: IssueParams, suffix: string): string {
-  return `${params.owner}/${params.repo}#${params.issue_number}:${suffix}`.toLowerCase();
+  return await fetchIssueLabelsApplication(
+    context,
+    { owner, repo, issue_number },
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function ensureLabelsPresentOnce(
@@ -1782,83 +1030,7 @@ async function ensureLabelsPresentOnce(
   params: IssueParams,
   labels: string[]
 ): Promise<void> {
-  const targetLabels = Array.from(new Set((labels || []).map(toStringTrim).filter(Boolean)));
-  if (!targetLabels.length) return;
-
-  const key = issueScopedKey(params, `labels:${targetLabels.map(normalizeKey).sort().join('|')}`);
-  const existing = ENSURE_LABELS_INFLIGHT.get(key);
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const pending = (async (): Promise<void> => {
-    let currentLabels: string[] = [];
-
-    try {
-      currentLabels = await fetchIssueLabels(context, params);
-    } catch {
-      currentLabels = [];
-    }
-
-    const currentKeys = new Set(currentLabels.map(normalizeKey).filter(Boolean));
-    const missing = targetLabels.filter((label) => {
-      const key = normalizeKey(label);
-      return key && !currentKeys.has(key);
-    });
-
-    if (!missing.length) return;
-
-    try {
-      await context.octokit.issues.addLabels({
-        ...params,
-        labels: missing,
-      });
-    } catch (error: unknown) {
-      const status = getHttpStatus(error);
-      if (status !== 404) {
-        log(
-          context,
-          'warn',
-          {
-            err: getErrorMessage(error),
-            labels: missing,
-            issueNumber: params.issue_number,
-          },
-          'failed to ensure labels'
-        );
-      }
-    }
-  })().finally(() => {
-    ENSURE_LABELS_INFLIGHT.delete(key);
-  });
-
-  ENSURE_LABELS_INFLIGHT.set(key, pending);
-  await pending;
-}
-
-async function postApprovalUnknownOnce(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  decision: ApprovalDecision
-): Promise<void> {
-  const key = issueScopedKey(params, 'on-approval-unknown');
-  const existing = ON_APPROVAL_UNKNOWN_POST_INFLIGHT.get(key);
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const pending = (async (): Promise<void> => {
-    await postOnce(context, params, buildApprovalUnknownBody(decision), {
-      minimizeTag: 'nsreq:on-approval:unknown',
-    });
-  })().finally(() => {
-    ON_APPROVAL_UNKNOWN_POST_INFLIGHT.delete(key);
-  });
-
-  ON_APPROVAL_UNKNOWN_POST_INFLIGHT.set(key, pending);
-  await pending;
+  await ensureLabelsPresentOnceApplication(context, params, labels, buildIssueStateReviewerOperationsCallbacks());
 }
 
 async function ensureAssigneesPresent(
@@ -1866,42 +1038,7 @@ async function ensureAssigneesPresent(
   params: IssueParams,
   assignees: string[]
 ): Promise<void> {
-  const targetAssignees = uniqLogins((assignees || []).map((x) => toStringTrim(x)).filter(Boolean));
-  if (!targetAssignees.length) return;
-
-  try {
-    const { data } = await context.octokit.issues.get(params);
-    const currentAssignees = uniqLogins(
-      (((data as Record<string, unknown>)['assignees'] as (Record<string, unknown> | null | undefined)[]) || [])
-        .map((item) => normalizeLogin(toStringTrim(item?.login)))
-        .filter(Boolean)
-    );
-
-    const missing = targetAssignees.filter(
-      (candidate) =>
-        !currentAssignees.some(
-          (existing) => normalizeLogin(existing).toLowerCase() === normalizeLogin(candidate).toLowerCase()
-        )
-    );
-
-    if (!missing.length) return;
-
-    await context.octokit.issues.addAssignees({
-      ...params,
-      assignees: missing,
-    });
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        err: e instanceof Error ? e.message : String(e),
-        issueNumber: params.issue_number,
-        assignees: targetAssignees,
-      },
-      'failed to ensure assignees'
-    );
-  }
+  await ensureAssigneesPresentApplication(context, params, assignees, buildIssueStateReviewerOperationsCallbacks());
 }
 
 function buildReviewHandoverBody(
@@ -1910,88 +1047,7 @@ function buildReviewHandoverBody(
   options: { target?: 'issue' | 'pull_request' } = {}
 ): string {
   const docsLinks = getDocLinksFromConfig(context.resourceBotConfig ?? DEFAULT_CONFIG);
-  const docsSection = docsLinks ? `\n\n${docsLinks.trim()}` : '';
-  const snapshotMarker = snapshotHash ? `\n\n<!-- nsreq:snapshot:${snapshotHash} -->` : '';
-
-  const target = options.target || 'issue';
-  const instruction =
-    target === 'pull_request'
-      ? 'Once reviewed, please comment `Approved` to approve this PR for merge.'
-      : 'Once reviewed, please comment `Approved` to create an automatic Pull Request.';
-
-  return `### ✅ No issues detected
-
-### ➡️ Routing to an approver for review
-
----
-
-${instruction}${docsSection}${snapshotMarker}`;
-}
-
-async function handoverToCpa(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  _nsType: string,
-  _namespace: string,
-  _links: string[] = [],
-  options: {
-    snapshotHash?: string;
-    requestType?: string;
-    extraApprovers?: string[];
-    manualApproversOverride?: string[];
-  } = {}
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-
-  await setStateLabel(context, params, issue, 'review');
-
-  const approverRouting = resolveApproverRoutingForRequestType(
-    context,
-    options.requestType,
-    eff.approverUsernames,
-    eff.approverPoolUsernames
-  );
-
-  const assigneesForType = approverRouting.autoAssigneePoolUsernames.length
-    ? pickAutoAssigneeFromPool(issue, approverRouting.autoAssigneePoolUsernames)
-    : approverRouting.approvalUsernames;
-
-  const manualApproversOverride = uniqLogins(
-    (options.manualApproversOverride || []).map((value) => toStringTrim(value)).filter(Boolean)
-  );
-
-  const mergedAssignees = manualApproversOverride.length
-    ? manualApproversOverride
-    : uniqLogins([...(assigneesForType || []), ...(options.extraApprovers || []).filter(Boolean)]);
-
-  await ensureAssigneesOnce(context, params, issue, mergedAssignees);
-  await ensureAssigneesPresent(context, params, mergedAssignees);
-
-  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
-
-  await ensureLabelsPresentOnce(context, params, labelsToAdd);
-
-  await enforceExclusiveWorkflowStateLabels(
-    context,
-    params,
-    [resolveApproverActionLabel(context), ...(eff.reviewRequestedLabels || [])].filter(Boolean)
-  );
-
-  if (eff.labelOnApproved) {
-    try {
-      await context.octokit.issues.removeLabel({
-        ...params,
-        name: eff.labelOnApproved,
-      });
-    } catch {
-      /* empty */
-    }
-  }
-
-  const handoverMsg = buildReviewHandoverBody(context, options.snapshotHash);
-
-  await postOnce(context, params, handoverMsg, { minimizeTag: 'nsreq:handover' });
+  return buildReviewHandoverBodyPure(docsLinks, snapshotHash, options);
 }
 
 async function ensureReviewLabelsPresentOnIssue(
@@ -2000,112 +1056,59 @@ async function ensureReviewLabelsPresentOnIssue(
   issue: IssueLike,
   eff: EffectiveConstants
 ): Promise<boolean> {
-  const cfgKeys = (eff.reviewRequestedLabels || []).map(normalizeKey);
-  if (!cfgKeys.length) return true;
-
-  let labels = toLabelNames(issue.labels);
-
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    // keep payload labels as fallback
-  }
-
-  return labels.some((l) => {
-    const k = normalizeKey(l);
-    return cfgKeys.some((ck) => k === ck || k.includes(ck) || ck.includes(k));
-  });
-}
-
-function collectWorkflowStateLabels(context: BotContext<RequestEvents>): string[] {
-  const eff = resolveEffectiveConstants(context);
-
-  return Array.from(
-    new Set(
-      [
-        resolveAuthorActionLabel(context),
-        resolveApproverActionLabel(context),
-        resolveParentOwnerActionLabel(context),
-        ...resolveApprovedLabels(context),
-        ...resolveRejectedLabels(context),
-        ...(eff.reviewRequestedLabels || []),
-      ]
-        .map(toStringTrim)
-        .filter(Boolean)
-    )
+  return await ensureReviewLabelsPresentOnIssueApplication(
+    context,
+    params,
+    issue,
+    eff,
+    buildIssueStateReviewerOperationsCallbacks()
   );
 }
 
-async function enforceExclusiveWorkflowStateLabels(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  keepLabels: string[],
-  currentLabels?: string[]
-): Promise<void> {
-  const keepKeys = new Set((keepLabels || []).map(normalizeKey).filter(Boolean));
-  if (!keepKeys.size) return;
+function resolveWorkflowLabel(context: BotContext<RequestEvents>, key: string, fallback: string): string {
+  const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
+  const wf = cfg?.workflow ?? {};
 
-  let labels = (currentLabels || []).slice();
+  if (!isPlainObject(wf)) return fallback;
 
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
+  const labelsCfg = isPlainObject((wf as Record<string, unknown>)['labels'])
+    ? ((wf as Record<string, unknown>)['labels'] as Record<string, unknown>)
+    : {};
+
+  const raw = labelsCfg[key];
+
+  if (Array.isArray(raw)) {
+    return toStringTrim(raw[0]) || fallback;
   }
 
-  const toRemove = new Set<string>();
-
-  for (const stateLabel of collectWorkflowStateLabels(context)) {
-    const stateKey = normalizeKey(stateLabel);
-    if (!stateKey || keepKeys.has(stateKey)) continue;
-
-    for (const match of labelsMatching(labels, stateLabel)) {
-      const matchKey = normalizeKey(match);
-      if (matchKey && !keepKeys.has(matchKey)) {
-        toRemove.add(match);
-      }
-    }
-  }
-
-  if (!toRemove.size) return;
-
-  await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
+  return toStringTrim(raw) || fallback;
 }
+
+const labelsMatching = (labels: string[], expected: string): string[] => {
+  const expectedKey = normalizeKey(expected);
+  if (!expectedKey) return [];
+
+  return (labels || []).filter((l) => {
+    const k = normalizeKey(l);
+    return k === expectedKey || k.includes(expectedKey) || expectedKey.includes(k);
+  });
+};
 
 async function clearParentOwnerActionState(
   context: BotContext<RequestEvents>,
   params: IssueParams,
   currentLabels?: string[]
 ): Promise<void> {
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-
-  let labels = (currentLabels || []).slice();
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
-  }
-
-  const toRemove = labelsMatching(labels, parentOwnerActionLabel);
-  if (!toRemove.length) return;
-
-  await removeExactLabelsFromIssue(context, params, toRemove);
+  await clearParentOwnerActionStateApplication(
+    context,
+    params,
+    buildOwnerApprovalRequirementsCallbacks(),
+    currentLabels
+  );
 }
 
 async function setParentOwnerActionState(context: BotContext<RequestEvents>, params: IssueParams): Promise<void> {
-  const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-
-  if (!parentOwnerActionLabel) {
-    log(context, 'warn', { issueNumber: params.issue_number }, 'parent-owner-action-state:missing-config-label');
-    return;
-  }
-
-  await enforceExclusiveWorkflowStateLabels(context, params, [parentOwnerActionLabel]);
-  await ensureLabelsPresentOnce(context, params, [parentOwnerActionLabel]);
+  await setParentOwnerActionStateApplication(context, params, buildOwnerApprovalRequirementsCallbacks());
 }
 
 async function assignParentOwnersForApproval(
@@ -2113,13 +1116,7 @@ async function assignParentOwnersForApproval(
   params: IssueParams,
   owners: string[]
 ): Promise<void> {
-  const assignees = uniqLogins((owners || []).map(toStringTrim).filter(Boolean));
-  if (!assignees.length) return;
-
-  // Best effort only.
-  // If GitHub does not allow assignment, ensureAssigneesPresent logs and continues.
-  // The parent owners are still mentioned in the comment as fallback.
-  await ensureAssigneesPresent(context, params, assignees);
+  await assignParentOwnersForApprovalApplication(context, params, owners, buildOwnerApprovalRequirementsCallbacks());
 }
 
 async function removeExactLabelsFromIssue(
@@ -2127,23 +1124,12 @@ async function removeExactLabelsFromIssue(
   params: IssueParams,
   labelsToRemove: string[]
 ): Promise<void> {
-  for (const label of labelsToRemove) {
-    const name = toStringTrim(label);
-    if (!name) continue;
-
-    try {
-      await context.octokit.issues.removeLabel({ ...params, name });
-    } catch (e: unknown) {
-      if (getHttpStatus(e) !== 404) {
-        log(
-          context,
-          'warn',
-          { err: e instanceof Error ? e.message : String(e), label: name },
-          'failed to remove label'
-        );
-      }
-    }
-  }
+  await removeExactLabelsFromIssueApplication(
+    context,
+    params,
+    labelsToRemove,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function removeProgressStatusLabels(
@@ -2151,33 +1137,12 @@ async function removeProgressStatusLabels(
   params: IssueParams,
   currentLabels?: string[]
 ): Promise<void> {
-  let labels = (currentLabels || []).slice();
-
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
-  }
-
-  const stateLabels = [
-    resolveAuthorActionLabel(context),
-    resolveApproverActionLabel(context),
-    resolveParentOwnerActionLabel(context),
-  ].filter(Boolean);
-
-  const toRemove = new Set<string>();
-
-  for (const stateLabel of stateLabels) {
-    for (const match of labelsMatching(labels, stateLabel)) {
-      toRemove.add(match);
-    }
-  }
-
-  if (!toRemove.size) return;
-
-  await removeExactLabelsFromIssue(context, params, Array.from(toRemove));
+  await removeProgressStatusLabelsApplication(
+    context,
+    params,
+    currentLabels,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 async function removeRejectedStatusLabel(
@@ -2185,21 +1150,12 @@ async function removeRejectedStatusLabel(
   params: IssueParams,
   currentLabels?: string[]
 ): Promise<void> {
-  let labels = (currentLabels || []).slice();
-
-  if (!labels.length) {
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      return;
-    }
-  }
-
-  const toRemove = labelsMatchingAny(labels, resolveRejectedLabels(context));
-
-  if (!toRemove.length) return;
-
-  await removeExactLabelsFromIssue(context, params, toRemove);
+  await removeRejectedStatusLabelApplication(
+    context,
+    params,
+    currentLabels,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
 }
 
 // Higher-level orchestration helpers to reduce handler complexity
@@ -2208,164 +1164,15 @@ function isAuthorizedApprover(
   issueAuthor: string | undefined | null,
   allowedApprovers: string[]
 ): boolean {
-  const commenterLc = String(commenter || '').toLowerCase();
-  const hasConfiguredApprovers = Array.isArray(allowedApprovers) && allowedApprovers.length > 0;
-
-  if (hasConfiguredApprovers) {
-    return allowedApprovers.some((u) => String(u || '').toLowerCase() === commenterLc);
-  }
-
-  const issueAuthorLc = String(issueAuthor || '').toLowerCase();
-  return Boolean(commenterLc && commenterLc !== issueAuthorLc);
-}
-
-function buildApprovalDecisionJson(decision: ApprovalDecision): string {
-  const payload: Record<string, unknown> = {};
-  if (decision.status) payload.status = decision.status;
-  if (decision.path) payload.path = decision.path;
-  if (decision.reason) payload.reason = decision.reason;
-  if (decision.comment) payload.comment = decision.comment;
-  if (decision.message) payload.message = decision.message;
-  if (Array.isArray(decision.approvers) && decision.approvers.length) payload.approvers = decision.approvers;
-  if (Array.isArray(decision.errors) && decision.errors.length) payload.errors = decision.errors;
-  return JSON.stringify(payload, null, 2);
-}
-
-function normalizeApprovalDecision(decision: ApprovalDecision | boolean): ApprovalDecision {
-  if (decision === true) return { status: 'approved' };
-  if (decision === false) return {};
-  if (!decision) return {};
-
-  const normalized = decision || {};
-  const approvers = uniqLogins(
-    Array.isArray(normalized.approvers) ? normalized.approvers.map((x) => toStringTrim(x)).filter(Boolean) : []
-  );
-  const { approvers: _approvers, ...normalizedWithoutApprovers } = normalized;
-
-  return {
-    ...normalizedWithoutApprovers,
-    ...(approvers.length ? { approvers } : {}),
-  };
-}
-
-function getUnknownManualApprovers(decision: ApprovalDecision): string[] {
-  const normalized = normalizeApprovalDecision(decision);
-
-  if (normalized.status !== 'unknown') return [];
-
-  return uniqLogins((normalized.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
-}
-
-function isManualApprovalRequiredText(value: unknown): boolean {
-  return /\bmanual approval required\b/i.test(toStringTrim(value));
-}
-
-function getVisibleApprovalText(decision: ApprovalDecision): string {
-  const comment = toStringTrim(decision.comment);
-  if (comment && !isManualApprovalRequiredText(comment)) return comment;
-
-  const message = toStringTrim(decision.message);
-  if (message && !isManualApprovalRequiredText(message)) return message;
-
-  const reason = toStringTrim(decision.reason);
-  if (reason && !isManualApprovalRequiredText(reason)) return reason;
-
-  return '';
-}
-
-function buildAutoApprovalReviewBody(decision: ApprovalDecision, headSha: string): string {
-  const visible = getVisibleApprovalText(decision);
-  const marker = buildAutoApprovalReviewMarker(headSha);
-
-  return visible ? `${visible}\n\n${marker}` : marker;
-}
-
-function isApprovalDecisionAuthorizedByHookApprovers(
-  decision: ApprovalDecision,
-  requesterId: string | undefined | null
-): boolean {
-  const requester = normalizeLogin(requesterId).toLowerCase();
-  if (!requester) return false;
-
-  const approvers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
-  return approvers.some((approver) => normalizeLogin(approver).toLowerCase() === requester);
-}
-
-function promoteUnknownApprovalDecisionForDirectPrRequester(
-  decision: ApprovalDecision,
-  requesterId: string | undefined | null
-): ApprovalDecision {
-  const normalized = normalizeApprovalDecision(decision);
-
-  if (normalized.status !== 'unknown') return normalized;
-  if (!isApprovalDecisionAuthorizedByHookApprovers(normalized, requesterId)) return normalized;
-
-  return {
-    ...normalized,
-    status: 'approved',
-    comment: getVisibleApprovalText(normalized),
-    message: '',
-    reason: '',
-  };
-}
-
-function buildApprovalUnknownBody(decision: ApprovalDecision): string {
-  const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
-  const leadBlock = lead ? `${lead}\n\n` : '';
-
-  return `${leadBlock}<details>
-<summary>Decision details</summary>
-
-\`\`\`json
-${buildApprovalDecisionJson({ status: 'unknown', ...decision })}
-\`\`\`
-</details>
-
-Continuing with the standard review flow.`;
-}
-
-function buildApprovalRejectedBody(decision: ApprovalDecision): string {
-  const issues = normalizeApprovalHookErrorsForComment(decision);
-  const groupedIssues = buildApprovalHookIssueList(issues);
-  const detectedIssuesBlock = groupedIssues ? buildDetectedIssuesBody(groupedIssues, issues) : '';
-
-  const lead = toStringTrim(decision.message) || toStringTrim(decision.comment) || toStringTrim(decision.reason);
-  const leadBlock = lead && !detectedIssuesBlock ? `${lead}\n\n` : '';
-  const issuesBlock = detectedIssuesBlock ? `${detectedIssuesBlock}\n\n` : '';
-
-  return `## onApproval rejected this request
-
-${leadBlock}${issuesBlock}Closing this request automatically.`;
+  return isAuthorizedApproverPure(commenter, issueAuthor, allowedApprovers);
 }
 
 async function applyApprovedRequestState(
   context: BotContext<RequestEvents>,
   params: IssueParams,
-  _eff: EffectiveConstants
+  eff: EffectiveConstants
 ): Promise<void> {
-  const approvedLabel = resolveApprovedLabel(context);
-  const approvedLabels = resolveApprovedLabels(context);
-
-  try {
-    if (approvedLabel) {
-      await context.octokit.issues.addLabels({ ...params, labels: [approvedLabel] });
-    }
-  } catch {
-    // ignore
-  }
-
-  await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
-
-  try {
-    const labelsAfter = await fetchIssueLabels(context, params);
-
-    if (labelsMatchingAny(labelsAfter, approvedLabels).length) {
-      await removeProgressStatusLabels(context, params, labelsAfter);
-      await removeRejectedStatusLabel(context, params, labelsAfter);
-    }
-  } catch {
-    // ignore
-  }
+  await applyApprovedRequestStateApplication(context, params, eff, buildIssueStateReviewerOperationsCallbacks());
 }
 
 function prAsIssueLike(pr: PullRequestLike): IssueLike {
@@ -2418,21 +1225,20 @@ function resolveReviewAssigneesForRequestTypes(
 }
 
 function resolveAllowedApproversForRequestTypes(context: BotContext<RequestEvents>, requestTypes: string[]): string[] {
-  const eff = resolveEffectiveConstants(context);
-  const types = Array.from(new Set((requestTypes || []).map(toStringTrim).filter(Boolean)));
-
-  if (!types.length) {
-    return resolveApproverRoutingForRequestType(context, '', eff.approverUsernames, eff.approverPoolUsernames)
-      .approvalUsernames;
-  }
-
-  return uniqLogins(
-    types.flatMap(
-      (requestType) =>
-        resolveApproverRoutingForRequestType(context, requestType, eff.approverUsernames, eff.approverPoolUsernames)
-          .approvalUsernames
-    )
+  return resolveAllowedApproversForRequestTypesApplication(
+    context,
+    requestTypes,
+    buildDirectPrApproverResolutionCallbacks()
   );
+}
+
+function buildDirectPrApproverResolutionCallbacks(): DirectPrApproverResolutionCallbacks<BotContext<RequestEvents>> {
+  return {
+    resolveEffectiveConstants,
+    resolveApproverRoutingForRequestType,
+    uniqLogins,
+    toStringTrim,
+  };
 }
 
 function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: string[]): string {
@@ -2444,163 +1250,23 @@ function calcStandaloneDirectPrSnapshotHash(pr: PullRequestLike, changedFiles: s
   return createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
-async function createAutomatedApprovalReview(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision
-): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  const reviewBody = buildAutoApprovalReviewBody(decision, headSha);
-  const failureText = getVisibleApprovalText(decision) || 'The onApproval hook matched this PR.';
-
-  try {
-    await (
-      context.octokit.pulls as unknown as {
-        createReview: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          event: 'APPROVE';
-          body: string;
-        }) => Promise<unknown>;
-      }
-    ).createReview({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: pr.number,
-      event: 'APPROVE',
-      body: reviewBody,
-    });
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-      },
-      'automated PR approval review created'
-    );
-
-    return true;
-  } catch (e: unknown) {
-    const errObj = isPlainObject(e) ? e : {};
-    const status = typeof errObj['status'] === 'number' ? errObj['status'] : undefined;
-
-    const response = isPlainObject(errObj['response']) ? errObj['response'] : {};
-    const responseData = response['data'];
-
-    const message = e instanceof Error ? e.message : String(e);
-
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        status,
-        message,
-        responseData,
-      },
-      'failed to create automated PR approval review'
-    );
-
-    await postOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      `## onApproval matched, but automatic PR approval failed
-
-${failureText}
-
-Approval API error: ${message}${status ? ` (HTTP ${status})` : ''}
-
-The PR could not be approved automatically, so merge remains blocked until a review is added manually.`,
-      { minimizeTag: 'nsreq:on-approval:approve-failed' }
-    );
-
-    return false;
-  }
-}
-
 async function resolvePullRequestRequestAuthorId(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<string> {
-  let page = 1;
-
-  const blockedServiceUsers = new Set<string>([
-    'web-flow-serviceuser',
-    'global-registry-bot',
-    'global-registry-bot[bot]',
-    'my-registry-bot',
-    'my-registry-bot[bot]',
-    'github-actions[bot]',
-    'github-actions',
-  ]);
-
-  const isUsableRequesterLogin = (value: unknown): string => {
-    const login = normalizeLogin(value);
-    if (!login) return '';
-    if (blockedServiceUsers.has(login.toLowerCase())) return '';
-    return login;
-  };
-
-  let lastAuthorLogin = '';
-  let lastCommitterLogin = '';
-  let firstAuthorLogin = '';
-  let firstCommitterLogin = '';
-
-  try {
-    while (true) {
-      const res = await (
-        context.octokit.pulls as unknown as {
-          listCommits: (args: {
-            owner: string;
-            repo: string;
-            pull_number: number;
-            per_page?: number;
-            page?: number;
-          }) => Promise<{ data?: PullRequestCommitLike[] }>;
-        }
-      ).listCommits({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        per_page: 100,
-        page,
-      });
-
-      const commits = Array.isArray(res?.data) ? res.data : [];
-      if (!commits.length) break;
-
-      for (const commit of commits) {
-        const authorLogin = isUsableRequesterLogin(commit?.author?.login);
-        const committerLogin = isUsableRequesterLogin(commit?.committer?.login);
-
-        if (!firstAuthorLogin && authorLogin) firstAuthorLogin = authorLogin;
-        if (!firstCommitterLogin && committerLogin) firstCommitterLogin = committerLogin;
-
-        if (authorLogin) lastAuthorLogin = authorLogin;
-        if (committerLogin) lastCommitterLogin = committerLogin;
-      }
-
-      if (commits.length < 100) break;
-      page += 1;
-      if (page > 20) break;
-    }
-  } catch {
-    // Fall through to PR author fallback below
-  }
-
-  return (
-    lastAuthorLogin ||
-    lastCommitterLogin ||
-    firstAuthorLogin ||
-    firstCommitterLogin ||
-    isUsableRequesterLogin(pr.user?.login) ||
-    ''
+  return await resolvePullRequestRequestAuthorIdApplication(
+    context,
+    repoInfo,
+    pr,
+    buildPullRequestAuthorResolutionCallbacks()
   );
+}
+
+function buildPullRequestAuthorResolutionCallbacks(): PullRequestAuthorResolutionCallbacks {
+  return {
+    normalizeLogin,
+  };
 }
 
 async function addApprovedLabelToPr(
@@ -2609,119 +1275,17 @@ async function addApprovedLabelToPr(
   prNumber: number,
   options: { skipStateCleanup?: boolean } = {}
 ): Promise<void> {
-  const approvedLabel = resolveApprovedLabel(context);
-  const approvedLabels = resolveApprovedLabels(context);
-
-  if (!approvedLabel) return;
-
-  const params: IssueParams = {
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    issue_number: prNumber,
-  };
-
-  try {
-    await context.octokit.issues.addLabels({
-      ...params,
-      labels: [approvedLabel],
-    });
-  } catch {
-    return;
-  }
-
-  // Standalone cross-repo direct PRs must stay PR-only here.
-  // Reading the PR as an issue would break the no-linked-issue guarantee.
-  if (options.skipStateCleanup) return;
-
-  await enforceExclusiveWorkflowStateLabels(context, params, approvedLabels);
-
-  try {
-    const labelsAfter = await fetchIssueLabels(context, params);
-
-    if (labelsMatchingAny(labelsAfter, approvedLabels).length) {
-      await removeProgressStatusLabels(context, params, labelsAfter);
-      await removeRejectedStatusLabel(context, params, labelsAfter);
-    }
-  } catch {
-    // best effort cleanup only
-  }
-}
-
-const AUTO_APPROVAL_REVIEW_MARKER_PREFIX = 'nsreq:auto-approval:';
-
-function buildAutoApprovalReviewMarker(headSha: string): string {
-  return `<!-- ${AUTO_APPROVAL_REVIEW_MARKER_PREFIX}${toStringTrim(headSha)} -->`;
-}
-
-async function runEnsureAutomatedApprovalReviewForCurrentHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision,
-  headSha: string,
-  options: AutomatedApprovalReviewOptions = {}
-): Promise<boolean> {
-  if (hasAutoApprovedPrHead(repoInfo, pr.number, headSha)) {
-    return true;
-  }
-
-  if (await hasAutoApprovalReviewForHead(context, repoInfo, pr.number, headSha)) {
-    markAutoApprovedPrHead(repoInfo, pr.number, headSha);
-    return true;
-  }
-
-  const approved = await createAutomatedApprovalReview(context, repoInfo, pr, decision);
-  if (!approved) return false;
-
-  markAutoApprovedPrHead(repoInfo, pr.number, headSha);
-
-  await addApprovedLabelToPr(context, repoInfo, pr.number, {
-    skipStateCleanup: options.skipApprovedLabelStateCleanup === true,
-  });
-
-  return true;
-}
-
-async function ensureAutomatedApprovalReviewForCurrentHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision,
-  options: AutomatedApprovalReviewOptions = {}
-): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  const key = autoApprovedPrHeadKey(repoInfo, pr.number, headSha);
-
-  const existing = AUTO_APPROVAL_REVIEW_INFLIGHT.get(key);
-  if (existing) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-      },
-      'automated PR approval review deduped: already in flight'
-    );
-
-    return await existing;
-  }
-
-  const pending = runEnsureAutomatedApprovalReviewForCurrentHead(
+  await addApprovedLabelToPrApplication(
     context,
     repoInfo,
-    pr,
-    decision,
-    headSha,
-    options
-  ).finally(() => {
-    AUTO_APPROVAL_REVIEW_INFLIGHT.delete(key);
-  });
+    prNumber,
+    options,
+    buildIssueStateReviewerOperationsCallbacks()
+  );
+}
 
-  AUTO_APPROVAL_REVIEW_INFLIGHT.set(key, pending);
-  return await pending;
+function buildAutoApprovalReviewMarker(headSha: string): string {
+  return buildAutoApprovalReviewMarkerPure(headSha);
 }
 
 async function listPullRequestReviews(
@@ -2729,69 +1293,7 @@ async function listPullRequestReviews(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<PullRequestReviewLike[]> {
-  const out: PullRequestReviewLike[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        listReviews: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          per_page?: number;
-          page?: number;
-        }) => Promise<{ data?: PullRequestReviewLike[] }>;
-      }
-    ).listReviews({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: prNumber,
-      per_page: 100,
-      page,
-    });
-
-    const reviews = Array.isArray(res?.data) ? res.data : [];
-    if (!reviews.length) break;
-
-    out.push(...reviews);
-
-    if (reviews.length < 100) break;
-    page += 1;
-    if (page > 20) break;
-  }
-
-  return out;
-}
-
-const ACTIONABLE_REVIEW_STATES = new Set<string>(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
-
-function sortPullRequestReviewsChronologically(reviews: PullRequestReviewLike[]): PullRequestReviewLike[] {
-  return reviews.slice().sort((a, b) => {
-    const at = Date.parse(toStringTrim(a.submitted_at));
-    const bt = Date.parse(toStringTrim(b.submitted_at));
-
-    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
-
-    const aid = typeof a.id === 'number' ? a.id : 0;
-    const bid = typeof b.id === 'number' ? b.id : 0;
-    return aid - bid;
-  });
-}
-
-function getLatestActionableReviewStates(reviews: PullRequestReviewLike[]): Map<string, string> {
-  const latestByReviewer = new Map<string, string>();
-
-  for (const review of sortPullRequestReviewsChronologically(reviews)) {
-    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
-    const state = toStringTrim(review?.state).toUpperCase();
-
-    if (!reviewer || !ACTIONABLE_REVIEW_STATES.has(state)) continue;
-
-    latestByReviewer.set(reviewer, state);
-  }
-
-  return latestByReviewer;
+  return await listPullRequestReviewsApplication(context, repoInfo, prNumber);
 }
 
 async function hasApprovedLabelOnPr(
@@ -2799,8 +1301,9 @@ async function hasApprovedLabelOnPr(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<boolean> {
-  const approvedLabels = resolveApprovedLabels(context);
-  if (!approvedLabels.length) return false;
+  const eff = resolveEffectiveConstants(context);
+  const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
+  if (!approvedLabel) return false;
 
   try {
     const labels = await fetchIssueLabels(context, {
@@ -2809,7 +1312,7 @@ async function hasApprovedLabelOnPr(
       issue_number: prNumber,
     });
 
-    return labelsMatchingAny(labels, approvedLabels).length > 0;
+    return labelsMatching(labels, approvedLabel).length > 0;
   } catch {
     return false;
   }
@@ -2821,95 +1324,22 @@ async function isPullRequestApprovedForBranchMaintenance(
   pr: PullRequestLike,
   options: { allowLabelFallback?: boolean } = {}
 ): Promise<boolean> {
-  let reviews: PullRequestReviewLike[];
-  try {
-    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
-  } catch {
-    reviews = [];
-  }
-
-  const latestStates = getLatestActionableReviewStates(reviews);
-  const latestStateValues = new Set(latestStates.values());
-
-  if (latestStateValues.has('CHANGES_REQUESTED')) {
-    return false;
-  }
-
-  if (isSnapshotManagedRequestPr(pr)) return true;
-
-  const headSha = toStringTrim(pr.head?.sha);
-  const marker = headSha ? buildAutoApprovalReviewMarker(headSha) : null;
-
-  if (
-    marker &&
-    reviews.some(
-      (review) =>
-        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
-    )
-  ) {
-    return true;
-  }
-
-  if (latestStateValues.has('APPROVED')) {
-    return true;
-  }
-
-  if (headSha && AUTO_APPROVED_PR_HEADS.has(autoApprovedPrHeadKey(repoInfo, pr.number, headSha))) {
-    return true;
-  }
-
-  if (options.allowLabelFallback !== false && (await hasApprovedLabelOnPr(context, repoInfo, pr.number))) {
-    return true;
-  }
-
-  return false;
-}
-
-async function hasAutoApprovalReviewForHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number,
-  headSha: string
-): Promise<boolean> {
-  const marker = buildAutoApprovalReviewMarker(headSha);
-
-  try {
-    const reviews = await listPullRequestReviews(context, repoInfo, prNumber);
-
-    return reviews.some(
-      (review) =>
-        toStringTrim(review?.state).toUpperCase() === 'APPROVED' && toStringTrim(review?.body).includes(marker)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isGreenCheckConclusion(conclusion: string): boolean {
-  const value = toStringTrim(conclusion).toLowerCase();
-  return value === 'success' || value === 'neutral' || value === 'skipped';
-}
-
-function isBlockingCheckConclusion(conclusion: string): boolean {
-  const value = toStringTrim(conclusion).toLowerCase();
-  return (
-    value === 'failure' ||
-    value === 'cancelled' ||
-    value === 'timed_out' ||
-    value === 'action_required' ||
-    value === 'startup_failure' ||
-    value === 'stale'
+  return await isPullRequestApprovedForBranchMaintenanceApplication(
+    context,
+    repoInfo,
+    pr,
+    options,
+    buildBranchMaintenanceApprovalCallbacks()
   );
 }
 
-function summarizeHeadGreenRun(run: RefCheckRunLike): HeadGreenRunSummary {
-  const id = typeof run?.id === 'number' && Number.isFinite(run.id) ? run.id : undefined;
-
+function buildBranchMaintenanceApprovalCallbacks(): BranchMaintenanceApprovalCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
   return {
-    ...(id !== undefined ? { id } : {}),
-    name: toStringTrim(run?.name) || '__unnamed__',
-    status: toStringTrim(run?.status).toLowerCase(),
-    conclusion: toStringTrim(run?.conclusion).toLowerCase(),
+    hasApprovedLabelOnPr,
+    isSnapshotManagedRequestPr,
   };
 }
 
@@ -2918,196 +1348,52 @@ async function evaluateHeadGreenForApprovalReevaluation(
   repoInfo: RepoInfo,
   headSha: string
 ): Promise<HeadGreenEvaluation> {
-  const ref = toStringTrim(headSha);
-  if (!ref) {
-    return {
-      green: false,
-      reason: 'missing-head-sha',
-      latestRuns: [],
-      blockingRuns: [],
-    };
-  }
-
-  try {
-    const all: RefCheckRunLike[] = [];
-    let page = 1;
-
-    while (true) {
-      const res = await (
-        context.octokit.checks as unknown as {
-          listForRef: (args: {
-            owner: string;
-            repo: string;
-            ref: string;
-            per_page?: number;
-            page?: number;
-          }) => Promise<{ data?: unknown }>;
-        }
-      ).listForRef({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        ref,
-        per_page: 100,
-        page,
-      });
-
-      const data = (res as { data?: unknown }).data;
-      const runs =
-        isPlainObject(data) && Array.isArray(data['check_runs'])
-          ? (data['check_runs'] as unknown as RefCheckRunLike[])
-          : [];
-
-      all.push(...runs);
-
-      if (runs.length < 100) break;
-      page += 1;
-      if (page > 20) break;
-    }
-
-    const latestByName = new Map<string, RefCheckRunLike>();
-
-    for (const run of all) {
-      const name = toStringTrim(run?.name) || '__unnamed__';
-      const currentId = typeof run?.id === 'number' ? run.id : -1;
-      const prev = latestByName.get(name);
-      const prevId = typeof prev?.id === 'number' ? prev.id : -1;
-
-      if (!prev || currentId > prevId) {
-        latestByName.set(name, run);
-      }
-    }
-
-    if (latestByName.size > 0) {
-      const latestRuns = Array.from(latestByName.values()).map(summarizeHeadGreenRun);
-
-      const incompleteRuns = latestRuns.filter((run) => run.status !== 'completed');
-      if (incompleteRuns.length) {
-        return {
-          green: false,
-          reason: 'check-runs-not-completed',
-          latestRuns,
-          blockingRuns: incompleteRuns,
-        };
-      }
-
-      const blockingRuns = latestRuns.filter(
-        (run) => isBlockingCheckConclusion(run.conclusion) || !isGreenCheckConclusion(run.conclusion)
-      );
-
-      if (blockingRuns.length) {
-        return {
-          green: false,
-          reason: 'check-runs-blocking-or-not-green',
-          latestRuns,
-          blockingRuns,
-        };
-      }
-
-      const sawSuccess = latestRuns.some((run) => run.conclusion === 'success');
-      if (!sawSuccess) {
-        return {
-          green: false,
-          reason: 'no-success-check-run',
-          latestRuns,
-          blockingRuns: [],
-        };
-      }
-
-      return {
-        green: true,
-        reason: 'check-runs-green',
-        latestRuns,
-        blockingRuns: [],
-      };
-    }
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: ref,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'head-green:check-runs-fetch-failed'
-    );
-  }
-
-  try {
-    const res = await (
-      context.octokit.repos as unknown as {
-        getCombinedStatusForRef: (args: {
-          owner: string;
-          repo: string;
-          ref: string;
-        }) => Promise<{ data?: { state?: string | null } }>;
-      }
-    ).getCombinedStatusForRef({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      ref,
-    });
-
-    const statusState = toStringTrim(res?.data?.state).toLowerCase();
-
-    return {
-      green: statusState === 'success',
-      reason: statusState === 'success' ? 'combined-status-success' : 'combined-status-not-success',
-      latestRuns: [],
-      blockingRuns: [],
-      statusState,
-    };
-  } catch (_error: unknown) {
-    return {
-      green: false,
-      reason: 'combined-status-fetch-failed',
-      latestRuns: [],
-      blockingRuns: [],
-    };
-  }
+  return await evaluateHeadGreenForApprovalReevaluationApplication(
+    context,
+    repoInfo,
+    headSha,
+    buildHeadGreenEvaluationCallbacks()
+  );
 }
 
-function mergeInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}:${toStringTrim(pr.head?.sha)}`;
+function buildHeadGreenEvaluationCallbacks(): HeadGreenEvaluationCallbacks<BotContext<RequestEvents>> {
+  return {
+    isPlainObject,
+    getErrorMessage,
+    getHttpStatus,
+    logCheckRunsFetchFailed: (
+      context: BotContext<RequestEvents>,
+      args: { repoInfo: RepoInfo; headSha: string; error: unknown }
+    ): void => {
+      log(
+        context,
+        'warn',
+        {
+          owner: args.repoInfo.owner,
+          repo: args.repoInfo.repo,
+          headSha: args.headSha,
+          err: getErrorMessage(args.error),
+          status: getHttpStatus(args.error),
+        },
+        'head-green:check-runs-fetch-failed'
+      );
+    },
+  };
 }
 
 function autoApprovedPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
-  return `${repoInfo.owner}/${repoInfo.repo}#${prNumber}:${toStringTrim(headSha)}`.toLowerCase();
+  return autoApprovedPrHeadKeyApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
 function markAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): void {
-  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
-  if (key) AUTO_APPROVED_PR_HEADS.add(key);
+  markAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
 function hasAutoApprovedPrHead(repoInfo: RepoInfo, prNumber: number, headSha: string): boolean {
-  const key = autoApprovedPrHeadKey(repoInfo, prNumber, headSha);
-  return Boolean(key && AUTO_APPROVED_PR_HEADS.has(key));
+  return hasAutoApprovedPrHeadApplication(repoInfo, prNumber, toStringTrim(headSha));
 }
 
-class CooldownUntilMap extends Map<string, number> {
-  public override get(key: string): number | undefined {
-    const until = super.get(key);
-    if (until !== undefined && until <= Date.now()) {
-      super.delete(key);
-      return undefined;
-    }
-    return until;
-  }
-
-  public override has(key: string): boolean {
-    return this.get(key) !== undefined;
-  }
-}
-
-const UPDATE_BRANCH_INFLIGHT = new Map<string, Promise<boolean>>();
-const UPDATE_BRANCH_COOLDOWN_UNTIL = new CooldownUntilMap();
-
-const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;
 const UPDATE_BRANCH_RETRY_DELAY_MS = 2000;
-const UPDATE_BRANCH_COOLDOWN_MS = 15000;
 
 type SequentialRegistryPrResult = {
   updated: boolean;
@@ -3115,86 +1401,8 @@ type SequentialRegistryPrResult = {
   blockedByActive: boolean;
 };
 
-type SequentialRegistryPrCandidate = {
-  pr: PullRequestLike;
-  freshPr: PullRequestLike;
-  changedRegistryFiles: string[];
-  mustUpdate: boolean;
-  approvedForUpdate: boolean;
-};
-
-type SequentialRegistryPrActive = {
-  prNumber: number;
-  startedHeadSha: string;
-  startedAt: number;
-  expiresAt: number;
-  reason: string;
-};
-
-const SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT = new Map<string, Promise<SequentialRegistryPrResult>>();
-const SEQUENTIAL_REGISTRY_PR_ACTIVE = new Map<string, SequentialRegistryPrActive>();
-const SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS = new Map<string, number>();
-
-const SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS = 30 * 60 * 1000;
-const SEQUENTIAL_REGISTRY_PR_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function updateBranchInflightKey(repoInfo: RepoInfo, pr: PullRequestLike): string {
   return `${repoInfo.owner}/${repoInfo.repo}#${pr.number}`;
-}
-
-function isUpdateBranchCooldownActive(key: string): boolean {
-  const until = UPDATE_BRANCH_COOLDOWN_UNTIL.get(key);
-  // eslint-disable-next-line eqeqeq
-  if (until == null) return false;
-
-  if (until <= Date.now()) {
-    UPDATE_BRANCH_COOLDOWN_UNTIL.delete(key);
-    return false;
-  }
-
-  return true;
-}
-
-function markUpdateBranchCooldown(key: string): void {
-  UPDATE_BRANCH_COOLDOWN_UNTIL.set(key, Date.now() + UPDATE_BRANCH_COOLDOWN_MS);
-}
-
-function isBenignUpdateBranchFailure(error: unknown): boolean {
-  const status = getHttpStatus(error);
-  const msg = getErrorMessage(error).toLowerCase();
-
-  if (status !== 422) return false;
-
-  return (
-    msg.includes('expected_head_sha') ||
-    msg.includes('head sha') ||
-    msg.includes('head branch was modified') ||
-    msg.includes('not behind') ||
-    msg.includes('up to date') ||
-    msg.includes('up-to-date') ||
-    msg.includes('already up') ||
-    msg.includes('already up-to-date') ||
-    msg.includes('already up to date')
-  );
-}
-
-function isManualUpdateBranchFailure(error: unknown): boolean {
-  const status = getHttpStatus(error);
-  const msg = getErrorMessage(error).toLowerCase();
-
-  return (
-    status === 403 ||
-    status === 404 ||
-    msg.includes('conflict') ||
-    msg.includes('merge conflict') ||
-    msg.includes('protected branch') ||
-    msg.includes('permission') ||
-    msg.includes('forbidden')
-  );
 }
 
 async function callPullRequestBranchUpdate(
@@ -3203,32 +1411,38 @@ async function callPullRequestBranchUpdate(
   prNumber: number,
   expectedHeadSha?: string
 ): Promise<void> {
-  const args: {
-    owner: string;
-    repo: string;
-    pull_number: number;
-    expected_head_sha?: string;
-  } = {
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    pull_number: prNumber,
+  await callPullRequestBranchUpdateApplication(context, repoInfo, prNumber, expectedHeadSha);
+}
+
+async function runBranchUpdateBenignFailureRetry(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number,
+  headSha: string
+): Promise<BranchUpdateBenignRetryOutcome> {
+  return await runBranchUpdateBenignFailureRetryApplication(
+    context,
+    repoInfo,
+    prNumber,
+    headSha,
+    UPDATE_BRANCH_RETRY_DELAY_MS,
+    buildBranchUpdateBenignRetryCallbacks()
+  );
+}
+
+function buildBranchUpdateBenignRetryCallbacks(): BranchUpdateBenignRetryCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    readFreshPullRequest,
+    readMergeableState,
+    isPullRequestBehindBase,
+    delayMs,
+    callPullRequestBranchUpdate,
+    getHttpStatus,
+    getErrorMessage,
   };
-
-  const normalizedExpectedHeadSha = toStringTrim(expectedHeadSha);
-  if (normalizedExpectedHeadSha) {
-    args.expected_head_sha = normalizedExpectedHeadSha;
-  }
-
-  await (
-    context.octokit.pulls as unknown as {
-      updateBranch: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        expected_head_sha?: string;
-      }) => Promise<unknown>;
-    }
-  ).updateBranch(args);
 }
 
 async function requestPullRequestBranchUpdate(
@@ -3237,209 +1451,56 @@ async function requestPullRequestBranchUpdate(
   pr: PullRequestLike,
   reason: string
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  const key = updateBranchInflightKey(repoInfo, pr);
-
-  if (isUpdateBranchCooldownActive(key)) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-        reason,
-      },
-      'pull-request branch update skipped: cooldown active'
-    );
-
-    return false;
-  }
-
-  const existing = UPDATE_BRANCH_INFLIGHT.get(key);
-  if (existing) return await existing;
-
-  const pending = (async (): Promise<boolean> => {
-    try {
-      await callPullRequestBranchUpdate(context, repoInfo, pr.number, headSha);
-
-      markUpdateBranchCooldown(key);
-
-      log(
-        context,
-        'info',
-        {
-          prNumber: pr.number,
-          headSha,
-          reason,
-        },
-        'pull-request branch update requested'
-      );
-
-      return true;
-    } catch (error: unknown) {
-      const msg = getErrorMessage(error);
-      const status = getHttpStatus(error);
-
-      if (isBenignUpdateBranchFailure(error)) {
-        const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
-        const freshHeadSha = toStringTrim(fresh?.head?.sha);
-        const freshMergeableState = readMergeableState(fresh);
-        const stillBehind = Boolean(fresh && isPullRequestBehindBase(fresh));
-
-        if (freshHeadSha && freshHeadSha !== headSha) {
-          log(
-            context,
-            'info',
-            {
-              prNumber: pr.number,
-              oldHeadSha: headSha,
-              freshHeadSha,
-              status,
-              err: msg,
-              reason,
-              freshMergeableState,
-            },
-            'pull-request branch update skipped: head already changed'
-          );
-
-          return false;
-        }
-
-        if (stillBehind) {
-          await delayMs(UPDATE_BRANCH_RETRY_DELAY_MS);
-
-          try {
-            await callPullRequestBranchUpdate(context, repoInfo, pr.number);
-
-            markUpdateBranchCooldown(key);
-
-            log(
-              context,
-              'info',
-              {
-                prNumber: pr.number,
-                headSha,
-                freshHeadSha,
-                reason,
-              },
-              'pull-request branch update requested after expected-head retry'
-            );
-
-            return true;
-          } catch (retryError: unknown) {
-            markUpdateBranchCooldown(key);
-
-            log(
-              context,
-              'warn',
-              {
-                prNumber: pr.number,
-                headSha,
-                freshHeadSha,
-                status: getHttpStatus(retryError),
-                err: getErrorMessage(retryError),
-                originalStatus: status,
-                originalErr: msg,
-                reason,
-                freshMergeableState,
-              },
-              'pull-request branch update retry failed'
-            );
-
-            return false;
-          }
-        }
-
-        log(
-          context,
-          'info',
-          {
-            prNumber: pr.number,
-            oldHeadSha: headSha,
-            freshHeadSha,
-            status,
-            err: msg,
-            reason,
-            freshMergeableState,
-          },
-          'pull-request branch update skipped after benign failure'
-        );
-
-        return false;
-      }
-
-      log(
-        context,
-        'warn',
-        {
-          prNumber: pr.number,
-          headSha,
-          status,
-          err: msg,
-          reason,
-        },
-        'pull-request branch update failed'
-      );
-
-      if (isManualUpdateBranchFailure(error)) {
-        await postOnce(
-          context,
-          { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-          `## Could not update PR branch automatically
-
-The PR is approved, but the bot could not update the branch with the latest base branch.
-
-Reason:
-\`${msg}\`
-
-Please update the branch manually.`,
-          { minimizeTag: 'nsreq:update-branch-failed' }
-        );
-      }
-
-      return false;
-    }
-  })().finally(() => {
-    UPDATE_BRANCH_INFLIGHT.delete(key);
-  });
-
-  UPDATE_BRANCH_INFLIGHT.set(key, pending);
-  return await pending;
-}
-
-function shouldTryBranchUpdateAfterMergeFailure(error: unknown): boolean {
-  const msg = getErrorMessage(error).toLowerCase();
-
-  return (
-    msg.includes('branch is out-of-date') ||
-    msg.includes('branch is out of date') ||
-    msg.includes('update branch') ||
-    msg.includes('must be up to date') ||
-    msg.includes('must be up-to-date') ||
-    msg.includes('behind the base branch')
+  return await requestPullRequestBranchUpdateApplication(
+    context,
+    repoInfo,
+    pr,
+    reason,
+    buildBranchUpdateOrchestrationCallbacks()
   );
 }
 
-function isMergeBlockedByBranchProtection(error: unknown): boolean {
-  const msg = getErrorMessage(error).toLowerCase();
-
-  return (
-    msg.includes('at least 1 approving review is required') ||
-    msg.includes('approving review is required') ||
-    msg.includes('required status check') ||
-    msg.includes('is expected') ||
-    msg.includes('protected branch') ||
-    msg.includes('pull request is not mergeable')
-  );
+function buildBranchUpdateOrchestrationCallbacks(): BranchUpdateOrchestrationCallbacks<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  PullRequestLike
+> {
+  return {
+    updateBranchInflightKey,
+    runBranchUpdateBenignFailureRetry,
+    getErrorMessage,
+    getHttpStatus,
+    log,
+  };
 }
-
-const MERGEABILITY_POLL_ATTEMPTS = 6;
-const MERGEABILITY_POLL_DELAY_MS = 1500;
 
 function delayMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildBranchUpdateDecisionCallbacks(): BranchUpdateDecisionCallbacks<BotContext<RequestEvents>> {
+  return {
+    getBranch: async (
+      context: BotContext<RequestEvents>,
+      args: { owner: string; repo: string; branch: string }
+    ): Promise<{ data?: { commit?: { sha?: string | null } } }> => await github(context).repos.getBranch(args),
+    compareCommitsWithBasehead: async (
+      context: BotContext<RequestEvents>,
+      args: { owner: string; repo: string; basehead: string }
+    ): Promise<{ data?: { status?: string | null; ahead_by?: number | null } }> =>
+      await (
+        context.octokit.repos as unknown as {
+          compareCommitsWithBasehead: (args: {
+            owner: string;
+            repo: string;
+            basehead: string;
+          }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
+        }
+      ).compareCommitsWithBasehead(args),
+    log,
+    getErrorMessage,
+    getHttpStatus,
+  };
 }
 
 async function readFreshPullRequest(
@@ -3448,15 +1509,11 @@ async function readFreshPullRequest(
   prNumber: number
 ): Promise<PullRequestLike | null> {
   try {
-    const res = await (
-      context.octokit.pulls as unknown as {
-        get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data?: PullRequestLike }>;
-      }
-    ).get({
+    const res = (await github(context).pullRequests.getPullRequest({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       pull_number: prNumber,
-    });
+    })) as { data?: PullRequestLike };
 
     return res.data || null;
   } catch (error: unknown) {
@@ -3476,27 +1533,19 @@ async function readFreshPullRequest(
 }
 
 function readMergeableState(pr: PullRequestLike | null | undefined): string {
-  return toStringTrim(pr?.mergeable_state).toLowerCase();
+  return readMergeableStatePure(pr);
 }
 
 function isPullRequestOpen(pr: PullRequestLike | null | undefined): boolean {
-  return toStringTrim(pr?.state).toLowerCase() === 'open';
-}
-
-function isMergeabilityPending(pr: PullRequestLike | null | undefined): boolean {
-  const state = readMergeableState(pr);
-
-  return pr?.mergeable === null || state === 'unknown' || state === 'checking';
+  return isPullRequestOpenPure(pr);
 }
 
 function isPullRequestBehindBase(pr: PullRequestLike | null | undefined): boolean {
-  return readMergeableState(pr) === 'behind';
+  return isPullRequestBehindBasePure(pr);
 }
 
 function isPullRequestDirty(pr: PullRequestLike | null | undefined): boolean {
-  const state = readMergeableState(pr);
-
-  return state === 'dirty' || state === 'conflicting';
+  return isPullRequestDirtyPure(pr);
 }
 
 async function waitForPullRequestMergeability(
@@ -3505,340 +1554,48 @@ async function waitForPullRequestMergeability(
   pr: PullRequestLike,
   reason: string
 ): Promise<PullRequestLike> {
-  let current = pr;
-
-  for (let attempt = 1; attempt <= MERGEABILITY_POLL_ATTEMPTS; attempt += 1) {
-    const fresh = await readFreshPullRequest(context, repoInfo, pr.number);
-    if (fresh) current = fresh;
-
-    const mergeable = current.mergeable;
-    const mergeableState = readMergeableState(current);
-
-    log(
-      context,
-      DBG ? 'debug' : 'info',
-      {
-        prNumber: current.number,
-        attempt,
-        headSha: toStringTrim(current.head?.sha),
-        mergeable,
-        mergeableState,
-        reason,
-      },
-      'pull-request mergeability state'
-    );
-
-    if (!isPullRequestOpen(current)) return current;
-    if (!isMergeabilityPending(current)) return current;
-
-    await delayMs(MERGEABILITY_POLL_DELAY_MS);
-  }
-
-  return current;
+  return await waitForPullRequestMergeabilityApplication(
+    context,
+    repoInfo,
+    pr,
+    reason,
+    buildPullRequestMergeabilityCallbacks()
+  );
 }
 
-async function tryMergeApprovedPrOrUpdateBranch(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<void> {
-  const key = mergeInflightKey(repoInfo, pr);
-  const existing = MERGE_INFLIGHT.get(key);
-
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const pending = runMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, reason).finally(() => {
-    MERGE_INFLIGHT.delete(key);
-  });
-
-  MERGE_INFLIGHT.set(key, pending);
-  await pending;
-}
-
-async function runMergeApprovedPrOrUpdateBranch(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<void> {
-  const originalHeadSha = toStringTrim(pr.head?.sha);
-  const baseBranch = toStringTrim(pr.base?.ref);
-
-  let currentPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-merge`);
-
-  if (!isPullRequestOpen(currentPr)) return;
-
-  const currentHeadSha = toStringTrim(currentPr.head?.sha);
-
-  if (originalHeadSha && currentHeadSha && originalHeadSha !== currentHeadSha) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: currentPr.number,
-        originalHeadSha,
-        currentHeadSha,
-        reason,
-      },
-      'pull-request head changed before merge, waiting for new CI'
-    );
-
-    return;
-  }
-
-  if (isPullRequestDirty(currentPr)) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: currentPr.number,
-        mergeableState: readMergeableState(currentPr),
-        reason,
-      },
-      'pull-request has merge conflicts, auto-merge skipped'
-    );
-
-    return;
-  }
-
-  if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
-    await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
-      context,
-      repoInfo,
-      currentPr,
-      baseBranch,
-      `${reason}:behind-before-merge`
-    );
-    return;
-  }
-
-  const hasCurrentHeadAutoApproval = currentHeadSha
-    ? hasAutoApprovedPrHead(repoInfo, currentPr.number, currentHeadSha)
-    : false;
-
-  const hasMergeApproval =
-    hasCurrentHeadAutoApproval ||
-    (await isPullRequestApprovedForBranchMaintenance(context, repoInfo, currentPr, {
-      allowLabelFallback: !isCrossRepositoryPullRequest(currentPr, repoInfo),
-    }));
-
-  if (!hasMergeApproval) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: currentPr.number,
-        headSha: currentHeadSha,
-        reason,
-      },
-      'pull-request merge skipped: no qualifying approval'
-    );
-
-    return;
-  }
-
-  if (currentHeadSha) {
-    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, currentHeadSha);
-
-    if (!greenResult.green) {
+function buildPullRequestMergeabilityCallbacks(): PullRequestMergeabilityCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    readFreshPullRequest,
+    delayMs,
+    logMergeabilityState: (
+      context: BotContext<RequestEvents>,
+      args: {
+        prNumber: number;
+        attempt: number;
+        headSha: string;
+        mergeable: boolean | null | undefined;
+        mergeableState: string;
+        reason: string;
+      }
+    ): void => {
       log(
         context,
-        'info',
+        DBG ? 'debug' : 'info',
         {
-          prNumber: currentPr.number,
-          headSha: currentHeadSha,
-          greenReason: greenResult.reason,
-          blockingRuns: greenResult.blockingRuns,
-          latestRuns: greenResult.latestRuns.slice(0, 30),
-          reason,
+          prNumber: args.prNumber,
+          attempt: args.attempt,
+          headSha: args.headSha,
+          mergeable: args.mergeable,
+          mergeableState: args.mergeableState,
+          reason: args.reason,
         },
-        'pull-request merge skipped: current head checks are not green'
+        'pull-request mergeability state'
       );
-
-      return;
-    }
-
-    const pendingRuns = greenResult.latestRuns.filter((run) => toStringTrim(run.status).toLowerCase() !== 'completed');
-
-    if (pendingRuns.length) {
-      log(
-        context,
-        'info',
-        {
-          prNumber: currentPr.number,
-          headSha: currentHeadSha,
-          pendingRuns,
-          reason,
-        },
-        'pull-request merge skipped: current head checks are still pending'
-      );
-
-      return;
-    }
-  }
-
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const beforeHeadSha = toStringTrim(currentPr.head?.sha);
-
-    try {
-      const merged = await tryMergeIfGreen(context, {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        prNumber: currentPr.number,
-        mergeMethod: 'squash',
-        prData: currentPr,
-      });
-
-      const afterMergeAttempt = await readFreshPullRequest(context, repoInfo, currentPr.number);
-      if (!afterMergeAttempt) return;
-
-      if (!isPullRequestOpen(afterMergeAttempt)) return;
-
-      const afterHeadSha = toStringTrim(afterMergeAttempt.head?.sha);
-
-      if (beforeHeadSha && afterHeadSha && beforeHeadSha !== afterHeadSha) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: currentPr.number,
-            beforeHeadSha,
-            afterHeadSha,
-            reason,
-          },
-          'pull-request head changed after merge attempt'
-        );
-
-        return;
-      }
-
-      if (merged === true) return;
-
-      if (merged === false) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: afterMergeAttempt.number,
-            headSha: toStringTrim(afterMergeAttempt.head?.sha),
-            mergeable: afterMergeAttempt.mergeable,
-            mergeableState: readMergeableState(afterMergeAttempt),
-            reason,
-          },
-          'pull-request merge returned false, branch update not requested'
-        );
-
-        return;
-      }
-
-      currentPr = await waitForPullRequestMergeability(
-        context,
-        repoInfo,
-        afterMergeAttempt,
-        `${reason}:after-merge-attempt-${attempt}`
-      );
-
-      if (!isPullRequestOpen(currentPr)) return;
-
-      if (isPullRequestDirty(currentPr)) {
-        log(
-          context,
-          'warn',
-          {
-            prNumber: currentPr.number,
-            mergeableState: readMergeableState(currentPr),
-            reason,
-          },
-          'pull-request has merge conflicts after mergeability refresh'
-        );
-
-        return;
-      }
-
-      if (await shouldUpdatePullRequestBranch(context, repoInfo, currentPr, baseBranch)) {
-        await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
-          context,
-          repoInfo,
-          currentPr,
-          baseBranch,
-          `${reason}:behind-after-merge-attempt`
-        );
-        return;
-      }
-
-      if (attempt < 2 && isMergeabilityPending(currentPr)) {
-        continue;
-      }
-
-      log(
-        context,
-        'info',
-        {
-          prNumber: currentPr.number,
-          mergeable: currentPr.mergeable,
-          mergeableState: readMergeableState(currentPr),
-          reason,
-        },
-        'pull-request not merged after green check'
-      );
-
-      return;
-    } catch (error: unknown) {
-      if (isMergeBlockedByBranchProtection(error)) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: currentPr.number,
-            headSha: toStringTrim(currentPr.head?.sha),
-            err: getErrorMessage(error),
-            status: getHttpStatus(error),
-            reason,
-          },
-          'pull-request merge blocked by branch protection'
-        );
-
-        return;
-      }
-
-      if (shouldTryBranchUpdateAfterMergeFailure(error)) {
-        const freshPr = (await readFreshPullRequest(context, repoInfo, currentPr.number)) || currentPr;
-
-        if (await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch)) {
-          await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
-            context,
-            repoInfo,
-            freshPr,
-            baseBranch,
-            `${reason}:merge-failed-outdated`
-          );
-        } else {
-          log(
-            context,
-            'info',
-            {
-              prNumber: freshPr.number,
-              headSha: toStringTrim(freshPr.head?.sha),
-              mergeable: freshPr.mergeable,
-              mergeableState: readMergeableState(freshPr),
-              err: getErrorMessage(error),
-              status: getHttpStatus(error),
-              reason,
-            },
-            'pull-request merge failed, branch update not requested'
-          );
-        }
-
-        return;
-      }
-
-      throw error;
-    }
-  }
+    },
+  };
 }
 
 function parsePositiveIssueNumber(value: string | undefined): number | null {
@@ -3899,13 +1656,13 @@ async function listOpenPullRequests(
   let page = 1;
 
   while (true) {
-    const { data } = await context.octokit.pulls.list({
+    const { data } = (await github(context).pullRequests.listPullRequests({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       state: 'open',
       per_page: 100,
       page,
-    });
+    })) as { data?: PullRequestLike[] };
 
     const prs = (data || []) as unknown as PullRequestLike[];
     if (!prs.length) break;
@@ -3920,238 +1677,8 @@ async function listOpenPullRequests(
   return out;
 }
 
-async function processPullRequestForAutoMerge(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<void> {
-  const prBaseBranch = toStringTrim(pr.base?.ref);
-
-  if (await isSequentialDirectRegistryPr(context, repoInfo, pr, prBaseBranch)) {
-    if (await shouldDeferSequentialDirectRegistryPrProcessing(context, repoInfo, pr)) {
-      return;
-    }
-  }
-
-  if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) {
-    return;
-  }
-
-  const issueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
-
-  if (issueNumber === null) {
-    const noopClosed = await maybeCloseNoopRegistryPullRequest(context, repoInfo, pr, 'auto-merge:no-op-check');
-    if (noopClosed) return;
-  }
-
-  if (issueNumber === null) {
-    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
-      baseBranch: toStringTrim(freshPr.base?.ref),
-    });
-
-    if (standaloneOutcome !== 'approved') return;
-
-    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
-    return;
-  }
-
-  const params: IssueParams = {
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    issue_number: issueNumber,
-  };
-
-  let issue: IssueLike;
-  try {
-    const res = await context.octokit.issues.get(params);
-    issue = res.data as unknown as IssueLike;
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        issueNumber,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      },
-      'direct-pr:linked-issue-read-failed-fallback-standalone'
-    );
-
-    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, freshPr, {
-      baseBranch: toStringTrim(freshPr.base?.ref),
-    });
-
-    if (standaloneOutcome !== 'approved') return;
-
-    const approvedPr = (await readFreshPullRequest(context, repoInfo, freshPr.number)) || freshPr;
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, approvedPr, 'auto-merge');
-    return;
-  }
-
-  if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        issueNumber,
-      },
-      'direct-pr:linked-issue-not-request-form-fallback-standalone'
-    );
-
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
-    if (standaloneOutcome !== 'approved') return;
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  let template: TemplateLike;
-  try {
-    template = await loadTemplateWithLabelRefresh(context, params, issue);
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        issueNumber,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'direct-pr:linked-issue-template-load-failed-fallback-standalone'
-    );
-
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
-    if (standaloneOutcome !== 'approved') return;
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-  if (!isRequestIssue(context, template, parsedFormData)) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        issueNumber,
-        parsedKeys: Object.keys(parsedFormData || {}),
-      },
-      'direct-pr:linked-issue-not-request-issue-fallback-standalone'
-    );
-
-    const standaloneOutcome = await maybeHandleStandaloneDirectPrApproval(context, repoInfo, pr);
-    if (standaloneOutcome !== 'approved') return;
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  const body = toStringTrim(pr.body);
-  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
-  const currentHash =
-    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
-  const prHash = extractHashFromPrBody(body);
-
-  if (prHash) {
-    if (!snapshotHashes.includes(prHash)) {
-      await closeOutdatedRequestPrs(context, params, template, {
-        parsedFormData,
-        currentHash,
-        acceptedHashes: snapshotHashes,
-      });
-      return;
-    }
-
-    await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-    return;
-  }
-
-  const directPrOutcome = await maybeHandleDirectPrApprovalForMerge(
-    context,
-    repoInfo,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    pr
-  );
-
-  if (directPrOutcome !== 'approved') return;
-
-  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'auto-merge');
-}
-
 function isApprovalConfigChangePath(filePath: string): boolean {
   return /^\.github\/registry-bot\/config\.(?:[cm]?js|ts|ya?ml)$/i.test(normalizeRepoPath(filePath));
-}
-
-function readPushChangedFiles(payload: unknown): string[] {
-  if (!isPlainObject(payload)) return [];
-
-  const commits = Array.isArray(payload['commits']) ? payload['commits'] : [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const commit of commits) {
-    if (!isPlainObject(commit)) continue;
-
-    for (const key of ['added', 'modified', 'removed'] as const) {
-      const files = Array.isArray(commit[key]) ? commit[key] : [];
-      for (const file of files) {
-        const normalized = normalizeRepoPath(file);
-        if (!normalized || seen.has(normalized)) continue;
-        seen.add(normalized);
-        out.push(normalized);
-      }
-    }
-  }
-
-  return out;
-}
-
-async function reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason = 'default-branch-push:direct-pr-reevaluation'
-): Promise<SequentialRegistryPrResult> {
-  log(
-    context,
-    'info',
-    {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      baseBranch,
-      reason,
-      hooksSource: context.resourceBotHooksSource,
-    },
-    'direct-pr-reeval:start'
-  );
-
-  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
-
-  log(
-    context,
-    'info',
-    {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      baseBranch,
-      reason,
-      ...result,
-    },
-    'direct-pr-reeval:done'
-  );
-
-  return result;
 }
 
 function isDefaultBranchPush(payload: unknown): boolean {
@@ -4164,172 +1691,12 @@ function isDefaultBranchPush(payload: unknown): boolean {
   return Boolean(ref && defaultBranch && ref === `refs/heads/${defaultBranch}`);
 }
 
-function readDefaultBranchFromPayload(payload: unknown): string {
-  if (!isPlainObject(payload)) return '';
-
-  const repoObj = isPlainObject(payload['repository']) ? payload['repository'] : null;
-  return repoObj ? toStringTrim(repoObj['default_branch']) : '';
-}
-
-function readDefaultBranchFromPush(payload: unknown): string {
-  return readDefaultBranchFromPayload(payload);
-}
-
 function pullRequestTargetsBranch(pr: PullRequestLike, branchName: string): boolean {
   const target = toStringTrim(branchName);
   if (!target) return true;
 
   const prBase = toStringTrim(pr.base?.ref);
   return !prBase || prBase === target;
-}
-
-async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason = 'default-branch-push'
-): Promise<boolean> {
-  if (await isSequentialRegistryPrActiveBlocking(context, repoInfo)) {
-    return false;
-  }
-
-  const openPrs = await listOpenPullRequests(context, repoInfo);
-
-  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
-    const headSha = toStringTrim(pr.head?.sha);
-
-    if (!headSha) continue;
-    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
-    if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) continue;
-
-    try {
-      const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
-
-      if (!changedRegistryFiles.length) {
-        log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: no registry yaml files changed');
-        continue;
-      }
-
-      if (!isSnapshotManagedRequestPr(pr)) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: pr.number,
-            reason,
-          },
-          'skip branch update: direct registry PR handled by sequential queue'
-        );
-        continue;
-      }
-
-      const approved = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, pr);
-      if (!approved) {
-        log(context, 'info', { prNumber: pr.number, reason }, 'skip branch update: PR is not approved');
-        continue;
-      }
-
-      const freshPr = await waitForPullRequestMergeability(context, repoInfo, pr, `${reason}:before-update-branch`);
-
-      if (!isPullRequestOpen(freshPr)) continue;
-
-      if (isPullRequestDirty(freshPr)) {
-        log(
-          context,
-          'warn',
-          {
-            prNumber: freshPr.number,
-            mergeableState: readMergeableState(freshPr),
-            reason,
-          },
-          'skip branch update: PR has merge conflicts'
-        );
-        continue;
-      }
-
-      const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
-
-      if (!mustUpdate) {
-        log(
-          context,
-          'info',
-          {
-            prNumber: freshPr.number,
-            mergeable: freshPr.mergeable,
-            mergeableState: readMergeableState(freshPr),
-            reason,
-          },
-          'skip branch update: PR is not behind current base'
-        );
-        continue;
-      }
-
-      const requested = await requestPullRequestBranchUpdate(context, repoInfo, freshPr, reason);
-
-      if (requested) {
-        return true;
-      }
-
-      markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'approved-branch-update-request-failed');
-    } catch (error: unknown) {
-      log(
-        context,
-        'warn',
-        {
-          err: getErrorMessage(error),
-          prNumber: pr.number,
-          reason,
-        },
-        'failed to update approved pull request branch after default branch push'
-      );
-
-      markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, 'approved-branch-update-exception');
-    }
-  }
-
-  return false;
-}
-
-async function updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string
-): Promise<boolean> {
-  const requested = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
-    context,
-    repoInfo,
-    baseBranch,
-    'default-branch-push'
-  );
-
-  if (requested) return true;
-
-  const retryTimer = setTimeout(() => {
-    void updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
-      context,
-      repoInfo,
-      baseBranch,
-      'default-branch-push:delayed-retry'
-    ).catch((error: unknown) => {
-      log(
-        context,
-        'warn',
-        {
-          err: getErrorMessage(error),
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          baseBranch,
-        },
-        'failed to run delayed approved pull request branch update retry'
-      );
-    });
-  }, DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS);
-
-  if (retryTimer && typeof (retryTimer as { unref?: () => void }).unref === 'function') {
-    retryTimer.unref();
-  }
-
-  return false;
 }
 
 function normalizeRepoPath(path: unknown): string {
@@ -4350,36 +1717,8 @@ function normalizeTypeToken(value: unknown): string {
     .toLowerCase();
 }
 
-function mapRegistryDocTypeToRequestType(value: unknown): string {
-  const type = normalizeTypeToken(value);
-
-  if (type === 'system') return 'systemNamespace';
-  if (type === 'authority') return 'authorityNamespace';
-  if (type === 'subcontext') return 'subContextNamespace';
-  if (type === 'product') return 'product';
-  if (type === 'vendor') return 'vendor';
-
-  return '';
-}
-
 function matchRequestTypesForFile(context: BotContext<RequestEvents>, filePath: string): string[] {
-  const fp = normalizeRepoPath(filePath);
-  const cfg = context.resourceBotConfig ?? DEFAULT_CONFIG;
-  const reqs = isPlainObject(cfg.requests) ? cfg.requests : {};
-  const matches: string[] = [];
-
-  for (const [requestType, entry] of Object.entries(reqs)) {
-    if (!isPlainObject(entry)) continue;
-
-    const folder = normalizeRepoPath(entry['folderName']);
-    if (!folder) continue;
-
-    if (fp === folder || fp.startsWith(`${folder}/`)) {
-      matches.push(requestType);
-    }
-  }
-
-  return matches;
+  return matchRequestTypesForFilePure(context.resourceBotConfig ?? DEFAULT_CONFIG, filePath);
 }
 
 function pickRequestTypeForChangedResource(
@@ -4387,93 +1726,17 @@ function pickRequestTypeForChangedResource(
   filePath: string,
   doc: Record<string, unknown>
 ): string {
-  const candidates = matchRequestTypesForFile(context, filePath);
-  if (candidates.length === 0) return '';
-  if (candidates.length === 1) return candidates[0];
-
-  const byDocType = mapRegistryDocTypeToRequestType(doc['type']);
-  if (byDocType && candidates.includes(byDocType)) return byDocType;
-
-  return '';
-}
-
-function resolveRegistryDocResourceName(doc: Record<string, unknown>): string {
-  const directKeys = ['identifier', 'namespace', 'product-id', 'productId', 'id', 'name', 'vendor'];
-
-  for (const key of directKeys) {
-    const value = toStringTrim(doc[key]).replaceAll('\u00a0', ' ').trim();
-    if (value) return value;
-  }
-
-  return '';
-}
-
-function stringifyRegistryDocFormValue(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-
-  if (Array.isArray(value)) {
-    const scalarItems = value
-      .map((item) =>
-        typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean' ? String(item) : ''
-      )
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    if (scalarItems.length === value.length) return scalarItems.join('\n');
-  }
-
-  return YAML.stringify(value).trim();
-}
-
-function buildFormDataFromRegistryDoc(doc: Record<string, unknown>): FormData {
-  const out: FormData = {};
-
-  for (const [key, value] of Object.entries(doc)) {
-    const serialized = stringifyRegistryDocFormValue(value);
-    if (serialized) out[key] = serialized;
-  }
-
-  const resourceName = resolveRegistryDocResourceName(doc);
-  if (resourceName) {
-    out.identifier = out.identifier || resourceName;
-    out.namespace = out.namespace || resourceName;
-  }
-
-  const name = toStringTrim(doc['name']);
-  if (name && !out.name) out.name = name;
-
-  const description = toStringTrim(doc['description']);
-  if (description && !out.description) out.description = description;
-
-  const title = toStringTrim(doc['title']);
-  if (title && !out.title) out.title = title;
-
-  const vendor = toStringTrim(doc['vendor']);
-  if (vendor && !out.vendor) out.vendor = vendor;
-
-  const contacts = Array.isArray(doc['contact'])
-    ? doc['contact']
-        .map((v: unknown) => toStringTrim(v))
-        .filter(Boolean)
-        .join('\n')
-    : toStringTrim(doc['contact']);
-
-  if (contacts && !out.contact) out.contact = contacts;
-
-  return out;
+  return pickRequestTypeForChangedResourcePure(context.resourceBotConfig ?? DEFAULT_CONFIG, filePath, doc);
 }
 
 function isRegistryEntryPath(context: BotContext<RequestEvents>, filePath: string): boolean {
   return matchRequestTypesForFile(context, filePath).length > 0;
 }
 function isChangedYamlCandidate(file: PullRequestFileLike): string {
-  const filename = normalizeRepoPath(file?.filename);
-  const status = toStringTrim(file?.status).toLowerCase();
-
-  if (!filename || !isYamlPath(filename) || status === 'removed') return '';
-  return filename;
+  return isChangedYamlCandidateApplication(file, {
+    normalizeRepoPath,
+    isYamlPath,
+  });
 }
 
 async function listChangedYamlFilesPage(
@@ -4482,25 +1745,7 @@ async function listChangedYamlFilesPage(
   prNumber: number,
   page: number
 ): Promise<PullRequestFileLike[]> {
-  const res = await (
-    context.octokit.pulls as unknown as {
-      listFiles: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data?: PullRequestFileLike[] }>;
-    }
-  ).listFiles({
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    pull_number: prNumber,
-    per_page: 100,
-    page,
-  });
-
-  return Array.isArray(res?.data) ? res.data : [];
+  return await listChangedYamlFilesPageApplication(context, repoInfo, prNumber, page);
 }
 
 async function listChangedYamlFilesForPr(
@@ -4508,17 +1753,32 @@ async function listChangedYamlFilesForPr(
   repoInfo: RepoInfo,
   prNumber: number
 ): Promise<string[]> {
-  const files = await listAllChangedFilesForPrCached(context, repoInfo, prNumber);
-  const out: string[] = [];
+  return await listChangedYamlFilesForPrApplication(context, repoInfo, prNumber, {
+    listChangedYamlFilesPage,
+    isChangedYamlCandidate,
+    isRegistryEntryPath,
+  });
+}
 
-  for (const file of files) {
-    const filename = isChangedYamlCandidate(file);
-    if (filename && isRegistryEntryPath(context, filename)) {
-      out.push(filename);
-    }
+async function listChangedFilesForPr(
+  context: BotContext<RequestEvents>,
+  repoInfo: RepoInfo,
+  prNumber: number
+): Promise<PullRequestFileLike[]> {
+  const out: PullRequestFileLike[] = [];
+  let page = 1;
+
+  while (true) {
+    const files = await listChangedYamlFilesPage(context, repoInfo, prNumber, page);
+    if (!files.length) break;
+
+    out.push(...files);
+
+    if (files.length < 100 || page >= 20) break;
+    page += 1;
   }
 
-  return Array.from(new Set(out));
+  return out;
 }
 
 async function readBranchHeadSha(
@@ -4526,33 +1786,7 @@ async function readBranchHeadSha(
   repoInfo: RepoInfo,
   branchName: string
 ): Promise<string> {
-  const branch = toStringTrim(branchName);
-  if (!branch) return '';
-
-  try {
-    const res = await context.octokit.repos.getBranch({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      branch,
-    });
-
-    return toStringTrim((res as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha);
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        branch,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'branch-head-sha:read-failed'
-    );
-
-    return '';
-  }
+  return await readBranchHeadShaApplication(context, repoInfo, branchName, buildBranchUpdateDecisionCallbacks());
 }
 
 async function readRecursiveGitTreeEntries(
@@ -4560,129 +1794,41 @@ async function readRecursiveGitTreeEntries(
   repoInfo: RepoInfo,
   ref: string
 ): Promise<GitTreeEntryLike[]> {
-  const treeSha = toStringTrim(ref);
-  if (!treeSha) return [];
-
-  try {
-    const res = await (
-      context.octokit.git as unknown as {
-        getTree: (args: {
-          owner: string;
-          repo: string;
-          tree_sha: string;
-          recursive?: 'true';
-        }) => Promise<{ data?: GitTreeLike }>;
-      }
-    ).getTree({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      tree_sha: treeSha,
-      recursive: 'true',
-    });
-
-    return Array.isArray(res?.data?.tree) ? res.data.tree : [];
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        ref: treeSha,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'git-tree:read-failed'
-    );
-
-    return [];
-  }
+  return await readRecursiveGitTreeEntriesApplication(context, repoInfo, ref, {
+    getErrorMessage,
+    getHttpStatus,
+    log,
+  });
 }
 
 function registryYamlTreeEntryPath(context: BotContext<RequestEvents>, entry: GitTreeEntryLike): string {
-  const path = normalizeRepoPath(entry?.path);
-  const type = toStringTrim(entry?.type).toLowerCase();
-
-  if (type !== 'blob') return '';
-  if (!path || !isYamlPath(path)) return '';
-  if (!isRegistryEntryPath(context, path)) return '';
-
-  return path;
+  return registryYamlTreeEntryPathApplication(context, entry, {
+    normalizeRepoPath,
+    isYamlPath,
+    isRegistryEntryPath,
+  });
 }
-
-type PullRequestHeadReadCandidate = {
-  repoInfo: RepoInfo;
-  ref: string;
-  source: string;
-};
 
 function sameRepoInfo(a: RepoInfo, b: RepoInfo): boolean {
-  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase();
-}
-
-function resolveRepoInfoFromRepoLike(repoLike: PullRequestRepoLike | null | undefined): RepoInfo | null {
-  const fullName = toStringTrim(repoLike?.full_name);
-  if (fullName) {
-    const parts = fullName
-      .split('/')
-      .map((part) => toStringTrim(part))
-      .filter(Boolean);
-
-    if (parts.length === 2) {
-      return { owner: parts[0], repo: parts[1] };
-    }
-  }
-
-  const owner = normalizeLogin(repoLike?.owner?.login);
-  const repo = toStringTrim(repoLike?.name);
-
-  return owner && repo ? { owner, repo } : null;
+  return sameRepoInfoPure(a, b);
 }
 
 function resolvePullRequestHeadRepoInfo(pr: PullRequestLike, fallbackRepoInfo: RepoInfo): RepoInfo {
-  return resolveRepoInfoFromRepoLike(pr.head?.repo) || fallbackRepoInfo;
+  return resolvePullRequestHeadRepoInfoPure(pr, fallbackRepoInfo);
 }
 
 function isCrossRepositoryPullRequest(pr: PullRequestLike, baseRepoInfo: RepoInfo): boolean {
-  return !sameRepoInfo(resolvePullRequestHeadRepoInfo(pr, baseRepoInfo), baseRepoInfo);
+  return isCrossRepositoryPullRequestPure(pr, baseRepoInfo);
 }
 
-function buildPullRequestHeadReadCandidates(repoInfo: RepoInfo, pr: PullRequestLike): PullRequestHeadReadCandidate[] {
-  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const headSha = toStringTrim(pr.head?.sha);
-  const headRef = toStringTrim(pr.head?.ref);
-  const isCrossRepo = !sameRepoInfo(headRepoInfo, repoInfo);
-
-  const out: PullRequestHeadReadCandidate[] = [];
-  const seen = new Set<string>();
-
-  const add = (candidateRepoInfo: RepoInfo, ref: string, source: string): void => {
-    const normalizedRef = toStringTrim(ref);
-    if (!normalizedRef) return;
-
-    const key = `${candidateRepoInfo.owner}/${candidateRepoInfo.repo}:${normalizedRef}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    out.push({
-      repoInfo: candidateRepoInfo,
-      ref: normalizedRef,
-      source,
-    });
-  };
-
-  add(repoInfo, headSha, 'base-repo:head-sha');
-  add(repoInfo, `refs/pull/${pr.number}/head`, 'base-repo:pull-ref-full');
-  add(repoInfo, `pull/${pr.number}/head`, 'base-repo:pull-ref-short');
-
-  if (!isCrossRepo) {
-    add(repoInfo, headRef, 'base-repo:head-ref');
-  }
-
-  add(headRepoInfo, headSha, 'head-repo:head-sha');
-  add(headRepoInfo, headRef, 'head-repo:head-ref');
-
-  return out;
+function buildPullRequestHeadReadCandidates(
+  repoInfo: RepoInfo,
+  pr: PullRequestLike
+): PullRequestHeadReadCandidate<RepoInfo>[] {
+  return buildPullRequestHeadReadCandidatesApplication(repoInfo, pr, {
+    resolvePullRequestHeadRepoInfo,
+    sameRepoInfo,
+  });
 }
 
 async function readPullRequestHeadFileText(
@@ -4691,55 +1837,14 @@ async function readPullRequestHeadFileText(
   pr: PullRequestLike,
   path: string
 ): Promise<string | null> {
-  const candidates = buildPullRequestHeadReadCandidates(repoInfo, pr);
-  const normalizedPath = normalizeRepoPath(path);
-
-  for (const candidate of candidates) {
-    const raw = await readRepoFileTextAtRef(context, candidate.repoInfo, normalizedPath, candidate.ref);
-    if (raw === null) continue;
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        path: normalizedPath,
-        source: candidate.source,
-        owner: candidate.repoInfo.owner,
-        repo: candidate.repoInfo.repo,
-        ref: candidate.ref,
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      },
-      'pull-request head file resolved'
-    );
-
-    return raw;
-  }
-
-  log(
-    context,
-    'warn',
-    {
-      prNumber: pr.number,
-      path: normalizedPath,
-      baseOwner: repoInfo.owner,
-      baseRepo: repoInfo.repo,
-      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
-      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
-      headRef: toStringTrim(pr.head?.ref),
-      headSha: toStringTrim(pr.head?.sha),
-      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      candidates: candidates.map((candidate) => ({
-        source: candidate.source,
-        owner: candidate.repoInfo.owner,
-        repo: candidate.repoInfo.repo,
-        ref: candidate.ref,
-      })),
-    },
-    'pull-request head file read failed'
-  );
-
-  return null;
+  return await readPullRequestHeadFileTextApplication(context, repoInfo, pr, path, {
+    normalizeRepoPath,
+    buildPullRequestHeadReadCandidates,
+    readRepoFileTextAtRef,
+    resolvePullRequestHeadRepoInfo,
+    isCrossRepositoryPullRequest,
+    log,
+  });
 }
 
 async function readPullRequestHeadTreeEntries(
@@ -4747,49 +1852,13 @@ async function readPullRequestHeadTreeEntries(
   repoInfo: RepoInfo,
   pr: PullRequestLike
 ): Promise<GitTreeEntryLike[]> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return [];
-
-  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const candidates: PullRequestHeadReadCandidate[] = [
-    {
-      repoInfo,
-      ref: headSha,
-      source: 'base-repo:head-sha',
-    },
-  ];
-
-  if (!sameRepoInfo(headRepoInfo, repoInfo)) {
-    candidates.push({
-      repoInfo: headRepoInfo,
-      ref: headSha,
-      source: 'head-repo:head-sha',
-    });
-  }
-
-  for (const candidate of candidates) {
-    const entries = await readRecursiveGitTreeEntries(context, candidate.repoInfo, candidate.ref);
-    if (!entries.length) continue;
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        source: candidate.source,
-        owner: candidate.repoInfo.owner,
-        repo: candidate.repoInfo.repo,
-        ref: candidate.ref,
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-        entries: entries.length,
-      },
-      'pull-request head tree resolved'
-    );
-
-    return entries;
-  }
-
-  return [];
+  return await readPullRequestHeadTreeEntriesApplication(context, repoInfo, pr, {
+    resolvePullRequestHeadRepoInfo,
+    sameRepoInfo,
+    readRecursiveGitTreeEntries,
+    isCrossRepositoryPullRequest,
+    log,
+  });
 }
 
 async function listChangedYamlFilesForPrAgainstCurrentBase(
@@ -4798,45 +1867,12 @@ async function listChangedYamlFilesForPrAgainstCurrentBase(
   pr: PullRequestLike,
   baseBranch: string
 ): Promise<string[]> {
-  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-  if (!baseRef) return [];
-
-  const baseSha = await readBranchHeadSha(context, repoInfo, baseRef);
-  if (!baseSha) return [];
-
-  const [baseEntries, headEntries] = await Promise.all([
-    readRecursiveGitTreeEntries(context, repoInfo, baseSha),
-    readPullRequestHeadTreeEntries(context, repoInfo, pr),
-  ]);
-
-  const baseByPath = new Map<string, string>();
-
-  for (const entry of baseEntries) {
-    const path = registryYamlTreeEntryPath(context, entry);
-    if (!path) continue;
-
-    const sha = toStringTrim(entry.sha);
-    if (sha) baseByPath.set(path, sha);
-  }
-
-  const changed: string[] = [];
-  const seen = new Set<string>();
-
-  for (const entry of headEntries) {
-    const path = registryYamlTreeEntryPath(context, entry);
-    if (!path || seen.has(path)) continue;
-
-    const headEntrySha = toStringTrim(entry.sha);
-    const baseEntrySha = baseByPath.get(path) || '';
-
-    if (!headEntrySha) continue;
-    if (baseEntrySha && baseEntrySha === headEntrySha) continue;
-
-    seen.add(path);
-    changed.push(path);
-  }
-
-  return changed;
+  return await listChangedYamlFilesForPrAgainstCurrentBaseApplication(context, repoInfo, pr, baseBranch, {
+    readBranchHeadSha,
+    readRecursiveGitTreeEntries,
+    readPullRequestHeadTreeEntries,
+    registryYamlTreeEntryPath,
+  });
 }
 
 async function listChangedYamlFilesForPrWithFallback(
@@ -4845,521 +1881,22 @@ async function listChangedYamlFilesForPrWithFallback(
   pr: PullRequestLike,
   baseBranch?: string
 ): Promise<string[]> {
-  const fromPullFiles = await listChangedYamlFilesForPr(context, repoInfo, pr.number);
-  if (fromPullFiles.length) return fromPullFiles;
-
-  const fallbackBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-  if (!fallbackBaseBranch) return [];
-
-  const fromTreeDiff = await listChangedYamlFilesForPrAgainstCurrentBase(context, repoInfo, pr, fallbackBaseBranch);
-
-  if (fromTreeDiff.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        baseBranch: fallbackBaseBranch,
-        changedRegistryFiles: fromTreeDiff,
-      },
-      'changed-registry-files:fallback-tree-diff'
-    );
-  }
-
-  return fromTreeDiff;
-}
-
-async function listChangedFilesForPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumber: number
-): Promise<PullRequestFileLike[]> {
-  return await listAllChangedFilesForPrCached(context, repoInfo, prNumber);
-}
-
-function isLikelyBotManagedRegistryPr(pr: PullRequestLike): boolean {
-  const title = toStringTrim(pr.title).toLowerCase();
-  const body = toStringTrim(pr.body).toLowerCase();
-  const author = normalizeLogin(pr.user?.login).toLowerCase();
-
-  return (
-    author.includes('bot') ||
-    author.includes('serviceuser') ||
-    title.includes('namespace') ||
-    body.includes('this pr registers')
-  );
-}
-
-async function maybeCloseNoopRegistryPullRequest(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<boolean> {
-  const files = await listChangedFilesForPr(context, repoInfo, pr.number);
-
-  if (files.length > 0) return false;
-  if (!isLikelyBotManagedRegistryPr(pr)) return false;
-
-  await postOnce(
-    context,
-    { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-    `This PR has no changed files and appears to be a duplicate/no-op registry PR. Closing it automatically.`,
-    { minimizeTag: 'nsreq:no-op-pr' }
-  );
-
-  try {
-    await context.octokit.pulls.update({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      pull_number: pr.number,
-      state: 'closed',
-    });
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        reason,
-      },
-      'direct-pr:no-op-closed'
-    );
-
-    return true;
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-        reason,
-      },
-      'direct-pr:no-op-close-failed'
-    );
-
-    return false;
-  }
+  return await listChangedYamlFilesForPrWithFallbackApplication(context, repoInfo, pr, baseBranch, {
+    listChangedYamlFilesForPr,
+    listChangedYamlFilesForPrAgainstCurrentBase,
+    log,
+  });
 }
 
 function isSafeRegistryWorkflowApprovalFile(context: BotContext<RequestEvents>, file: PullRequestFileLike): boolean {
   const filename = normalizeRepoPath(file?.filename);
   const status = toStringTrim(file?.status).toLowerCase();
 
-  if (!filename) return false;
-  if (status === 'removed') return false;
+  if (!filename || status === 'removed') return false;
   if (!isYamlPath(filename)) return false;
   if (!isRegistryEntryPath(context, filename)) return false;
 
   return true;
-}
-
-async function isSafeRegistryOnlyPullRequest(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<boolean> {
-  const files = await listChangedFilesForPr(context, repoInfo, pr.number);
-  if (!files.length) return false;
-
-  return files.every((file) => isSafeRegistryWorkflowApprovalFile(context, file));
-}
-
-function isWorkflowRunWaitingForApproval(run: WorkflowRunLike): boolean {
-  const status = toStringTrim(run?.status).toLowerCase();
-  const conclusion = toStringTrim(run?.conclusion).toLowerCase();
-
-  return status === 'waiting' || conclusion === 'action_required';
-}
-
-function workflowRunTargetsPullRequest(run: WorkflowRunLike, pr: PullRequestLike): boolean {
-  const headSha = toStringTrim(pr.head?.sha);
-  const runHeadSha = toStringTrim(run?.head_sha);
-
-  if (headSha && runHeadSha && headSha === runHeadSha) return true;
-
-  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
-  return prs.some((item) => item?.number === pr.number);
-}
-
-async function listWorkflowRunsForPullRequestHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<WorkflowRunLike[]> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return [];
-
-  try {
-    const client = context.octokit as unknown as {
-      request: (route: string, args: Record<string, unknown>) => Promise<{ data?: unknown }>;
-    };
-
-    const res = await client.request('GET /repos/{owner}/{repo}/actions/runs', {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      head_sha: headSha,
-      per_page: 100,
-    });
-
-    const data = isPlainObject(res?.data) ? res.data : {};
-    const runs = Array.isArray(data['workflow_runs']) ? data['workflow_runs'] : [];
-
-    return (runs as WorkflowRunLike[]).filter((run) => workflowRunTargetsPullRequest(run, pr));
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        prNumber: pr.number,
-        headSha,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'workflow-approval:runs-read-failed'
-    );
-
-    return [];
-  }
-}
-
-async function approveWorkflowRun(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  runId: number
-): Promise<boolean> {
-  try {
-    const client = context.octokit as unknown as {
-      request: (route: string, args: Record<string, unknown>) => Promise<unknown>;
-    };
-
-    await client.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve', {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      run_id: runId,
-    });
-
-    return true;
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        runId,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-      },
-      'workflow-approval:approve-run-failed'
-    );
-
-    return false;
-  }
-}
-
-type WorkflowApprovalTrustSignal = {
-  trusted: boolean;
-  reason: string;
-  decision?: ApprovalDecision;
-};
-
-async function resolveWorkflowApprovalTrustSignalForRegistryPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<WorkflowApprovalTrustSignal> {
-  // Keep this path focused on standalone direct PRs.
-  // Linked/snapshot-managed request PRs use the normal issue approval lifecycle.
-  if (parseLinkedIssueNumberFromPr(pr, repoInfo) !== null || isSnapshotManagedRequestPr(pr)) {
-    return {
-      trusted: false,
-      reason: 'not-standalone-direct-pr',
-    };
-  }
-
-  const baseBranch = toStringTrim(pr.base?.ref);
-
-  try {
-    const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, { baseBranch });
-
-    if (decision.status === 'approved') {
-      return {
-        trusted: true,
-        reason: 'onApproval-approved',
-        decision,
-      };
-    }
-
-    const hasCurrentHeadApproval = await hasAllowedStandaloneDirectPrApprovalForCurrentHead(
-      context,
-      repoInfo,
-      pr,
-      decision,
-      { baseBranch }
-    );
-
-    if (hasCurrentHeadApproval) {
-      return {
-        trusted: true,
-        reason: 'allowed-current-head-approval',
-        decision,
-      };
-    }
-
-    return {
-      trusted: false,
-      reason: `missing-trust-signal:${toStringTrim(decision.status) || 'none'}`,
-      decision,
-    };
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-        reason,
-      },
-      'workflow-approval:trust-check-failed'
-    );
-
-    return {
-      trusted: false,
-      reason: 'trust-check-failed',
-    };
-  }
-}
-
-async function maybeApprovePendingWorkflowRunsForRegistryPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<boolean> {
-  if (!isPullRequestOpen(pr)) return false;
-  if (pr.draft === true) return false;
-
-  const safeRegistryOnly = await isSafeRegistryOnlyPullRequest(context, repoInfo, pr);
-  if (!safeRegistryOnly) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        reason,
-      },
-      'workflow-approval:skip-not-safe-registry-only-pr'
-    );
-
-    return false;
-  }
-
-  const trustSignal = await resolveWorkflowApprovalTrustSignalForRegistryPr(context, repoInfo, pr, reason);
-
-  if (!trustSignal.trusted) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        trustReason: trustSignal.reason,
-        decisionStatus: toStringTrim(trustSignal.decision?.status) || 'none',
-        reason,
-      },
-      'workflow-approval:skip-missing-trust-signal'
-    );
-
-    return false;
-  }
-
-  const runs = await listWorkflowRunsForPullRequestHead(context, repoInfo, pr);
-  rememberWorkflowApprovalRuns(repoInfo, pr, runs);
-
-  const waitingRuns = runs.filter(isWorkflowRunWaitingForApproval);
-
-  if (!waitingRuns.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        runs: runs.map((run) => ({
-          id: run.id,
-          name: toStringTrim(run.name),
-          status: toStringTrim(run.status),
-          conclusion: toStringTrim(run.conclusion),
-        })),
-        reason,
-      },
-      'workflow-approval:no-waiting-runs'
-    );
-
-    return false;
-  }
-
-  let approvedAny = false;
-
-  for (const run of waitingRuns) {
-    const runId = typeof run.id === 'number' && Number.isFinite(run.id) ? run.id : 0;
-    if (!runId) continue;
-
-    const approved = await approveWorkflowRun(context, repoInfo, runId);
-    approvedAny = approvedAny || approved;
-
-    log(
-      context,
-      approved ? 'info' : 'warn',
-      {
-        prNumber: pr.number,
-        runId,
-        runName: toStringTrim(run.name),
-        headSha: toStringTrim(pr.head?.sha),
-        reason,
-      },
-      approved ? 'workflow-approval:run-approved' : 'workflow-approval:run-approval-failed'
-    );
-  }
-
-  return approvedAny;
-}
-
-function scheduleWorkflowApprovalRetry(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string,
-  attempt = 0
-): void {
-  const delay = WORKFLOW_APPROVAL_RETRY_DELAYS_MS[attempt];
-  if (delay === undefined) return;
-
-  const key = workflowApprovalRetryKey(repoInfo, pr, attempt);
-  if (WORKFLOW_APPROVAL_RETRY_INFLIGHT.has(key)) return;
-
-  const originalHeadSha = toStringTrim(pr.head?.sha);
-
-  const timer = setTimeout(() => {
-    WORKFLOW_APPROVAL_RETRY_INFLIGHT.delete(key);
-
-    void (async (): Promise<void> => {
-      const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-      const freshHeadSha = toStringTrim(freshPr.head?.sha);
-
-      if (!isPullRequestOpen(freshPr)) return;
-      if (originalHeadSha && freshHeadSha && originalHeadSha !== freshHeadSha) return;
-
-      const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(
-        context,
-        repoInfo,
-        freshPr,
-        `${reason}:retry-${attempt + 1}`
-      );
-
-      if (!approved) {
-        scheduleWorkflowApprovalRetry(context, repoInfo, freshPr, reason, attempt + 1);
-      }
-    })().catch((error: unknown) => {
-      log(
-        context,
-        'warn',
-        {
-          prNumber: pr.number,
-          err: getErrorMessage(error),
-          status: getHttpStatus(error),
-          reason,
-          attempt: attempt + 1,
-        },
-        'workflow-approval:retry-failed'
-      );
-    });
-  }, delay);
-
-  if (typeof timer.unref === 'function') {
-    timer.unref();
-  }
-
-  WORKFLOW_APPROVAL_RETRY_INFLIGHT.set(key, timer);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha: originalHeadSha,
-      delayMs: delay,
-      attempt: attempt + 1,
-      reason,
-    },
-    'workflow-approval:retry-scheduled'
-  );
-}
-
-async function maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<boolean> {
-  const approved = await maybeApprovePendingWorkflowRunsForRegistryPr(context, repoInfo, pr, reason);
-
-  if (approved) return true;
-
-  if (shouldRetryWorkflowApproval(repoInfo, pr)) {
-    scheduleWorkflowApprovalRetry(context, repoInfo, pr, reason);
-  } else {
-    const hasRunSnapshot = WORKFLOW_APPROVAL_LAST_RUNS.has(workflowApprovalHeadKey(repoInfo, pr));
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        reason,
-      },
-      hasRunSnapshot
-        ? 'workflow-approval:retry-skipped-run-already-visible'
-        : 'workflow-approval:retry-skipped-no-trust-signal'
-    );
-  }
-
-  return false;
-}
-
-async function maybeApprovePendingWorkflowRunsForPrNumbers(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  prNumbers: number[],
-  headSha: string,
-  reason: string
-): Promise<boolean> {
-  const sha = toStringTrim(headSha);
-  const uniquePrNumbers = Array.from(new Set((prNumbers || []).filter((n) => Number.isFinite(n))));
-
-  for (const prNumber of uniquePrNumbers) {
-    const pr = await readFreshPullRequest(context, repoInfo, prNumber);
-    if (!pr || !isPullRequestOpen(pr)) continue;
-
-    const prHeadSha = toStringTrim(pr.head?.sha);
-    if (sha && prHeadSha && prHeadSha !== sha) continue;
-
-    const approved = await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(context, repoInfo, pr, reason);
-
-    if (approved) return true;
-  }
-
-  return false;
 }
 
 async function isPullRequestBehindCurrentBase(
@@ -5368,78 +1905,13 @@ async function isPullRequestBehindCurrentBase(
   pr: PullRequestLike,
   baseBranch: string
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  const headRef = toStringTrim(pr.head?.ref);
-  const baseRef = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-
-  if (!headSha || !baseRef) return false;
-
-  const baseHeadSha = await readBranchHeadSha(context, repoInfo, baseRef);
-  if (!baseHeadSha || baseHeadSha === headSha) return false;
-
-  const headRepoInfo = resolvePullRequestHeadRepoInfo(pr, repoInfo);
-  const candidates: string[] = [`${headSha}...${baseHeadSha}`];
-
-  if (!sameRepoInfo(headRepoInfo, repoInfo) && headRef) {
-    candidates.push(`${headRepoInfo.owner}:${headRef}...${repoInfo.owner}:${baseRef}`);
-  }
-
-  for (const basehead of candidates) {
-    try {
-      const res = await (
-        context.octokit.repos as unknown as {
-          compareCommitsWithBasehead: (args: {
-            owner: string;
-            repo: string;
-            basehead: string;
-          }) => Promise<{ data?: { status?: string | null; ahead_by?: number | null } }>;
-        }
-      ).compareCommitsWithBasehead({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        basehead,
-      });
-
-      const status = toStringTrim(res?.data?.status).toLowerCase();
-      const aheadBy = typeof res?.data?.ahead_by === 'number' ? res.data.ahead_by : 0;
-
-      log(
-        context,
-        'info',
-        {
-          prNumber: pr.number,
-          basehead,
-          status,
-          aheadBy,
-          headSha,
-          baseHeadSha,
-          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-        },
-        'pull-request behind-current-base compare'
-      );
-
-      if (status === 'ahead' || status === 'diverged' || aheadBy > 0) return true;
-      if (status === 'identical') return false;
-    } catch (error: unknown) {
-      log(
-        context,
-        'warn',
-        {
-          prNumber: pr.number,
-          basehead,
-          headSha,
-          baseBranch: baseRef,
-          baseHeadSha,
-          err: getErrorMessage(error),
-          status: getHttpStatus(error),
-          crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-        },
-        'pull-request behind-current-base compare failed'
-      );
-    }
-  }
-
-  return isPullRequestBehindBase(pr);
+  return await isPullRequestBehindCurrentBaseApplication(
+    context,
+    repoInfo,
+    pr,
+    baseBranch,
+    buildBranchUpdateDecisionCallbacks()
+  );
 }
 
 async function shouldUpdatePullRequestBranch(
@@ -5452,62 +1924,15 @@ async function shouldUpdatePullRequestBranch(
   return await isPullRequestBehindCurrentBase(context, repoInfo, pr, baseBranch);
 }
 
-function sequentialRegistryPrRepoKey(repoInfo: RepoInfo): string {
-  return `${repoInfo.owner}/${repoInfo.repo}`.toLowerCase();
-}
-
-function sequentialRegistryPrHeadKey(repoInfo: RepoInfo, prNumber: number, headSha: string): string {
-  return `${sequentialRegistryPrRepoKey(repoInfo)}#${prNumber}:${toStringTrim(headSha)}`;
-}
-
-function pruneSequentialRegistryPrSkipState(): void {
-  const now = Date.now();
-
-  for (const [key, until] of SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.entries()) {
-    if (until <= now) SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.delete(key);
-  }
-}
-
-function isSequentialRegistryPrHeadSkipped(repoInfo: RepoInfo, pr: PullRequestLike): boolean {
-  pruneSequentialRegistryPrSkipState();
-
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  const key = sequentialRegistryPrHeadKey(repoInfo, pr.number, headSha);
-  return (SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.get(key) || 0) > Date.now();
-}
-
 function markSequentialRegistryPrHeadSkipped(
   context: BotContext<RequestEvents>,
   repoInfo: RepoInfo,
   pr: PullRequestLike,
   reason: string
 ): void {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return;
-
-  const key = sequentialRegistryPrHeadKey(repoInfo, pr.number, headSha);
-  SEQUENTIAL_REGISTRY_PR_SKIPPED_HEADS.set(key, Date.now() + SEQUENTIAL_REGISTRY_PR_SKIP_TTL_MS);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha,
-      reason,
-    },
-    'sequential-registry-pr:head-skipped'
-  );
-}
-
-function getSequentialRegistryPrActive(repoInfo: RepoInfo): SequentialRegistryPrActive | null {
-  return SEQUENTIAL_REGISTRY_PR_ACTIVE.get(sequentialRegistryPrRepoKey(repoInfo)) || null;
-}
-
-function clearSequentialRegistryPrActive(repoInfo: RepoInfo): void {
-  SEQUENTIAL_REGISTRY_PR_ACTIVE.delete(sequentialRegistryPrRepoKey(repoInfo));
+  markSequentialRegistryPrHeadSkippedState(context, repoInfo, pr, reason, {
+    log,
+  });
 }
 
 function markSequentialRegistryPrActive(
@@ -5516,31 +1941,9 @@ function markSequentialRegistryPrActive(
   pr: PullRequestLike,
   reason: string
 ): void {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return;
-
-  const startedAt = Date.now();
-  const active: SequentialRegistryPrActive = {
-    prNumber: pr.number,
-    startedHeadSha: headSha,
-    startedAt,
-    expiresAt: startedAt + SEQUENTIAL_REGISTRY_PR_ACTIVE_TTL_MS,
-    reason,
-  };
-
-  SEQUENTIAL_REGISTRY_PR_ACTIVE.set(sequentialRegistryPrRepoKey(repoInfo), active);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha,
-      expiresAt: active.expiresAt,
-      reason,
-    },
-    'sequential-registry-pr:active-set'
-  );
+  markSequentialRegistryPrActiveState(context, repoInfo, pr, reason, {
+    log,
+  });
 }
 
 async function isSequentialRegistryPrActiveBlocking(
@@ -5626,602 +2029,13 @@ async function isSequentialDirectRegistryPr(
   pr: PullRequestLike,
   baseBranch?: string
 ): Promise<boolean> {
-  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-  if (!targetBaseBranch) return false;
-  if (isSnapshotManagedRequestPr(pr)) return false;
-  if (!pullRequestTargetsBranch(pr, targetBaseBranch)) return false;
-
-  try {
-    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, targetBaseBranch);
-    return changedRegistryFiles.length > 0;
-  } catch (error) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        baseBranch: targetBaseBranch,
-        error: error instanceof Error ? error.message : String(error),
-      },
-      'sequential-registry-pr:changed-files-lookup-failed'
-    );
-
-    markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, 'changed-files-lookup-failed');
-
-    return false;
-  }
-}
-
-async function shouldDeferSequentialDirectRegistryPrProcessing(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<boolean> {
-  const active = getSequentialRegistryPrActive(repoInfo);
-  if (!active || active.prNumber === pr.number) return false;
-
-  if (!(await isSequentialRegistryPrActiveBlocking(context, repoInfo))) {
-    return false;
-  }
-
-  const currentActive = getSequentialRegistryPrActive(repoInfo);
-  if (!currentActive || currentActive.prNumber === pr.number) {
-    return false;
-  }
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      activePrNumber: currentActive.prNumber,
-      activeHeadSha: currentActive.startedHeadSha,
-    },
-    'sequential-registry-pr:auto-merge-deferred'
-  );
-
-  return true;
-}
-
-async function requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  const targetBaseBranch = toStringTrim(baseBranch) || toStringTrim(pr.base?.ref);
-
-  if (!(await isSequentialDirectRegistryPr(context, repoInfo, pr, targetBaseBranch))) {
-    return await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
-  }
-
-  const active = getSequentialRegistryPrActive(repoInfo);
-
-  if (active && active.prNumber === pr.number) {
-    const requested = await requestPullRequestBranchUpdate(context, repoInfo, pr, reason);
-
-    if (requested) {
-      markSequentialRegistryPrActive(context, repoInfo, pr, reason);
-    }
-
-    return requested;
-  }
-
-  const result = await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, targetBaseBranch, reason);
-  return result.updated;
-}
-
-async function advanceSequentialRegistryPrQueueAfterTerminalState(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  reason: string
-): Promise<void> {
-  const active = getSequentialRegistryPrActive(repoInfo);
-  if (!active || active.prNumber !== pr.number) return;
-
-  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
-
-  if (freshPr && isPullRequestOpen(freshPr)) {
-    return;
-  }
-
-  clearSequentialRegistryPrActive(repoInfo);
-
-  const baseBranch = toStringTrim(freshPr?.base?.ref) || toStringTrim(pr.base?.ref);
-  if (!baseBranch) return;
-
-  await runOneSequentialDirectRegistryPrMaintenance(context, repoInfo, baseBranch, reason);
-}
-
-async function collectSequentialDirectRegistryPrCandidates(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason: string
-): Promise<SequentialRegistryPrCandidate[]> {
-  const openPrs = await listOpenPullRequests(context, repoInfo);
-  const candidates: SequentialRegistryPrCandidate[] = [];
-
-  for (const pr of openPrs.sort((a, b) => b.number - a.number)) {
-    const headSha = toStringTrim(pr.head?.sha);
-    const linkedIssueNumber = parseLinkedIssueNumberFromPr(pr, repoInfo);
-    const snapshotManaged = isSnapshotManagedRequestPr(pr);
-
-    const baseLog = {
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      prNumber: pr.number,
-      title: toStringTrim(pr.title),
-      headSha,
-      headRef: toStringTrim(pr.head?.ref),
-      prBase: toStringTrim(pr.base?.ref),
-      baseBranch,
-      linkedIssueNumber,
-      snapshotManaged,
-      reason,
-    };
-
-    if (snapshotManaged) {
-      log(context, 'info', { ...baseLog, skipReason: 'snapshot-managed-request-pr' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    if (!headSha) {
-      log(context, 'info', { ...baseLog, skipReason: 'missing-head-sha' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    if (!pullRequestTargetsBranch(pr, baseBranch)) {
-      log(context, 'info', { ...baseLog, skipReason: 'different-base-branch' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    if (isSequentialRegistryPrHeadSkipped(repoInfo, pr)) {
-      log(context, 'info', { ...baseLog, skipReason: 'head-temporarily-skipped' }, 'direct-pr-reeval:skip');
-      continue;
-    }
-
-    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
-
-    if (!changedRegistryFiles.length) {
-      log(
-        context,
-        'info',
-        {
-          ...baseLog,
-          changedRegistryFiles,
-          skipReason: 'no-registry-yaml-files-changed',
-        },
-        'direct-pr-reeval:skip'
-      );
-      continue;
-    }
-
-    await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
-      context,
-      repoInfo,
-      pr,
-      `${reason}:approve-pending-workflow`
-    );
-
-    const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-    const freshHeadSha = toStringTrim(freshPr.head?.sha);
-
-    if (!isPullRequestOpen(freshPr)) {
-      log(
-        context,
-        'info',
-        {
-          ...baseLog,
-          freshHeadSha,
-          changedRegistryFiles,
-          skipReason: 'pr-not-open',
-        },
-        'direct-pr-reeval:skip'
-      );
-      continue;
-    }
-
-    if (isPullRequestDirty(freshPr)) {
-      log(
-        context,
-        'warn',
-        {
-          ...baseLog,
-          freshHeadSha,
-          changedRegistryFiles,
-          mergeableState: readMergeableState(freshPr),
-          skipReason: 'pr-has-merge-conflicts',
-        },
-        'direct-pr-reeval:skip'
-      );
-      continue;
-    }
-
-    const mustUpdate = await shouldUpdatePullRequestBranch(context, repoInfo, freshPr, baseBranch);
-    const approvedForUpdate = mustUpdate
-      ? await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr)
-      : false;
-
-    log(
-      context,
-      'info',
-      {
-        ...baseLog,
-        freshHeadSha,
-        changedRegistryFiles,
-        mergeable: freshPr.mergeable,
-        mergeableState: readMergeableState(freshPr),
-        mustUpdate,
-        approvedForUpdate,
-      },
-      'direct-pr-reeval:update-check'
-    );
-
-    candidates.push({
-      pr,
-      freshPr,
-      changedRegistryFiles,
-      mustUpdate,
-      approvedForUpdate,
-    });
-  }
-
-  return candidates;
-}
-
-async function isLikelyAutoApprovableStandaloneDirectPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  if (parseLinkedIssueNumberFromPr(pr, repoInfo) !== null) return false;
-
-  try {
-    const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, { baseBranch });
-
-    if (decision.status === 'approved') {
-      log(
-        context,
-        'info',
-        {
-          prNumber: pr.number,
-          headSha: toStringTrim(pr.head?.sha),
-          reason,
-        },
-        'sequential-registry-pr:auto-approvable-candidate'
-      );
-
-      return true;
-    }
-
-    return await hasAllowedStandaloneDirectPrApprovalForCurrentHead(context, repoInfo, pr, decision, {
-      baseBranch,
-    });
-  } catch (error: unknown) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        err: getErrorMessage(error),
-        status: getHttpStatus(error),
-        reason,
-      },
-      'sequential-registry-pr:auto-approval-priority-check-failed'
-    );
-
-    return false;
-  }
-}
-
-async function runOneSequentialDirectRegistryPrMaintenance(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  baseBranch: string,
-  reason: string
-): Promise<SequentialRegistryPrResult> {
-  const key = sequentialRegistryPrRepoKey(repoInfo);
-  const existing = SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.get(key);
-
-  if (existing) return await existing;
-
-  const pending = (async (): Promise<SequentialRegistryPrResult> => {
-    if (await isSequentialRegistryPrActiveBlocking(context, repoInfo)) {
-      return { updated: false, processed: false, blockedByActive: true };
-    }
-
-    const candidates = await collectSequentialDirectRegistryPrCandidates(context, repoInfo, baseBranch, reason);
-
-    for (const candidate of candidates.filter((item) => item.mustUpdate)) {
-      const requested = await requestPullRequestBranchUpdate(
-        context,
-        repoInfo,
-        candidate.freshPr,
-        candidate.approvedForUpdate
-          ? `${reason}:sequential-direct-pr-update-approved`
-          : `${reason}:sequential-direct-pr-refresh-stale`
-      );
-
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          prNumber: candidate.freshPr.number,
-          title: toStringTrim(candidate.freshPr.title),
-          headSha: toStringTrim(candidate.freshPr.head?.sha),
-          headRef: toStringTrim(candidate.freshPr.head?.ref),
-          baseBranch,
-          changedRegistryFiles: candidate.changedRegistryFiles,
-          requested,
-          reason,
-        },
-        'direct-pr-reeval:update-before-approval-result'
-      );
-
-      if (requested) {
-        markSequentialRegistryPrActive(context, repoInfo, candidate.freshPr, reason);
-        return { updated: true, processed: true, blockedByActive: false };
-      }
-
-      markSequentialRegistryPrHeadSkipped(context, repoInfo, candidate.freshPr, 'branch-update-request-failed');
-    }
-
-    const greenCandidates: {
-      candidate: SequentialRegistryPrCandidate;
-      autoApprovable: boolean;
-      headSha: string;
-    }[] = [];
-
-    for (const candidate of candidates.filter((item) => !item.mustUpdate)) {
-      const headSha = toStringTrim(candidate.freshPr.head?.sha);
-      const greenResult = headSha
-        ? await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha)
-        : {
-            green: false,
-            reason: 'missing-head-sha',
-            latestRuns: [],
-            blockingRuns: [],
-          };
-
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          prNumber: candidate.freshPr.number,
-          headSha,
-          baseBranch,
-          changedRegistryFiles: candidate.changedRegistryFiles,
-          green: greenResult.green,
-          greenReason: greenResult.reason,
-          blockingRuns: greenResult.blockingRuns,
-          latestRuns: greenResult.latestRuns.slice(0, 30),
-          reason,
-        },
-        'direct-pr-reeval:head-green'
-      );
-
-      if (!greenResult.green) {
-        continue;
-      }
-
-      const autoApprovable = await isLikelyAutoApprovableStandaloneDirectPr(
-        context,
-        repoInfo,
-        candidate.freshPr,
-        baseBranch,
-        reason
-      );
-
-      greenCandidates.push({
-        candidate,
-        autoApprovable,
-        headSha,
-      });
-    }
-
-    greenCandidates.sort((left, right) => {
-      if (left.autoApprovable !== right.autoApprovable) return left.autoApprovable ? -1 : 1;
-      return right.candidate.freshPr.number - left.candidate.freshPr.number;
-    });
-
-    const selected = greenCandidates[0];
-
-    if (selected) {
-      log(
-        context,
-        'info',
-        {
-          prNumber: selected.candidate.freshPr.number,
-          headSha: selected.headSha,
-          autoApprovable: selected.autoApprovable,
-          reason,
-        },
-        'sequential-registry-pr:selected-green-candidate'
-      );
-
-      await processPullRequestForAutoMerge(context, repoInfo, selected.candidate.freshPr);
-      return { updated: false, processed: true, blockedByActive: false };
-    }
-
-    return { updated: false, processed: false, blockedByActive: false };
-  })().finally(() => {
-    SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.delete(key);
+  return await isSequentialDirectRegistryPrApplication(context, repoInfo, pr, baseBranch, {
+    isSnapshotManagedRequestPr,
+    pullRequestTargetsBranch,
+    listChangedYamlFilesForPrWithFallback,
+    log,
+    getErrorMessage,
   });
-
-  SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.set(key, pending);
-  return await pending;
-}
-
-async function markFailedRegistryPrHeadsForSha(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  headSha: string,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  const sha = toStringTrim(headSha);
-  if (!sha) return false;
-
-  const openPrs = await listOpenPullRequests(context, repoInfo);
-  const matching = openPrs.filter((pr) => toStringTrim(pr.head?.sha) === sha);
-
-  let marked = false;
-
-  for (const pr of matching) {
-    if (!pullRequestTargetsBranch(pr, baseBranch)) continue;
-
-    const changedRegistryFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, baseBranch);
-    if (!changedRegistryFiles.length) continue;
-
-    markSequentialRegistryPrHeadSkipped(context, repoInfo, pr, reason);
-
-    const active = getSequentialRegistryPrActive(repoInfo);
-    if (active?.prNumber === pr.number) {
-      clearSequentialRegistryPrActive(repoInfo);
-    }
-
-    marked = true;
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: sha,
-        changedRegistryFiles,
-        reason,
-      },
-      'sequential-registry-pr:failed-head-marked'
-    );
-  }
-
-  return marked;
-}
-
-async function resolveSequentialRegistryQueueBaseBranchForHead(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  headSha: string,
-  fallbackBaseBranch: string
-): Promise<string> {
-  const fallback = toStringTrim(fallbackBaseBranch);
-  if (fallback) return fallback;
-
-  const sha = toStringTrim(headSha);
-  if (!sha) return '';
-
-  try {
-    const openPrs = await listOpenPullRequests(context, repoInfo);
-    const matchingPr = openPrs.find((pr) => toStringTrim(pr.head?.sha) === sha);
-    const baseBranch = toStringTrim(matchingPr?.base?.ref);
-
-    if (baseBranch) return baseBranch;
-  } catch {
-    return '';
-  }
-
-  return '';
-}
-
-async function handleBlockingRegistryHeadConclusion(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  headSha: string,
-  baseBranch: string,
-  reason: string
-): Promise<boolean> {
-  const sha = toStringTrim(headSha);
-  if (!sha) return false;
-
-  const marked = await markFailedRegistryPrHeadsForSha(context, repoInfo, sha, baseBranch, reason);
-  if (!marked) {
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: sha,
-        baseBranch: toStringTrim(baseBranch),
-        reason,
-      },
-      'sequential-registry-pr:blocking-head-not-marked'
-    );
-
-    return false;
-  }
-
-  const advanceBaseBranch = await resolveSequentialRegistryQueueBaseBranchForHead(context, repoInfo, sha, baseBranch);
-
-  if (!advanceBaseBranch) {
-    log(
-      context,
-      'warn',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: sha,
-        reason,
-      },
-      'sequential-registry-pr:advance-skipped-missing-base-branch'
-    );
-
-    return true;
-  }
-
-  await runOneSequentialDirectRegistryPrMaintenance(
-    context,
-    repoInfo,
-    advanceBaseBranch,
-    `${reason}:advance-next-registry-pr`
-  );
-
-  return true;
-}
-
-async function releaseSequentialRegistryPrIfNotApprovedAfterGreen(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike
-): Promise<void> {
-  const active = getSequentialRegistryPrActive(repoInfo);
-  if (!active || active.prNumber !== pr.number) return;
-
-  const freshPr = await readFreshPullRequest(context, repoInfo, pr.number);
-  if (!freshPr || !isPullRequestOpen(freshPr)) {
-    clearSequentialRegistryPrActive(repoInfo);
-    return;
-  }
-
-  const headSha = toStringTrim(freshPr.head?.sha);
-  if (!headSha) return;
-
-  const approvedForMaintenance = await isPullRequestApprovedForBranchMaintenance(context, repoInfo, freshPr);
-  if (approvedForMaintenance) {
-    return;
-  }
-
-  const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, headSha);
-  if (!greenResult.green) return;
-
-  markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'green-head-did-not-qualify-for-approval');
-  clearSequentialRegistryPrActive(repoInfo);
-
-  await runOneSequentialDirectRegistryPrMaintenance(
-    context,
-    repoInfo,
-    toStringTrim(freshPr.base?.ref),
-    'sequential-direct-pr:advance-after-not-approved'
-  );
 }
 
 async function readRepoFileTextAtRef(
@@ -6230,30 +2044,10 @@ async function readRepoFileTextAtRef(
   path: string,
   ref: string
 ): Promise<string | null> {
-  const p = normalizeRepoPath(path);
-  const branchRef = toStringTrim(ref);
-  if (!p || !branchRef) return null;
-
-  try {
-    const res = await (
-      context.octokit.repos as unknown as {
-        getContent: (args: { owner: string; repo: string; path: string; ref?: string }) => Promise<{ data?: unknown }>;
-      }
-    ).getContent({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      path: p,
-      ref: branchRef,
-    });
-
-    const data = (res as { data?: unknown }).data;
-    if (Array.isArray(data) || !isRepoContentFile(data)) return null;
-
-    const enc = typeof data.encoding === 'string' ? data.encoding : 'base64';
-    return Buffer.from(String(data.content || ''), enc as BufferEncoding).toString('utf8');
-  } catch {
-    return null;
-  }
+  return await readRepoFileTextAtRefApplication(context, repoInfo, path, ref, {
+    normalizeRepoPath,
+    isRepoContentFile,
+  });
 }
 
 async function readRegistryDocForApproval(
@@ -6262,71 +2056,42 @@ async function readRegistryDocForApproval(
   pr: PullRequestLike,
   filePath: string
 ): Promise<Record<string, unknown> | null> {
-  const raw = await readPullRequestHeadFileText(context, repoInfo, pr, filePath);
-  if (!raw) return null;
-
-  try {
-    const parsed = YAML.parse(raw) as unknown;
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  return await readRegistryDocForApprovalApplication(context, repoInfo, pr, filePath, {
+    readPullRequestHeadFileText,
+    isPlainObject,
+  });
 }
 
-async function evaluateChangedResourceApproval(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  filePath: string,
-  requestAuthorId?: string
-): Promise<ApprovalDecision> {
-  const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
-  if (!parsed) {
-    log(
-      context,
-      'warn',
-      {
-        prNumber: pr.number,
-        filePath,
-        baseOwner: repoInfo.owner,
-        baseRepo: repoInfo.repo,
-        headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
-        headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
-        headRef: toStringTrim(pr.head?.ref),
-        headSha: toStringTrim(pr.head?.sha),
-        crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      },
-      'direct-pr:on-approval:registry-doc-read-failed'
-    );
-
-    return { status: 'unknown' };
-  }
-
-  const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
-  if (!requestType) return { status: 'unknown' };
-
-  const resourceName = resolveRegistryDocResourceName(parsed);
-  if (!resourceName) return { status: 'unknown' };
-
-  const decision = normalizeApprovalDecision(
-    await runApprovalHook(context, repoInfo, {
-      requestType,
-      namespace: resourceName,
-      resourceName,
-      formData: buildFormDataFromRegistryDoc(parsed),
-      requestAuthorId,
-      issue: {
-        number: pr.number,
-        title: pr.title,
-        body: pr.body,
-        state: pr.state,
-        user: pr.user,
-        labels: [],
-      },
-    })
-  );
-
-  return promoteUnknownApprovalDecisionForDirectPrRequester(decision, requestAuthorId);
+function buildDirectPrChangedResourceApprovalCallbacks(): DirectPrChangedResourceApprovalCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    readRegistryDocForApproval,
+    pickRequestTypeForChangedResource,
+    runApprovalHook,
+    logRegistryDocReadFailed: (
+      context: BotContext<RequestEvents>,
+      args: { repoInfo: RepoInfo; pr: PullRequestLike; filePath: string }
+    ): void => {
+      log(
+        context,
+        'warn',
+        {
+          prNumber: args.pr.number,
+          filePath: args.filePath,
+          baseOwner: args.repoInfo.owner,
+          baseRepo: args.repoInfo.repo,
+          headOwner: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).owner,
+          headRepo: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).repo,
+          headRef: toStringTrim(args.pr.head?.ref),
+          headSha: toStringTrim(args.pr.head?.sha),
+          crossRepo: isCrossRepositoryPullRequest(args.pr, args.repoInfo),
+        },
+        'direct-pr:on-approval:registry-doc-read-failed'
+      );
+    },
+  };
 }
 
 async function evaluateDirectPrOnApproval(
@@ -6336,105 +2101,77 @@ async function evaluateDirectPrOnApproval(
   requestAuthorIdOverride?: string,
   options: DirectPrApprovalOptions = {}
 ): Promise<ApprovalDecision> {
-  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
-
-  const fallbackRequestAuthorId = requestAuthorIdOverride
-    ? ''
-    : await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
-
-  const requestAuthorId = toStringTrim(requestAuthorIdOverride) || fallbackRequestAuthorId;
-
-  log(
+  return await evaluateDirectPrOnApprovalApplication(
     context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha: toStringTrim(pr.head?.sha),
-      headRef: toStringTrim(pr.head?.ref),
-      requestAuthorId,
-      changedFiles,
-      linkedIssueNumber: parseLinkedIssueNumberFromPr(pr, repoInfo),
-      crossRepo: isCrossRepositoryPullRequest(pr, repoInfo),
-      headOwner: resolvePullRequestHeadRepoInfo(pr, repoInfo).owner,
-      headRepo: resolvePullRequestHeadRepoInfo(pr, repoInfo).repo,
-      hooksSource: context.resourceBotHooksSource,
-    },
-    'direct-pr:on-approval:start'
+    repoInfo,
+    pr,
+    requestAuthorIdOverride,
+    options,
+    buildDirectPrApprovalEvaluationCallbacks()
   );
+}
 
-  if (!changedFiles.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        headRef: toStringTrim(pr.head?.ref),
-      },
-      'direct-pr:on-approval:skip-no-registry-files'
-    );
-
-    return {};
-  }
-
-  let sawApproved = false;
-  let sawNonApproved = false;
-  let approvedComment = '';
-  let firstUnknownDecision: ApprovalDecision | null = null;
-
-  for (const filePath of changedFiles) {
-    const decision = await evaluateChangedResourceApproval(context, repoInfo, pr, filePath, requestAuthorId);
-
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        filePath,
-        requestAuthorId,
-        status: toStringTrim(decision.status) || 'none',
-        reason: toStringTrim(decision.reason),
-        message: toStringTrim(decision.message),
-        path: toStringTrim(decision.path),
-      },
-      'direct-pr:on-approval:file-decision'
-    );
-
-    if (decision.status === 'rejected') {
-      return decision;
-    }
-
-    if (decision.status === 'approved') {
-      sawApproved = true;
-      if (!approvedComment) approvedComment = toStringTrim(decision.comment);
-      continue;
-    }
-
-    sawNonApproved = true;
-    if (decision.status === 'unknown' && !firstUnknownDecision) {
-      firstUnknownDecision = decision;
-    }
-  }
-
-  if (sawApproved && !sawNonApproved) {
-    return {
-      status: 'approved',
-      ...(approvedComment ? { comment: approvedComment } : {}),
-    };
-  }
-
-  if (firstUnknownDecision) {
-    return firstUnknownDecision;
-  }
-
-  if (sawNonApproved) {
-    return {
-      status: 'unknown',
-      reason: 'Manual review required because onApproval did not approve all changed registry files.',
-    };
-  }
-
-  return {};
+function buildDirectPrApprovalEvaluationCallbacks(): DirectPrApprovalEvaluationCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    listChangedYamlFilesForPrWithFallback,
+    changedResourceApprovalCallbacks: buildDirectPrChangedResourceApprovalCallbacks(),
+    logStart: (
+      context: BotContext<RequestEvents>,
+      args: { repoInfo: RepoInfo; pr: PullRequestLike; requestAuthorId: string; changedFiles: string[] }
+    ): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber: args.pr.number,
+          headSha: toStringTrim(args.pr.head?.sha),
+          headRef: toStringTrim(args.pr.head?.ref),
+          requestAuthorId: args.requestAuthorId,
+          changedFiles: args.changedFiles,
+          linkedIssueNumber: parseLinkedIssueNumberFromPr(args.pr, args.repoInfo),
+          crossRepo: isCrossRepositoryPullRequest(args.pr, args.repoInfo),
+          headOwner: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).owner,
+          headRepo: resolvePullRequestHeadRepoInfo(args.pr, args.repoInfo).repo,
+          hooksSource: context.resourceBotHooksSource,
+        },
+        'direct-pr:on-approval:start'
+      );
+    },
+    logSkipNoRegistryFiles: (context: BotContext<RequestEvents>, args: { pr: PullRequestLike }): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber: args.pr.number,
+          headSha: toStringTrim(args.pr.head?.sha),
+          headRef: toStringTrim(args.pr.head?.ref),
+        },
+        'direct-pr:on-approval:skip-no-registry-files'
+      );
+    },
+    logFileDecision: (
+      context: BotContext<RequestEvents>,
+      args: { pr: PullRequestLike; filePath: string; requestAuthorId: string; decision: ApprovalDecision }
+    ): void => {
+      log(
+        context,
+        'info',
+        {
+          prNumber: args.pr.number,
+          filePath: args.filePath,
+          requestAuthorId: args.requestAuthorId,
+          status: toStringTrim(args.decision.status) || 'none',
+          reason: toStringTrim(args.decision.reason),
+          message: toStringTrim(args.decision.message),
+          path: toStringTrim(args.decision.path),
+        },
+        'direct-pr:on-approval:file-decision'
+      );
+    },
+  };
 }
 
 async function resolveDirectPrRequestTypes(
@@ -6443,34 +2180,24 @@ async function resolveDirectPrRequestTypes(
   pr: PullRequestLike,
   options: DirectPrApprovalOptions = {}
 ): Promise<string[]> {
-  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
-  const requestTypes: string[] = [];
-
-  for (const filePath of changedFiles) {
-    const parsed = await readRegistryDocForApproval(context, repoInfo, pr, filePath);
-    if (!parsed) continue;
-
-    const requestType = pickRequestTypeForChangedResource(context, filePath, parsed);
-    if (!requestType) continue;
-
-    requestTypes.push(requestType);
-  }
-
-  return Array.from(new Set(requestTypes));
+  return await resolveDirectPrRequestTypesApplication(
+    context,
+    repoInfo,
+    pr,
+    options,
+    buildDirectPrRequestTypeResolutionCallbacks()
+  );
 }
 
-function isApprovalReviewForCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
-  const normalizedHeadSha = toStringTrim(headSha);
-  if (!normalizedHeadSha) return false;
-
-  const state = toStringTrim(review?.state).toUpperCase();
-  if (state !== 'APPROVED') return false;
-
-  const commitId = toStringTrim(review?.commit_id);
-  if (commitId && commitId === normalizedHeadSha) return true;
-
-  const marker = buildAutoApprovalReviewMarker(normalizedHeadSha);
-  return Boolean(marker && toStringTrim(review?.body).includes(marker));
+function buildDirectPrRequestTypeResolutionCallbacks(): DirectPrRequestTypeResolutionCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    listChangedYamlFilesForPrWithFallback,
+    readRegistryDocForApproval,
+    pickRequestTypeForChangedResource,
+  };
 }
 
 async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
@@ -6480,81 +2207,14 @@ async function hasAllowedStandaloneDirectPrApprovalForCurrentHead(
   decision: ApprovalDecision,
   options: DirectPrApprovalOptions = {}
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  let reviews: PullRequestReviewLike[] = [];
-
-  try {
-    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
-  } catch {
-    return false;
-  }
-
-  const latestStates = getLatestActionableReviewStates(reviews);
-  if (new Set(latestStates.values()).has('CHANGES_REQUESTED')) {
-    return false;
-  }
-
-  // Bot-created approval review with the current-head marker is trusted,
-  // because the bot already performed authorization when creating it.
-  if (
-    reviews.some(
-      (review) =>
-        isApprovalReviewForCurrentHead(review, headSha) &&
-        toStringTrim(review.body).includes(buildAutoApprovalReviewMarker(headSha))
-    )
-  ) {
-    return true;
-  }
-
-  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
-  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
-  const hookApprovers = uniqLogins((decision.approvers || []).map((value) => toStringTrim(value)).filter(Boolean));
-
-  const allowedApprovers = new Set(
-    uniqLogins([...(configuredApprovers || []), ...hookApprovers]).map((login) => normalizeLogin(login).toLowerCase())
+  return await hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication(
+    context,
+    repoInfo,
+    pr,
+    decision,
+    options,
+    buildDirectPrReviewApprovalCallbacks()
   );
-
-  if (!allowedApprovers.size) return false;
-
-  return reviews.some((review) => {
-    if (!isApprovalReviewForCurrentHead(review, headSha)) return false;
-
-    const reviewer = normalizeLogin(review?.user?.login).toLowerCase();
-    return Boolean(reviewer && allowedApprovers.has(reviewer));
-  });
-}
-
-function reviewTargetsCurrentHead(review: PullRequestReviewLike, headSha: string): boolean {
-  const normalizedHeadSha = toStringTrim(headSha);
-  if (!normalizedHeadSha) return false;
-
-  const reviewCommitId = toStringTrim(review?.commit_id);
-  if (reviewCommitId && reviewCommitId === normalizedHeadSha) return true;
-
-  const body = toStringTrim(review?.body);
-  if (!body) return false;
-
-  return body.includes(buildAutoApprovalReviewMarker(normalizedHeadSha));
-}
-
-function extractApprovedByLoginFromReviewBody(body: unknown): string {
-  const raw = toStringTrim(body);
-  if (!raw) return '';
-
-  const match = /\bApproved by\s+@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\b/i.exec(raw);
-  return normalizeLogin(match?.[1]);
-}
-
-function resolveEffectiveReviewApproverLogin(review: PullRequestReviewLike): string {
-  // Manual fallback approvals created by the bot have:
-  // "Approved by @realApprover"
-  // in the review body, while the GitHub review author is the bot.
-  const approvedByFromBody = extractApprovedByLoginFromReviewBody(review?.body);
-  if (approvedByFromBody) return approvedByFromBody;
-
-  return normalizeLogin(review?.user?.login);
 }
 
 async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
@@ -6564,632 +2224,218 @@ async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
   decision: ApprovalDecision,
   options: DirectPrApprovalOptions = {}
 ): Promise<boolean> {
-  const headSha = toStringTrim(pr.head?.sha);
-  if (!headSha) return false;
-
-  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
-
-  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
-  const hookManualApprovers = uniqLogins((decision.approvers || []).map(toStringTrim).filter(Boolean));
-  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...hookManualApprovers]);
-
-  let requesterLogin = normalizeLogin(pr.user?.login);
-
-  try {
-    requesterLogin = (await resolvePullRequestRequestAuthorId(context, repoInfo, pr)) || requesterLogin;
-  } catch {
-    // keep PR author fallback
-  }
-
-  let reviews: PullRequestReviewLike[] = [];
-  try {
-    reviews = await listPullRequestReviews(context, repoInfo, pr.number);
-  } catch {
-    reviews = [];
-  }
-
-  const currentHeadReviews = reviews
-    .filter((review) => reviewTargetsCurrentHead(review, headSha))
-    .filter((review) => ACTIONABLE_REVIEW_STATES.has(toStringTrim(review?.state).toUpperCase()));
-
-  if (!currentHeadReviews.length) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-        requestTypes,
-        allowedApprovers,
-      },
-      'direct-pr:current-head-manual-approval:not-found'
-    );
-
-    return false;
-  }
-
-  const latestByEffectiveApprover = new Map<string, PullRequestReviewLike>();
-
-  for (const review of sortPullRequestReviewsChronologically(currentHeadReviews)) {
-    const approver = resolveEffectiveReviewApproverLogin(review).toLowerCase();
-    if (!approver) continue;
-
-    latestByEffectiveApprover.set(approver, review);
-  }
-
-  const latestCurrentHeadReviews = Array.from(latestByEffectiveApprover.values());
-
-  const hasBlockingChangesRequested = latestCurrentHeadReviews.some(
-    (review) => toStringTrim(review?.state).toUpperCase() === 'CHANGES_REQUESTED'
-  );
-
-  if (hasBlockingChangesRequested) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-        requestTypes,
-      },
-      'direct-pr:current-head-manual-approval:blocking-changes-requested'
-    );
-
-    return false;
-  }
-
-  const approvingReview = latestCurrentHeadReviews.find((review) => {
-    const state = toStringTrim(review?.state).toUpperCase();
-    if (state !== 'APPROVED') return false;
-
-    const approver = resolveEffectiveReviewApproverLogin(review);
-    return isAuthorizedApprover(approver, requesterLogin || pr.user?.login, allowedApprovers);
-  });
-
-  if (!approvingReview) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha,
-        requestTypes,
-        requesterLogin,
-        allowedApprovers,
-        currentHeadReviewApprovers: latestCurrentHeadReviews.map((review) => ({
-          state: toStringTrim(review?.state).toUpperCase(),
-          user: normalizeLogin(review?.user?.login),
-          approvedBy: extractApprovedByLoginFromReviewBody(review?.body),
-          commitId: toStringTrim(review?.commit_id),
-        })),
-      },
-      'direct-pr:current-head-manual-approval:no-authorized-approval'
-    );
-
-    return false;
-  }
-
-  const approver = resolveEffectiveReviewApproverLogin(approvingReview);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      headSha,
-      requestTypes,
-      requesterLogin,
-      approver,
-      allowedApprovers,
-    },
-    'direct-pr:current-head-manual-approval:accepted'
-  );
-
-  return true;
-}
-
-async function handoverStandaloneDirectPrToReview(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  decision: ApprovalDecision,
-  options: DirectPrApprovalOptions = {}
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
-  const prIssue = prAsIssueLike(pr);
-
-  await setStateLabel(context, params, prIssue, 'review');
-
-  const changedFiles = await listChangedYamlFilesForPrWithFallback(context, repoInfo, pr, options.baseBranch);
-  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, options);
-
-  const manualApproversOverride = getUnknownManualApprovers(decision);
-
-  const assignees = manualApproversOverride.length
-    ? manualApproversOverride
-    : resolveReviewAssigneesForRequestTypes(context, prIssue, requestTypes);
-
-  if (assignees.length) {
-    await ensureAssigneesOnce(context, params, prIssue, assignees);
-    await ensureAssigneesPresent(context, params, assignees);
-  }
-
-  const labelsToAdd = [...(eff.globalLabels || []), ...(eff.reviewRequestedLabels || [])].filter(Boolean);
-  await ensureLabelsPresentOnce(context, params, labelsToAdd);
-
-  await enforceExclusiveWorkflowStateLabels(
-    context,
-    params,
-    [resolveApproverActionLabel(context), ...(eff.reviewRequestedLabels || [])].filter(Boolean)
-  );
-
-  if (eff.labelOnApproved) {
-    try {
-      await context.octokit.issues.removeLabel({
-        ...params,
-        name: eff.labelOnApproved,
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  const snapshotHash = calcStandaloneDirectPrSnapshotHash(pr, changedFiles);
-
-  await postOnce(context, params, buildReviewHandoverBody(context, snapshotHash, { target: 'pull_request' }), {
-    minimizeTag: 'nsreq:handover',
-  });
-
-  await postApprovalUnknownOnce(context, params, decision);
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      requestTypes,
-      changedFiles,
-      assignees,
-      snapshotHash,
-      decisionStatus: toStringTrim(decision.status) || 'none',
-    },
-    'direct-pr:handover-to-review'
-  );
-}
-
-async function handleDirectPrApprovalComment(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  commenter: string
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const params: IssueParams = { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number };
-  const prIssue = prAsIssueLike(pr);
-
-  const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, prIssue, eff);
-  if (!reviewOk) {
-    await postOnce(
-      context,
-      params,
-      'Approval ignored: direct PR is not in review state. Please wait until validation has routed it to review.',
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-    return;
-  }
-
-  const requestTypes = await resolveDirectPrRequestTypes(context, repoInfo, pr, {
-    baseBranch: toStringTrim(pr.base?.ref),
-  });
-
-  const configuredApprovers = resolveAllowedApproversForRequestTypes(context, requestTypes);
-
-  const approvalDecision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, {
-    baseBranch: toStringTrim(pr.base?.ref),
-  });
-
-  if (approvalDecision.status === 'rejected') {
-    await postOnce(context, params, buildApprovalRejectedBody(approvalDecision), {
-      minimizeTag: 'nsreq:on-approval:rejected',
-    });
-    return;
-  }
-
-  const allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(approvalDecision.approvers || [])]);
-
-  const okApprover = isAuthorizedApprover(commenter, pr.user?.login, allowedApprovers);
-
-  if (!okApprover) {
-    await postOnce(
-      context,
-      params,
-      `Approval ignored: commenter ${commenter} is not an allowed approver for this direct PR.`,
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-    return;
-  }
-
-  const approved = await ensureAutomatedApprovalReviewForCurrentHead(
+  return await hasAllowedCurrentHeadManualApprovalForStandaloneDirectPrApplication(
     context,
     repoInfo,
     pr,
-    {
-      status: 'approved',
-      comment: `Approved by @${commenter}`,
-    },
-    {
-      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
-    }
+    decision,
+    options,
+    buildDirectPrReviewApprovalCallbacks()
   );
-
-  if (!approved) return;
-
-  await tryMergeApprovedPrOrUpdateBranch(context, repoInfo, pr, 'direct-pr-manual-approval');
 }
 
-async function maybeHandleStandaloneDirectPrApproval(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  pr: PullRequestLike,
-  options: DirectPrApprovalOptions = {}
-): Promise<ApprovalHandlingResult> {
-  const decision = await evaluateDirectPrOnApproval(context, repoInfo, pr, undefined, options);
-
-  if (
-    decision.status !== 'approved' &&
-    decision.status !== 'rejected' &&
-    (await hasAllowedStandaloneDirectPrApprovalForCurrentHead(context, repoInfo, pr, decision, options))
-  ) {
-    log(
-      context,
-      'info',
-      {
-        prNumber: pr.number,
-        headSha: toStringTrim(pr.head?.sha),
-        decisionStatus: toStringTrim(decision.status) || 'none',
-      },
-      'direct-pr:standalone-current-head-approval-present'
-    );
-
-    return 'approved';
-  }
-
-  if (decision.status === 'approved') {
-    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision, {
-      skipApprovedLabelStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
-    });
-
-    if (!approved) return 'continue';
-
-    return 'approved';
-  }
-
-  if (decision.status === 'rejected') {
-    await postOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalRejectedBody(decision),
-      { minimizeTag: 'nsreq:on-approval:rejected' }
-    );
-
-    try {
-      await context.octokit.pulls.update({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        state: 'closed',
-      });
-    } catch {
-      // ignore
-    }
-
-    return 'rejected';
-  }
-
-  if (decision.status === 'unknown') {
-    const hasCurrentHeadManualApproval = await hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr(
-      context,
-      repoInfo,
-      pr,
-      decision,
-      options
-    );
-
-    if (hasCurrentHeadManualApproval) {
-      await addApprovedLabelToPr(context, repoInfo, pr.number, {
-        skipStateCleanup: isCrossRepositoryPullRequest(pr, repoInfo),
-      });
-
-      return 'approved';
-    }
-
-    await handoverStandaloneDirectPrToReview(context, repoInfo, pr, decision, options);
-    return 'continue';
-  }
-
-  return 'continue';
+function buildDirectPrReviewApprovalCallbacks(): DirectPrReviewApprovalCallbacks<
+  BotContext<RequestEvents>,
+  PullRequestLike
+> {
+  return {
+    directPrRequestTypeResolutionCallbacks: buildDirectPrRequestTypeResolutionCallbacks(),
+    directPrApproverResolutionCallbacks: buildDirectPrApproverResolutionCallbacks(),
+    pullRequestAuthorResolutionCallbacks: buildPullRequestAuthorResolutionCallbacks(),
+    log: (
+      context: BotContext<RequestEvents>,
+      level: 'info',
+      metadata: Record<string, unknown>,
+      message: string
+    ): void => {
+      log(context, level, metadata, message);
+    },
+  };
 }
 
-async function closeLinkedIssuePrs(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  issueNumber: number
-): Promise<number[]> {
-  let prs: PullRequestLike[] = [];
+const approvalRuntime = createApprovalRuntime<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  PullRequestLike,
+  EffectiveConstants,
+  ValidateRequestIssueResult,
+  ContactApprovalMeta,
+  ParentApprovalMeta
+>({
+  runApprovalHook,
+  extractResourceNameFromForm,
+  listOpenPullRequests,
+  parseLinkedIssueNumberFromPr,
+  rejectRequestFromApprovalHook,
+  resolveEffectiveConstants,
+  resolveApproverRoutingForRequestType,
+  pickAutoAssigneeFromPool,
+  uniqLogins,
+  toStringTrim,
+  ensureAssigneesPresent,
+  ensureLabelsPresentOnce,
+  buildReviewHandoverBody,
+  resolveEffectiveRequestType,
+  buildApprovedRequestFinalizationCallbacks,
+  buildApprovalCommentHandlingCallbacks,
+  buildOwnerApprovalCommentHandlingCallbacks,
+  buildOwnerApprovalRequirementsCallbacks,
+  buildIssueStateReviewerOperationsCallbacks,
+});
 
-  try {
-    prs = (await findOpenIssuePRsRaw(context, repoInfo, issueNumber)) as unknown as PullRequestLike[];
-  } catch {
-    prs = [];
-  }
+const buildApprovalDecisionDispatchOptions = approvalRuntime.buildApprovalDecisionDispatchOptions;
+const buildReviewHandoverOptions = approvalRuntime.buildReviewHandoverOptions;
+const maybeHandleApprovalDecision = approvalRuntime.maybeHandleApprovalDecision;
+const finalizeApprovedRequest = approvalRuntime.finalizeApprovedRequest;
+const maybeRequireParentOwnerApproval = approvalRuntime.maybeRequireParentOwnerApproval;
+const maybeRequireSystemContactOwnerApproval = approvalRuntime.maybeRequireSystemContactOwnerApproval;
+const handleApprovalComment = approvalRuntime.handleApprovalComment;
+const handleParentOwnerApprovalIfNeeded = approvalRuntime.handleParentOwnerApprovalIfNeeded;
+const handleSystemContactOwnerApprovalIfNeeded = approvalRuntime.handleSystemContactOwnerApprovalIfNeeded;
+const resolveManualReviewApproverOverrideFromApprovalHook =
+  approvalRuntime.resolveManualReviewApproverOverrideFromApprovalHook;
+const resolveAdditionalIssueApproversFromApprovalHook = approvalRuntime.resolveAdditionalIssueApproversFromApprovalHook;
 
-  if (prs.length === 0) {
-    prs = (await listOpenPullRequests(context, repoInfo)).filter(
-      (pr) => parseLinkedIssueNumberFromPr(pr, repoInfo) === issueNumber
-    );
-  }
-  const closed: number[] = [];
+const requestLifecycleRuntime = createRequestLifecycleRuntime<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  PullRequestLike,
+  EffectiveConstants,
+  ValidateRequestIssueResult
+>({
+  log,
+  isDebugEnabled: DBG,
+  hasIssueFormInputs,
+  loadTemplateWithLabelRefresh,
+  buildTemplateLoadErrorMessage,
+  postOnce,
+  setStateLabel,
+  parseForm,
+  isRequestIssue,
+  toLabelNames,
+  detectSingleRoutingLabel,
+  ensureRoutingLockMarker,
+  enforceRoutingLabelLock,
+  removeRejectedStatusLabel,
+  buildCompatibleRequestSnapshotHashes,
+  calcSnapshotHash,
+  validateRequestIssue,
+  checkParentChainExistsInFlatStructure,
+  resolveEffectiveRequestType,
+  getApprovedParentOwnerLogin,
+  isSubContextRequestType,
+  extractResourceNameFromForm,
+  head,
+  renderConfiguredRequestBranchName,
+  createRequestPr,
+  extractHashFromPrBody,
+  findOpenIssuePrs,
+  resolveEffectiveConstants,
+  maybeRequireParentOwnerApproval,
+  maybeRequireSystemContactOwnerApproval,
+  maybeHandleApprovalDecision,
+  buildApprovalDecisionDispatchOptions,
+  finalizeApprovedRequest,
+  resolveManualReviewApproverOverrideFromApprovalHook,
+  resolveAdditionalIssueApproversFromApprovalHook,
+  buildReviewHandoverOptions,
+});
 
-  for (const pr of prs) {
-    try {
-      await context.octokit.pulls.update({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        state: 'closed',
-      });
-      closed.push(pr.number);
-    } catch {
-      // ignore
-    }
-  }
+const processIssueEvent = requestLifecycleRuntime.processIssueEvent;
+const handleAuthorUpdateComment = requestLifecycleRuntime.handleAuthorUpdateComment;
+const createRequestPrWithRecovery = requestLifecycleRuntime.createRequestPrWithRecovery;
+const closeOutdatedRequestPrs = requestLifecycleRuntime.closeOutdatedRequestPrs;
 
-  return closed;
-}
+let tryMergeApprovedPrOrUpdateBranchForDirectPr = async (
+  _context: BotContext<RequestEvents>,
+  _repoInfo: RepoInfo,
+  _pr: PullRequestLike,
+  _reason: string
+): Promise<void> => {};
 
-async function rejectRequestFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  decision: ApprovalDecision,
-  options: { closeLinkedPrs?: boolean; minimizeTag?: string } = {}
-): Promise<void> {
-  const repoInfo = { owner: params.owner, repo: params.repo };
+const directPrRuntime = createDirectPrRuntime<
+  BotContext<RequestEvents>,
+  RepoInfo,
+  IssueParams,
+  IssueLike,
+  PullRequestLike,
+  EffectiveConstants,
+  TemplateLike,
+  FormData
+>({
+  log,
+  toStringTrim,
+  resolveEffectiveConstants,
+  prAsIssueLike,
+  isCrossRepositoryPullRequest,
+  isAuthorizedApprover,
+  postOnce,
+  hasAutoApprovedPrHead,
+  markAutoApprovedPrHead,
+  autoApprovedPrHeadKey,
+  addApprovedLabelToPr,
+  buildAutoApprovalReviewMarker,
+  listPullRequestReviews,
+  resolveDirectPrRequestTypes,
+  resolveAllowedApproversForRequestTypes,
+  evaluateDirectPrOnApproval,
+  hasAllowedStandaloneDirectPrApprovalForCurrentHead,
+  hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr,
+  resolvePullRequestRequestAuthorId,
+  applyApprovedRequestState,
+  listOpenPullRequests,
+  parseLinkedIssueNumberFromPr,
+  ensureReviewLabelsPresentOnIssue,
+  tryMergeApprovedPrOrUpdateBranch: async (context, repoInfo, pr, reason): Promise<void> =>
+    await tryMergeApprovedPrOrUpdateBranchForDirectPr(context, repoInfo, pr, reason),
+  listChangedYamlFilesForPrWithFallback,
+  resolveReviewAssigneesForRequestTypes,
+  ensureAssigneesPresent,
+  ensureLabelsPresentOnce,
+  calcStandaloneDirectPrSnapshotHash,
+  buildReviewHandoverBody,
+});
 
-  let closedPrs: number[] = [];
-  if (options.closeLinkedPrs) {
-    try {
-      closedPrs = await closeLinkedIssuePrs(context, repoInfo, issue.number);
-    } catch {
-      // ignore
-    }
-  }
+const maybeHandleStandaloneDirectPrApproval = directPrRuntime.maybeHandleStandaloneDirectPrApproval;
+const handleDirectPrApprovalComment = directPrRuntime.handleDirectPrApprovalComment;
+const maybeHandleDirectPrApprovalForMerge = directPrRuntime.maybeHandleDirectPrApprovalForMerge;
 
-  const closedPrRefs = closedPrs.map((n) => `#${n}`).join(', ');
-  const closedPrSection = closedPrs.length ? `\n\nClosed linked PR(s): ${closedPrRefs}.` : '';
-
-  await postOnce(context, params, `${buildApprovalRejectedBody(decision)}${closedPrSection}`, {
-    minimizeTag: options.minimizeTag || 'nsreq:on-approval:rejected',
+function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizationCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants,
+  PullRequestLike
+> {
+  return composeApprovedRequestFinalizationCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants,
+    PullRequestLike
+  >({
+    resolveEffectiveConstants,
+    extractResourceNameFromForm,
+    resolveEffectiveRequestType,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    findOpenIssuePrs,
+    applyApprovedRequestState,
+    addApprovedLabelToPr,
+    ensureAssigneesPresent,
+    createRequestPrWithRecovery,
+    postOnce,
   });
-
-  try {
-    await context.octokit.issues.update({ ...params, state: 'closed' });
-    issue.state = 'closed';
-  } catch {
-    // ignore
-  }
-}
-
-async function finalizeApprovedRequest(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  options: {
-    approvalPrefix?: string;
-    approvalComment?: string;
-    autoApproved?: boolean;
-  }
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const approvalPrefix = toStringTrim(options.approvalPrefix);
-  const approvalComment = toStringTrim(options.approvalComment);
-  const autoApproved = options.autoApproved === true;
-
-  const resourceName = extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
-  if (!resourceName) {
-    await postOnce(
-      context,
-      params,
-      'Cannot create PR: missing resource name in the form (expected identifier, product-id or namespace).',
-      { minimizeTag: 'nsreq:config' }
-    );
-    return;
-  }
-
-  const requestType = resolveEffectiveRequestType(template, parsedFormData);
-  const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
-    context,
-    params,
-    issue,
-    template,
-    parsedFormData,
-    requestType
-  );
-
-  const existing = await findOpenIssuePrs(context, { owner: params.owner, repo: params.repo }, issue.number);
-  if (existing.length) {
-    await applyApprovedRequestState(context, params, eff);
-
-    if (autoApproved) {
-      await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, existing[0].number);
-    }
-
-    await ensureAssigneesPresent(
-      context,
-      { owner: params.owner, repo: params.repo, issue_number: existing[0].number },
-      hookApprovers
-    );
-
-    const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
-    const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
-
-    await postOnce(context, params, body, {
-      minimizeTag: 'nsreq:approval-info',
-    });
-    return;
-  }
-
-  try {
-    const pr = await createRequestPrWithRecovery(context, params, issue, parsedFormData, template, resourceName);
-
-    await applyApprovedRequestState(context, params, eff);
-
-    if (autoApproved) {
-      await addApprovedLabelToPr(context, { owner: params.owner, repo: params.repo }, pr.number);
-    }
-
-    await ensureAssigneesPresent(
-      context,
-      { owner: params.owner, repo: params.repo, issue_number: pr.number },
-      hookApprovers
-    );
-
-    const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
-    const body = lead ? `${lead}. Opened PR: #${pr.number}` : `Opened PR: #${pr.number}`;
-
-    await postOnce(context, params, body, {
-      minimizeTag: 'nsreq:approval-info',
-    });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-
-    await postOnce(context, params, `Failed to create Pull Request: ${msg}`, { minimizeTag: 'nsreq:approval-info' });
-  }
-}
-
-async function maybeHandleApprovalDecision(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType: string,
-  namespace: string
-): Promise<ApprovalHandlingResult> {
-  const decision = normalizeApprovalDecision(
-    await runApprovalHook(
-      context,
-      { owner: params.owner, repo: params.repo },
-      {
-        requestType,
-        namespace,
-        resourceName: extractResourceNameFromForm(parsedFormData, template),
-        formData: parsedFormData,
-        issue,
-      }
-    )
-  );
-
-  if (decision.status === 'approved') {
-    await finalizeApprovedRequest(context, params, issue, template, parsedFormData, {
-      approvalPrefix: '',
-      approvalComment: decision.comment,
-      autoApproved: true,
-    });
-    return 'approved';
-  }
-
-  if (decision.status === 'rejected') {
-    await rejectRequestFromApprovalHook(context, params, issue, decision, {
-      closeLinkedPrs: true,
-    });
-    return 'rejected';
-  }
-
-  if (decision.status === 'unknown') {
-    await postApprovalUnknownOnce(context, params, decision);
-  }
-
-  return 'continue';
-}
-
-async function maybeHandleDirectPrApprovalForMerge(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  issueParams: IssueParams,
-  issue: IssueLike,
-  _template: TemplateLike,
-  _parsedFormData: FormData,
-  pr: PullRequestLike
-): Promise<ApprovalHandlingResult> {
-  const issueAuthorId = normalizeLogin(issue.user?.login);
-  const prRequesterId = await resolvePullRequestRequestAuthorId(context, repoInfo, pr);
-  const requestAuthorId = issueAuthorId || prRequesterId;
-
-  log(
-    context,
-    'info',
-    {
-      prNumber: pr.number,
-      linkedIssueNumber: issue.number,
-      issueAuthorId,
-      prRequesterId,
-      requestAuthorId,
-    },
-    'direct-pr:linked-issue-requester-resolved'
-  );
-
-  const decision = normalizeApprovalDecision(
-    await evaluateDirectPrOnApproval(context, repoInfo, pr, requestAuthorId || undefined)
-  );
-
-  if (decision.status === 'approved') {
-    const approved = await ensureAutomatedApprovalReviewForCurrentHead(context, repoInfo, pr, decision);
-    if (!approved) return 'continue';
-
-    await applyApprovedRequestState(context, issueParams, resolveEffectiveConstants(context));
-    return 'approved';
-  }
-
-  if (decision.status === 'rejected') {
-    await postOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      buildApprovalRejectedBody(decision),
-      { minimizeTag: 'nsreq:on-approval:rejected' }
-    );
-
-    try {
-      await context.octokit.pulls.update({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        pull_number: pr.number,
-        state: 'closed',
-      });
-    } catch {
-      // ignore
-    }
-
-    await rejectRequestFromApprovalHook(context, issueParams, issue, decision, {
-      closeLinkedPrs: true,
-      minimizeTag: 'nsreq:on-approval:issue-rejected',
-    });
-
-    return 'rejected';
-  }
-
-  if (decision.status === 'unknown') {
-    await postApprovalUnknownOnce(
-      context,
-      { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: pr.number },
-      decision
-    );
-  }
-
-  return 'continue';
 }
 
 function buildSafeResourceSlug(resourceName: unknown): string {
@@ -7197,10 +2443,6 @@ function buildSafeResourceSlug(resourceName: unknown): string {
     .toLowerCase()
     .replace(/[^a-z0-9.-]/g, '-')
     .replace(/-+/g, '-');
-}
-
-function resolveStructuredRootForTemplate(template: TemplateLike): string {
-  return toStringTrim(template?._meta?.root).replace(/^\/+/, '').replace(/\/+$/, '');
 }
 
 function renderConfiguredRequestBranchName(
@@ -7219,217 +2461,6 @@ function renderConfiguredRequestBranchName(
     .replace('{issue}', String(issue.number || ''));
 }
 
-function extractCreatePrFailureMessage(error: unknown): string {
-  const raw = (error instanceof Error ? error.message : String(error)).trim();
-  const withoutUrl = raw.replace(/\s*-\s*https?:\/\/\S+$/i, '').trim();
-
-  const marker = 'Validation Failed:';
-  const idx = withoutUrl.indexOf(marker);
-
-  if (idx >= 0) {
-    const tail = withoutUrl.slice(idx + marker.length).trim();
-
-    try {
-      const parsed = JSON.parse(tail) as Record<string, unknown>;
-      const msg = toStringTrim(parsed['message']);
-      if (msg) return msg;
-    } catch {
-      // ignore
-    }
-
-    return tail || withoutUrl;
-  }
-
-  return withoutUrl;
-}
-
-function parseNoCommitsHeadBranchFromCreatePrError(error: unknown): string {
-  const raw = extractCreatePrFailureMessage(error);
-  const m = /No commits between [^ ]+ and ([^"\s]+)/i.exec(raw);
-  return m?.[1] ? toStringTrim(m[1]).replace(/^refs\/heads\//, '') : '';
-}
-
-function isResourceAlreadyExistsDuringPrCreation(error: unknown): boolean {
-  const msg = extractCreatePrFailureMessage(error);
-  return /Resource ['"`][^'"`]+['"`] already exists at /i.test(msg);
-}
-
-async function registryResourceExistsOnDefaultBranch(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  template: TemplateLike,
-  resourceName: string
-): Promise<boolean> {
-  const structRoot = resolveStructuredRootForTemplate(template);
-  if (!structRoot || !resourceName) return false;
-
-  for (const ext of ['yaml', 'yml']) {
-    try {
-      await context.octokit.repos.getContent({
-        owner: params.owner,
-        repo: params.repo,
-        path: `${structRoot}/${resourceName}.${ext}`,
-      });
-      return true;
-    } catch (e: unknown) {
-      if (getHttpStatus(e) === 404) continue;
-      throw e;
-    }
-  }
-
-  return false;
-}
-
-async function deleteBranchRefIfPresent(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  branchName: string
-): Promise<void> {
-  const branch = toStringTrim(branchName).replace(/^refs\/heads\//, '');
-  if (!branch) return;
-
-  try {
-    await context.octokit.git.deleteRef({
-      owner: repoInfo.owner,
-      repo: repoInfo.repo,
-      ref: `heads/${branch}`,
-    });
-  } catch (e: unknown) {
-    if (getHttpStatus(e) !== 404) throw e;
-  }
-}
-
-function formatCreateRequestFailureForUser(error: unknown, branchName = '', resourceName = ''): string {
-  const msg = extractCreatePrFailureMessage(error);
-  const parsedBranch = parseNoCommitsHeadBranchFromCreatePrError(error) || toStringTrim(branchName);
-
-  if (/^No commits between\b/i.test(msg)) {
-    const suffix = parsedBranch ? ` '${parsedBranch}'` : '';
-    return `Failed to create PR automatically: stale request branch${suffix} blocked PR creation. Please retry approval.`;
-  }
-
-  if (isResourceAlreadyExistsDuringPrCreation(error)) {
-    const suffix = resourceName ? ` '${resourceName}'` : '';
-    return `Failed to create PR automatically: a stale request branch already contains${suffix}. Please retry approval.`;
-  }
-
-  return `Failed to create PR automatically: ${msg}`;
-}
-
-async function runCreateRequestPr(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike
-): Promise<{ number: number }> {
-  return await createRequestPr(context, repoInfo, issue, parsedFormData, { template });
-}
-
-async function retryCreatePrAfterBranchCleanup(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  branchName: string,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike
-): Promise<{ number: number }> {
-  await deleteBranchRefIfPresent(context, repoInfo, branchName);
-  return await runCreateRequestPr(context, repoInfo, issue, parsedFormData, template);
-}
-
-async function handleNoCommitsCreatePrFailure(
-  context: BotContext<RequestEvents>,
-  repoInfo: RepoInfo,
-  branchName: string,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike,
-  resourceName: string
-): Promise<{ number: number }> {
-  try {
-    return await retryCreatePrAfterBranchCleanup(context, repoInfo, branchName, issue, parsedFormData, template);
-  } catch (retryError: unknown) {
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
-  }
-}
-
-async function handleAlreadyExistsCreatePrFailure(
-  context: BotContext<RequestEvents>,
-  args: {
-    params: IssueParams;
-    repoInfo: RepoInfo;
-    issue: IssueLike;
-    parsedFormData: FormData;
-    template: TemplateLike;
-    resourceName: string;
-    branchName: string;
-  }
-): Promise<{ number: number }> {
-  const { params, repoInfo, issue, parsedFormData, template, resourceName, branchName } = args;
-
-  try {
-    const existsOnDefaultBranch = await registryResourceExistsOnDefaultBranch(context, params, template, resourceName);
-
-    if (existsOnDefaultBranch) {
-      throw new Error(`Failed to create PR automatically: Resource '${resourceName}' already exists in the registry.`);
-    }
-
-    return await retryCreatePrAfterBranchCleanup(context, repoInfo, branchName, issue, parsedFormData, template);
-  } catch (retryError: unknown) {
-    if (retryError instanceof Error && retryError.message.startsWith('Failed to create PR automatically:')) {
-      throw retryError;
-    }
-
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
-  }
-}
-
-async function createRequestPrWithRecovery(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  template: TemplateLike,
-  resourceName: string
-): Promise<{ number: number }> {
-  const repoInfo: RepoInfo = { owner: params.owner, repo: params.repo };
-  const fallbackBranchName = renderConfiguredRequestBranchName(context, issue, resourceName);
-
-  try {
-    return await runCreateRequestPr(context, repoInfo, issue, parsedFormData, template);
-  } catch (error: unknown) {
-    const staleNoCommitsBranch = parseNoCommitsHeadBranchFromCreatePrError(error) || fallbackBranchName;
-    const failureMessage = extractCreatePrFailureMessage(error);
-
-    if (/^No commits between\b/i.test(failureMessage)) {
-      return await handleNoCommitsCreatePrFailure(
-        context,
-        repoInfo,
-        staleNoCommitsBranch,
-        issue,
-        parsedFormData,
-        template,
-        resourceName
-      );
-    }
-
-    if (isResourceAlreadyExistsDuringPrCreation(error)) {
-      return await handleAlreadyExistsCreatePrFailure(context, {
-        params,
-        repoInfo,
-        issue,
-        parsedFormData,
-        template,
-        resourceName,
-        branchName: fallbackBranchName,
-      });
-    }
-
-    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName));
-  }
-}
-
 function isConfiguredApprover(login: string | undefined | null, allowedApprovers: string[]): boolean {
   const who = normalizeLogin(login).toLowerCase();
   if (!who) return false;
@@ -7437,589 +2468,145 @@ function isConfiguredApprover(login: string | undefined | null, allowedApprovers
   return (allowedApprovers || []).some((u) => normalizeLogin(u).toLowerCase() === who);
 }
 
-async function processIssueEvent(
-  app: Probot,
-  context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
-  params: IssueParams,
-  issue: IssueLike
-): Promise<void> {
-  if (!process.env.JEST_WORKER_ID) {
-    if (!hasIssueFormInputs(issue)) return;
-  }
-  let template: TemplateLike;
-  try {
-    template = await loadTemplateWithLabelRefresh(context, params, issue);
-  } catch (e: unknown) {
-    const msg = toStringTrim(e instanceof Error ? e.message : e);
-
-    const msgLc = msg.toLowerCase();
-    const isRoutingErr = msgLc.includes('no routing label found') || msgLc.includes('cannot resolve template');
-
-    // Blanket / freeform issues
-    if (isRoutingErr && !hasIssueFormInputs(issue)) {
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { issue: issue.number, err: msg },
-          'requestHandler:issues-event skipped (non-form issue)'
-        );
-      }
-      return;
-    }
-    log(context, 'error', { err: msg }, 'Error loading template in issues handler');
-
-    const userMsg = buildTemplateLoadErrorMessage(msg);
-    await postOnce(context, params, userMsg, { minimizeTag: 'nsreq:config' });
-    await setStateLabel(context, params, issue, 'author');
-    return;
-  }
-
-  const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-  if (!isRequestIssue(context, template, parsedFormData)) {
-    if (DBG) {
-      log(
-        context,
-        'debug',
-        { issue: issue.number, parsedKeys: Object.keys(parsedFormData || {}) },
-        'requestHandler:issues-event skipped (not a request issue)'
-      );
-    }
-    return;
-  }
-
-  const expectedRouting =
-    readRoutingLockExpected(issue.body) ||
-    (await detectSingleRoutingLabel(context, params, issue, toLabelNames(issue.labels)));
-
-  if (expectedRouting) {
-    await ensureRoutingLockMarker(context, params, issue, expectedRouting);
-    await enforceRoutingLabelLock(context, params, issue, expectedRouting);
-  }
-
-  // Closed issues are terminal (Approved/Rejected). Do not re-run the request workflow on them.
-  if (toStringTrim(issue.state).toLowerCase() === 'closed') return;
-
-  // If the issue was previously closed as rejected and later reopened, clear that terminal status.
-  await removeRejectedStatusLabel(context, params, toLabelNames(issue.labels));
-
-  const snapshotHashes = buildCompatibleRequestSnapshotHashes(issue.body, parsedFormData, template);
-  const currentHash =
-    snapshotHashes[0] || calcSnapshotHash(parsedFormData, template, readIssueBodyForProcessing(issue.body));
-
-  await normalizeIssueTitle(context, params, issue, template, parsedFormData);
-
-  try {
-    await closeOutdatedRequestPrs(context, params, template, {
-      parsedFormData,
-      currentHash,
-      acceptedHashes: snapshotHashes,
-    });
-  } catch (e: unknown) {
-    (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'closeOutdatedRequestPRs skipped');
-  }
-
-  const result = await validateRequestIssue(context, params, issue, {
-    template,
-    formData: parsedFormData,
-  });
-
-  const { errors, errorsFormattedSingle, errorsFormatted, namespace: validatedNamespace, nsType } = result;
-
-  if (errors?.length) {
-    const listFallback = (errors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      errorsFormattedSingle?.trim() || errorsFormatted?.trim() || listFallback || 'Unknown validation error.';
-
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(message, normalizeMachineReadableIssues(result.validationIssues || [])),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await setStateLabel(context, params, issue, 'author');
-    return;
-  }
-
-  try {
-    const parentError = await checkParentChainExistsInFlatStructure(
-      context,
-      { owner: params.owner, repo: params.repo },
-      template,
-      parsedFormData,
-      validatedNamespace
-    );
-
-    if (parentError) {
-      await postOnce(
-        context,
-        params,
-        buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
-        {
-          minimizeTag: 'nsreq:validation',
-        }
-      );
-      await setStateLabel(context, params, issue, 'author');
-      return;
-    }
-  } catch (e: unknown) {
-    (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'parent chain check failed');
-  }
-
-  const effectiveRequestType = resolveEffectiveRequestType(result.template || template, parsedFormData);
-
-  const gated = await maybeRequireParentOwnerApproval(
-    context,
-    params,
-    issue,
-    result.template || template,
-    validatedNamespace,
-    effectiveRequestType
-  );
-
-  if (DBG) {
-    log(
-      context,
-      'debug',
-      { issue: issue.number, target: validatedNamespace, requestType: effectiveRequestType, gated },
-      'parent-approval:gate-result'
-    );
-  }
-
-  if (gated) return;
-
-  const contactGated = await maybeRequireSystemContactOwnerApproval(
-    context,
-    params,
-    issue,
-    parsedFormData,
-    effectiveRequestType,
-    validatedNamespace
-  );
-
-  if (contactGated) return;
-
-  const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, validatedNamespace);
-  if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
-    const approvalOutcome = await maybeHandleApprovalDecision(
-      context,
-      params,
-      issue,
-      result.template || template,
-      parsedFormData,
-      effectiveRequestType,
-      validatedNamespace
-    );
-
-    if (approvalOutcome !== 'continue') return;
-
-    await finalizeApprovedRequest(context, params, issue, result.template || template, parsedFormData, {
-      approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
-    });
-    return;
-  }
-
-  const approvalOutcome = await maybeHandleApprovalDecision(
-    context,
-    params,
-    issue,
-    result.template || template,
-    parsedFormData,
-    effectiveRequestType,
-    validatedNamespace
-  );
-
-  if (approvalOutcome !== 'continue') return;
-
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    result.template || template,
-    parsedFormData,
-    effectiveRequestType
-  );
-
-  const hookApprovers = manualApproversOverride.length
-    ? []
-    : await resolveAdditionalIssueApproversFromApprovalHook(
-        context,
-        params,
-        issue,
-        result.template || template,
-        parsedFormData,
-        effectiveRequestType
-      );
-
-  await handoverToCpa(context, params, issue, nsType, validatedNamespace, [], {
-    snapshotHash: currentHash,
-    requestType: effectiveRequestType,
-    extraApprovers: hookApprovers,
-    manualApproversOverride,
+function buildIssueStateReviewerOperationsCallbacks(): IssueStateReviewerOperationsCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants
+> {
+  return composeIssueStateReviewerOperationsCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants
+  >({
+    toLabelNames,
+    normalizeKey,
+    resolveWorkflowLabel,
+    labelsMatching,
+    resolveEffectiveConstants,
+    extractResourceNameFromForm,
+    resolveEffectiveRequestType,
+    runApprovalHook,
+    getHttpStatus,
+    getErrorMessage,
+    log,
   });
 }
 
-async function resolveAdditionalIssueApproversFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType?: string
-): Promise<string[]> {
-  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
-  const resourceName = extractResourceNameFromForm(parsedFormData, template);
-
-  if (!effectiveRequestType) return [];
-
-  try {
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType: effectiveRequestType,
-          namespace: resourceName,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-          requestAuthorId: normalizeLogin(issue.user?.login),
-        }
-      )
-    );
-
-    return uniqLogins((decision.approvers || []).filter(Boolean));
-  } catch {
-    return [];
-  }
+function buildApprovalCommentHandlingCallbacks(): ApprovalCommentHandlingCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants,
+  ValidateRequestIssueResult
+> {
+  return composeApprovalCommentHandlingCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants,
+    ValidateRequestIssueResult
+  >({
+    resolveEffectiveConstants,
+    resolveEffectiveRequestType,
+    resolveApproversForRequestType,
+    ensureReviewLabelsPresentOnIssue,
+    postOnce,
+    uniqLogins,
+    isAuthorizedApprover,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    validateRequestIssue,
+    setStateLabel,
+    checkParentChainExistsInFlatStructure,
+    log,
+    finalizeApprovedRequest,
+  });
 }
 
-async function resolveManualReviewApproverOverrideFromApprovalHook(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  requestType?: string
-): Promise<string[]> {
-  const effectiveRequestType = requestType || resolveEffectiveRequestType(template, parsedFormData);
-  const resourceName = extractResourceNameFromForm(parsedFormData, template);
-
-  if (!effectiveRequestType) return [];
-
-  try {
-    const decision = normalizeApprovalDecision(
-      await runApprovalHook(
-        context,
-        { owner: params.owner, repo: params.repo },
-        {
-          requestType: effectiveRequestType,
-          namespace: resourceName,
-          resourceName,
-          formData: parsedFormData,
-          issue,
-          requestAuthorId: normalizeLogin(issue.user?.login),
-        }
-      )
-    );
-
-    return getUnknownManualApprovers(decision);
-  } catch {
-    return [];
-  }
-}
-
-async function handleApprovalComment(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  commenter: string
-): Promise<void> {
-  const eff = resolveEffectiveConstants(context);
-  const requestType = resolveEffectiveRequestType(template, parsedFormData);
-
-  const configuredApprovers = resolveApproversForRequestType(
-    context,
-    requestType,
-    eff.approverUsernames,
-    eff.approverPoolUsernames
-  );
-
-  const reviewOk = await ensureReviewLabelsPresentOnIssue(context, params, issue, eff);
-  if (!reviewOk) {
-    await postOnce(
-      context,
-      params,
-      'Approval ignored: request is not in review state. Please resolve validation issues and let the bot route it back to review first.',
-      { minimizeTag: 'nsreq:approval-info' }
-    );
-    return;
-  }
-
-  let allowedApprovers = uniqLogins([...(configuredApprovers || [])]);
-  let okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
-
-  if (!okApprover) {
-    const hookApprovers = await resolveAdditionalIssueApproversFromApprovalHook(
+function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandlingCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  ValidateRequestIssueResult,
+  ContactApprovalMeta,
+  ParentApprovalMeta
+> {
+  return composeOwnerApprovalCommentHandlingCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    ValidateRequestIssueResult,
+    ContactApprovalMeta,
+    ParentApprovalMeta
+  >({
+    readContactApprovalMeta,
+    readParentApprovalMeta,
+    normalizeLogin,
+    uniqLogins,
+    normalizeKey,
+    postOnce,
+    validateRequestIssue,
+    setStateLabel,
+    parseForm,
+    calcSnapshotHash,
+    resolveEffectiveRequestType,
+    ensureContactApprovalMarker,
+    ensureParentApprovalMarker,
+    maybeHandleApprovalDecision: async (
       context,
       params,
       issue,
       template,
       parsedFormData,
-      requestType
-    );
-
-    allowedApprovers = uniqLogins([...(configuredApprovers || []), ...(hookApprovers || [])]);
-    okApprover = isAuthorizedApprover(commenter, issue.user?.login, allowedApprovers);
-  }
-  if (!okApprover) {
-    const hasConfiguredApprovers = allowedApprovers.length > 0;
-    const reason = hasConfiguredApprovers
-      ? `Approval ignored: commenter ${commenter} is not an allowed approver for this request type.`
-      : `Approval ignored: commenter ${commenter} is not allowed to self-approve this request.`;
-
-    await postOnce(context, params, reason, { minimizeTag: 'nsreq:approval-info' });
-    return;
-  }
-
-  const reval = await validateRequestIssue(context, params, issue, {
-    template,
-    formData: parsedFormData,
-  });
-
-  if (reval.errors?.length) {
-    const listFallback = (reval.errors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      reval.errorsFormattedSingle?.trim() ||
-      reval.errorsFormatted?.trim() ||
-      listFallback ||
-      'Unknown validation error.';
-
-    const normalizedIssues = (reval.validationIssues || []).map((issue) => ({
-      field: toStringTrim(issue.path) || 'details',
-      message: toStringTrim(issue.message),
-    }));
-
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(message, normalizeMachineReadableIssues(normalizedIssues)),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await setStateLabel(context, params, issue, 'author');
-    return;
-  }
-
-  try {
-    const parentError = await checkParentChainExistsInFlatStructure(
-      context,
-      { owner: params.owner, repo: params.repo },
-      reval.template || template,
-      parsedFormData,
-      reval.namespace
-    );
-
-    if (parentError) {
-      await postOnce(
-        context,
-        params,
-        buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
-        {
-          minimizeTag: 'nsreq:validation',
-        }
-      );
-      await setStateLabel(context, params, issue, 'author');
-      return;
-    }
-  } catch (e: unknown) {
-    log(
-      context,
-      'warn',
-      { err: e instanceof Error ? e.message : String(e) },
-      'parent chain check failed during approval'
-    );
-  }
-
-  await finalizeApprovedRequest(context, params, issue, template, parsedFormData, {
-    approvalPrefix: `Approved by @${commenter}`,
-  });
-}
-
-async function handleAuthorUpdateComment(
-  app: Probot,
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData
-): Promise<void> {
-  try {
-    const reval = await validateRequestIssue(context, params, issue, {
-      template,
-      formData: parsedFormData,
-    });
-    const {
-      errors: revalErrors,
-      errorsFormattedSingle: revalErrorsFormattedSingle,
-      errorsFormatted: revalErrorsFormatted,
+      requestType,
       namespace,
-      nsType,
-      template: tpl,
-    } = reval;
-
-    if (Array.isArray(revalErrors) && revalErrors.length === 0 && tpl) {
-      const parsedAfterUpdate = parseForm(readIssueBodyForProcessing(issue.body), tpl);
-      const snapshotHash = calcSnapshotHash(parsedAfterUpdate, tpl, readIssueBodyForProcessing(issue.body));
-
-      try {
-        const parentError = await checkParentChainExistsInFlatStructure(
-          context,
-          { owner: params.owner, repo: params.repo },
-          tpl,
-          parsedAfterUpdate,
-          namespace
-        );
-        if (parentError) {
-          await postOnce(
-            context,
-            params,
-            buildDetectedIssuesBody(`- ${parentError}`, singleMachineReadableIssue('name', parentError)),
-            {
-              minimizeTag: 'nsreq:validation',
-            }
-          );
-          await setStateLabel(context, params, issue, 'author');
-          return;
-        }
-      } catch (e: unknown) {
-        (app.log || console).warn?.({ err: e instanceof Error ? e.message : String(e) }, 'parent chain check failed');
-      }
-
-      try {
-        await closeOutdatedRequestPrs(context, params, tpl);
-      } catch (e: unknown) {
-        (app.log || console).warn?.(
-          { err: e instanceof Error ? e.message : String(e) },
-          'closeOutdatedRequestPRs skipped'
-        );
-      }
-
-      const effectiveRequestType = resolveEffectiveRequestType(tpl, parsedAfterUpdate);
-
-      const gated = await maybeRequireParentOwnerApproval(context, params, issue, tpl, namespace, effectiveRequestType);
-
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          { issue: issue.number, target: namespace, requestType: effectiveRequestType, gated },
-          'parent-approval:gate-result(update)'
-        );
-      }
-
-      if (gated) return;
-
-      const contactGated = await maybeRequireSystemContactOwnerApproval(
+      options
+    ): Promise<ApprovalHandlingResult> =>
+      await maybeHandleApprovalDecision(
         context,
         params,
         issue,
-        parsedAfterUpdate,
-        effectiveRequestType,
-        namespace
-      );
-
-      if (contactGated) return;
-
-      const parentApprovedBy = getApprovedParentOwnerLogin(issue.body, namespace);
-      if (isSubContextRequestType(effectiveRequestType) && parentApprovedBy) {
-        const approvalOutcome = await maybeHandleApprovalDecision(
-          context,
-          params,
-          issue,
-          tpl,
-          parsedAfterUpdate,
-          effectiveRequestType,
-          namespace
-        );
-
-        if (approvalOutcome !== 'continue') return;
-
-        await finalizeApprovedRequest(context, params, issue, tpl, parsedAfterUpdate, {
-          approvalPrefix: `Approved by parent namespace owner @${parentApprovedBy}`,
-        });
-        return;
-      }
-
-      const approvalOutcome = await maybeHandleApprovalDecision(
-        context,
-        params,
-        issue,
-        tpl,
-        parsedAfterUpdate,
-        effectiveRequestType,
-        namespace
-      );
-
-      if (approvalOutcome !== 'continue') return;
-
-      const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-        context,
-        params,
-        issue,
-        tpl,
-        parsedAfterUpdate,
-        effectiveRequestType
-      );
-
-      const hookApprovers = manualApproversOverride.length
-        ? []
-        : await resolveAdditionalIssueApproversFromApprovalHook(
-            context,
-            params,
-            issue,
-            tpl,
-            parsedAfterUpdate,
-            effectiveRequestType
-          );
-
-      await handoverToCpa(context, params, issue, nsType, namespace, [], {
-        snapshotHash,
-        requestType: effectiveRequestType,
-        extraApprovers: hookApprovers,
-        manualApproversOverride,
-      });
-      return;
-    }
-
-    const listFallback = (revalErrors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      revalErrorsFormattedSingle?.trim() || revalErrorsFormatted?.trim() || listFallback || 'Unknown validation error.';
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(
-        message,
-        normalizeMachineReadableIssues(
-          (reval.validationIssues || []).map((validationIssue) => ({
-            field: toStringTrim(validationIssue.path) || 'details',
-            message: toStringTrim(validationIssue.message),
-          }))
-        )
+        template,
+        parsedFormData,
+        requestType,
+        namespace,
+        options as ReturnType<typeof buildApprovalDecisionDispatchOptions>
       ),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await setStateLabel(context, params, issue, 'author');
-  } catch (e: unknown) {
-    (app.log || console).warn?.(`Revalidation failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+    buildApprovalDecisionDispatchOptions,
+    resolveManualReviewApproverOverrideFromApprovalHook,
+    resolveAdditionalIssueApproversFromApprovalHook,
+    handoverToCpa: async (context, params, issue, nsType, namespace, labels, options): Promise<void> =>
+      await handoverToCpa(
+        context,
+        params,
+        issue,
+        nsType,
+        namespace,
+        labels,
+        options as ReturnType<typeof buildReviewHandoverOptions>
+      ),
+    buildReviewHandoverOptions: (): Record<string, unknown> =>
+      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+    setParentOwnerActionState,
+    assignParentOwnersForApproval,
+    clearParentOwnerActionState,
+    isSubContextRequestType,
+    finalizeApprovedRequest,
+    toStringTrim,
+  });
 }
 
 function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestEvents>): string {
@@ -8030,23 +2617,6 @@ function resolveVendorRegistryRootForRequestHandler(context: BotContext<RequestE
   return vendorRoot || 'data/vendors';
 }
 
-async function repoYamlExists(context: BotContext<RequestEvents>, repo: RepoInfo, basePath: string): Promise<boolean> {
-  for (const ext of ['yaml', 'yml']) {
-    try {
-      await context.octokit.repos.getContent({
-        owner: repo.owner,
-        repo: repo.repo,
-        path: `${basePath}.${ext}`,
-      });
-      return true;
-    } catch (e: unknown) {
-      if (getHttpStatus(e) !== 404) throw e;
-    }
-  }
-
-  return false;
-}
-
 async function checkParentChainExistsInFlatStructure(
   context: BotContext<RequestEvents>,
   { owner, repo }: RepoInfo,
@@ -8054,38 +2624,18 @@ async function checkParentChainExistsInFlatStructure(
   formData: FormData,
   explicitResourceName?: string
 ): Promise<string | null> {
-  const rootRaw = toStringTrim(template?._meta?.root);
-  const structRoot = rootRaw.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!structRoot) return null;
-
-  const rt = toStringTrim(template?._meta?.requestType).toLowerCase();
-  const isNamespaceLike = rt.includes('namespace') || rt === 'subcontext' || rt === 'system' || rt === 'authority';
-  if (!isNamespaceLike) return null;
-
-  const resourceName = toStringTrim(explicitResourceName) || extractResourceNameFromForm(formData, template);
-  const parts = toStringTrim(resourceName).split('.').filter(Boolean);
-  if (parts.length < 2) return null;
-
-  const repoInfo: RepoInfo = { owner, repo };
-  const vendorRoot = resolveVendorRegistryRootForRequestHandler(context);
-
-  for (let i = parts.length - 1; i >= 1; i -= 1) {
-    const parentName = parts.slice(0, i).join('.');
-    if (!parentName) continue;
-
-    const exists =
-      i === 1
-        ? await repoYamlExists(context, repoInfo, `${vendorRoot}/${parentName}`)
-        : await repoYamlExists(context, repoInfo, `${structRoot}/${parentName}`);
-
-    if (exists) continue;
-
-    return i === 1
-      ? `Vendor '${parentName}' is not present. Please register the vendor first.`
-      : `Parent resource '${parentName}' is not present. Please register the parent first.`;
-  }
-
-  return null;
+  return await checkParentChainExistsInFlatStructureApplication(
+    context,
+    { owner, repo },
+    template,
+    formData,
+    {
+      extractResourceNameFromForm,
+      resolveVendorRegistryRoot: resolveVendorRegistryRootForRequestHandler,
+      getHttpStatus,
+    },
+    explicitResourceName
+  );
 }
 
 async function loadTemplateWithLabelRefresh(
@@ -8117,14 +2667,6 @@ async function loadTemplateWithLabelRefresh(
   }
 }
 
-function readPayloadLabelName(payload: unknown): string {
-  if (!isPlainObject(payload)) return '';
-  const l = payload['label'];
-  if (typeof l === 'string') return toStringTrim(l);
-  if (isPlainObject(l)) return toStringTrim(l['name']);
-  return '';
-}
-
 async function tryLoadTemplateForLabels(
   context: BotContext<RequestEvents>,
   params: IssueParams,
@@ -8143,46 +2685,6 @@ async function tryLoadTemplateForLabels(
   }
 }
 
-const ROUTING_LOCK_READ_RE = /<!--\s*nsreq:routing-lock\s*=\s*({[\s\S]*?})\s*-->/i;
-const ROUTING_LOCK_STRIP_RE = /<!--\s*nsreq:routing-lock\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
-const PARENT_APPROVAL_READ_RE = /<!--\s*nsreq:parent-approval\s*=\s*({[\s\S]*?})\s*-->/i;
-const PARENT_APPROVAL_STRIP_RE = /<!--\s*nsreq:parent-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
-type ParentApprovalMeta = {
-  v: 1;
-  parent: string;
-  target: string;
-  owners: string[];
-  approvedBy?: string;
-  approvedAt?: string;
-};
-
-type ContactApprovalMeta = {
-  v: 1;
-  target: string;
-  owners: string[];
-  approvedBy?: string;
-  approvedAt?: string;
-};
-
-const CONTACT_APPROVAL_READ_RE = /<!--\s*nsreq:contact-approval\s*=\s*({[\s\S]*?})\s*-->/i;
-const CONTACT_APPROVAL_STRIP_RE = /<!--\s*nsreq:contact-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
-function sameNormalizedLoginSet(a: string[], b: string[]): boolean {
-  const normalizedA = uniqLogins(a)
-    .map((login) => normalizeLogin(login))
-    .filter((login): login is string => !!login)
-    .sort((left, right) => left.localeCompare(right));
-  const normalizedB = uniqLogins(b)
-    .map((login) => normalizeLogin(login))
-    .filter((login): login is string => !!login)
-    .sort((left, right) => left.localeCompare(right));
-
-  if (normalizedA.length !== normalizedB.length) return false;
-  return normalizedA.every((login, index) => login === normalizedB[index]);
-}
-
 function isSubContextRequestType(requestType: unknown): boolean {
   const rt = normalizeTypeToken(requestType);
   return rt === 'subcontextnamespace' || rt === 'subcontext';
@@ -8198,314 +2700,19 @@ function getApprovedParentOwnerLogin(issueBody: unknown, target: string): string
   return normalizeKey(meta.target) === normalizeKey(target) ? approvedBy : '';
 }
 
-function stripContactApprovalFromBody(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  return body.replace(CONTACT_APPROVAL_STRIP_RE, '').trimEnd();
-}
-
-function readContactApprovalMeta(issueBody: unknown): ContactApprovalMeta | null {
-  const body = String(issueBody || '');
-  const m = body.match(CONTACT_APPROVAL_READ_RE);
-  if (!m) return null;
-
-  try {
-    const raw = JSON.parse(String(m[1] || ''));
-    if (!isPlainObject(raw)) return null;
-    if (raw['v'] !== 1) return null;
-
-    const target = toStringTrim(raw['target']);
-    const ownersRaw = raw['owners'];
-    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
-    const approvedBy = normalizeLogin(raw['approvedBy']);
-    const approvedAt = toStringTrim(raw['approvedAt']);
-
-    if (!target || !owners.length) return null;
-
-    const out: ContactApprovalMeta = { v: 1, target, owners };
-    if (approvedBy) out.approvedBy = approvedBy;
-    if (approvedAt) out.approvedAt = approvedAt;
-    return out;
-  } catch {
-    return null;
-  }
-}
-
 async function ensureContactApprovalMarker(
   context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
   meta: ContactApprovalMeta | null
 ): Promise<boolean> {
-  const current = readContactApprovalMeta(issue.body);
-  const cleaned = stripContactApprovalFromBody(issue.body);
-
-  if (!meta) {
-    if (!current) return false;
-
-    try {
-      const nextBody = `${cleaned}\n`;
-      await context.octokit.issues.update({ ...params, body: nextBody });
-      issue.body = nextBody;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  const next: ContactApprovalMeta = {
-    v: 1,
-    target: toStringTrim(meta.target),
-    owners: uniqLogins(meta.owners || []),
-  };
-
-  const approvedBy = normalizeLogin(meta.approvedBy);
-  const approvedAt = toStringTrim(meta.approvedAt);
-
-  if (approvedBy) next.approvedBy = approvedBy;
-  if (approvedAt) next.approvedAt = approvedAt;
-
-  if (!next.target || !next.owners.length) return false;
-
-  const same =
-    current &&
-    normalizeKey(current.target) === normalizeKey(next.target) &&
-    sameNormalizedLoginSet(current.owners, next.owners) &&
-    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
-    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
-
-  if (same) return false;
-
-  const metaStr = JSON.stringify(next);
-  const nextBody = `${cleaned}\n\n<!-- nsreq:contact-approval = ${metaStr} -->\n`;
-
-  try {
-    await context.octokit.issues.update({ ...params, body: nextBody });
-    issue.body = nextBody;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function resolveRequestContactOwnerLogins(
-  context: BotContext<RequestEvents>,
-  formData: FormData
-): Promise<string[]> {
-  const contacts = formData['contact'] ?? formData['contacts'] ?? '';
-  const { logins: directLogins, emails } = extractParentContactCandidates(contacts);
-
-  const resolved: string[] = [...directLogins];
-  for (const email of emails.slice(0, 10)) {
-    resolved.push(...(await lookupGithubLoginsByEmail(context, email)));
-  }
-
-  return uniqLogins(resolved);
-}
-
-async function maybeRequireSystemContactOwnerApproval(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  parsedFormData: FormData,
-  requestType: string,
-  validatedNamespace: string
-): Promise<boolean> {
-  if (normalizeTypeToken(requestType) !== 'systemnamespace') {
-    await ensureContactApprovalMarker(context, params, issue, null);
-    return false;
-  }
-
-  const target = toStringTrim(validatedNamespace);
-  const owners = await resolveRequestContactOwnerLogins(context, parsedFormData);
-  const requester = normalizeLogin(issue.user?.login);
-
-  if (!target || !owners.length) {
-    await ensureContactApprovalMarker(context, params, issue, null);
-    return false;
-  }
-
-  if (requester && owners.some((owner) => owner.toLowerCase() === requester.toLowerCase())) {
-    await ensureContactApprovalMarker(context, params, issue, null);
-    return false;
-  }
-
-  const current = readContactApprovalMeta(issue.body);
-  const alreadyApproved =
-    current &&
-    normalizeKey(current.target) === normalizeKey(target) &&
-    sameNormalizedLoginSet(current.owners, owners) &&
-    Boolean(normalizeLogin(current.approvedBy));
-
-  if (alreadyApproved) return false;
-
-  await ensureContactApprovalMarker(context, params, issue, { v: 1, target, owners });
-
-  const mentions = owners.map((owner) => `@${owner}`).join(' ');
-  const tag = `nsreq:contact-approval:${normalizeKey(target)}`;
-
-  await postOnce(
-    context,
-    params,
-    `### 🔒 Contact owner approval required
-
-Requester @${requester || 'unknown'} is not listed in the contact owners for \`${target}\`.
-
-${mentions}
-
-Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
-    { minimizeTag: tag }
-  );
-
-  await setStateLabel(context, params, issue, 'author');
-  return true;
-}
-
-async function handleSystemContactOwnerApprovalIfNeeded(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  commenter: string
-): Promise<boolean> {
-  const meta = readContactApprovalMeta(issue.body);
-  if (!meta) return false;
-  if (normalizeLogin(meta.approvedBy)) return false;
-
-  const commenterLogin = normalizeLogin(commenter);
-  const owners = uniqLogins(meta.owners || []);
-  const isOwner = owners.some((owner) => owner.toLowerCase() === commenterLogin.toLowerCase());
-  const tagBase = `nsreq:contact-approval:${normalizeKey(meta.target)}`;
-
-  if (!isOwner) {
-    const mentions = owners.map((owner) => `@${owner}`).join(' ');
-    await postOnce(
-      context,
-      params,
-      `Approval ignored: this request requires contact owner approval for \`${meta.target}\` first.
-
-${mentions}`,
-      { minimizeTag: `${tagBase}:pending` }
-    );
-    return true;
-  }
-
-  const reval = await validateRequestIssue(context, params, issue, {
-    template,
-    formData: parsedFormData,
-  });
-
-  if (reval.errors?.length) {
-    const listFallback = (reval.errors || []).map((error) => `- ${error}`).join('\n');
-    const message =
-      reval.errorsFormattedSingle?.trim() ||
-      reval.errorsFormatted?.trim() ||
-      listFallback ||
-      'Unknown validation error.';
-
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(
-        message,
-        normalizeMachineReadableIssues(
-          (reval.validationIssues || []).map((validationIssue) => ({
-            field: toStringTrim(validationIssue.path) || 'details',
-            message: toStringTrim(validationIssue.message),
-          }))
-        )
-      ),
-      { minimizeTag: 'nsreq:validation' }
-    );
-    await setStateLabel(context, params, issue, 'author');
-    return true;
-  }
-
-  const tpl = reval.template || template;
-  const bodyStr = readIssueBodyForProcessing(issue.body);
-  const parsedNow = parseForm(bodyStr, tpl);
-  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
-  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
-
-  await ensureContactApprovalMarker(context, params, issue, {
-    v: 1,
-    target: meta.target,
-    owners,
-    approvedBy: commenterLogin,
-    approvedAt: new Date().toISOString(),
-  });
-
-  const approvalOutcome = await maybeHandleApprovalDecision(
+  return await ensureContactApprovalMarkerApplication(
     context,
     params,
     issue,
-    tpl,
-    parsedNow,
-    effRt,
-    reval.namespace
+    meta,
+    buildOwnerApprovalRequirementsCallbacks()
   );
-
-  if (approvalOutcome !== 'continue') return true;
-
-  await postOnce(context, params, `Contact owner approved by @${commenterLogin}. Continuing with standard review.`, {
-    minimizeTag: `${tagBase}:approved`,
-  });
-
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    tpl,
-    parsedNow,
-    effRt
-  );
-
-  const hookApprovers = manualApproversOverride.length
-    ? []
-    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
-
-  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
-    snapshotHash,
-    requestType: effRt,
-    extraApprovers: hookApprovers,
-    manualApproversOverride,
-  });
-
-  return true;
-}
-
-function stripParentApprovalFromBody(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  return body.replace(PARENT_APPROVAL_STRIP_RE, '').trimEnd();
-}
-
-function readParentApprovalMeta(issueBody: unknown): ParentApprovalMeta | null {
-  const body = String(issueBody || '');
-  const m = body.match(PARENT_APPROVAL_READ_RE);
-  if (!m) return null;
-
-  try {
-    const raw = JSON.parse(String(m[1] || ''));
-    if (!isPlainObject(raw)) return null;
-    if (raw['v'] !== 1) return null;
-
-    const parent = toStringTrim(raw['parent']);
-    const target = toStringTrim(raw['target']);
-    const ownersRaw = raw['owners'];
-    const owners = Array.isArray(ownersRaw) ? uniqLogins(ownersRaw.map(toStringTrim).filter(Boolean)) : [];
-
-    const approvedBy = normalizeLogin(raw['approvedBy']);
-    const approvedAt = toStringTrim(raw['approvedAt']);
-
-    if (!parent || !target) return null;
-
-    const out: ParentApprovalMeta = { v: 1, parent, target, owners };
-    if (approvedBy) out.approvedBy = approvedBy;
-    if (approvedAt) out.approvedAt = approvedAt;
-    return out;
-  } catch {
-    return null;
-  }
 }
 
 async function ensureParentApprovalMarker(
@@ -8514,365 +2721,43 @@ async function ensureParentApprovalMarker(
   issue: IssueLike,
   meta: ParentApprovalMeta | null
 ): Promise<boolean> {
-  const current = readParentApprovalMeta(issue.body);
-  const cleaned = stripParentApprovalFromBody(issue.body);
-
-  if (!meta) {
-    if (!current) return false;
-    try {
-      const nextBody = `${cleaned}\n`;
-      await context.octokit.issues.update({ ...params, body: nextBody });
-      issue.body = nextBody;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  const next: ParentApprovalMeta = {
-    v: 1,
-    parent: toStringTrim(meta.parent),
-    target: toStringTrim(meta.target),
-    owners: uniqLogins(meta.owners || []),
-  };
-
-  const ab = normalizeLogin(meta.approvedBy);
-  const at = toStringTrim(meta.approvedAt);
-  if (ab) next.approvedBy = ab;
-  if (at) next.approvedAt = at;
-
-  if (!next.parent || !next.target) return false;
-
-  const same =
-    current &&
-    normalizeKey(current.parent) === normalizeKey(next.parent) &&
-    normalizeKey(current.target) === normalizeKey(next.target) &&
-    uniqLogins(current.owners).join('|').toLowerCase() === uniqLogins(next.owners).join('|').toLowerCase() &&
-    normalizeLogin(current.approvedBy) === normalizeLogin(next.approvedBy) &&
-    toStringTrim(current.approvedAt) === toStringTrim(next.approvedAt);
-
-  if (same) return false;
-
-  const metaStr = JSON.stringify(next);
-  const nextBody = `${cleaned}\n\n<!-- nsreq:parent-approval = ${metaStr} -->\n`;
-
-  try {
-    await context.octokit.issues.update({ ...params, body: nextBody });
-    issue.body = nextBody;
-    return true;
-  } catch {
-    return false;
-  }
+  return await ensureParentApprovalMarkerApplication(
+    context,
+    params,
+    issue,
+    meta,
+    buildOwnerApprovalRequirementsCallbacks()
+  );
 }
 
-async function maybeRequireParentOwnerApproval(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  validatedNamespace: string,
-  requestType: string
-): Promise<boolean> {
-  const rt = toStringTrim(requestType).toLowerCase();
-  if (!rt.includes('namespace')) {
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  const target = toStringTrim(validatedNamespace);
-  const parts = target
-    .split('.')
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  if (parts.length <= 2) {
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  const requester = normalizeLogin(issue.user?.login);
-
-  const { parent, owners } = await resolveParentOwnerLoginsForTarget(context, params, template, target, requestType);
-
-  log(
-    context,
-    'info',
-    {
-      issueNumber: issue.number,
-      requester,
-      parent,
-      target,
-      owners,
-      requestType,
+function buildOwnerApprovalRequirementsCallbacks(): OwnerApprovalRequirementsCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants
+> {
+  return {
+    normalizeKey,
+    labelsMatching,
+    updateIssueBody: async (context: BotContext<RequestEvents>, params: IssueParams, body: string): Promise<void> => {
+      await createGitHubIssueUpdateGateway(context).updateIssue({ ...params, body });
     },
-    'parent-approval:owners-resolved'
-  );
-
-  if (!parent || owners.length === 0) {
-    await ensureParentApprovalMarker(context, params, issue, null);
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  if (requester && owners.some((o) => o.toLowerCase() === requester.toLowerCase())) {
-    if (DBG) {
-      log(
-        context,
-        'debug',
-        { issue: issue.number, requester, parent, target, owners },
-        'parent-approval:auto-approved (requester is parent owner)'
-      );
-    }
-
-    if (isSubContextRequestType(requestType)) {
-      await ensureParentApprovalMarker(context, params, issue, {
-        v: 1,
-        parent,
-        target,
-        owners,
-        approvedBy: requester,
-        approvedAt: new Date().toISOString(),
-      });
-    } else {
-      await ensureParentApprovalMarker(context, params, issue, null);
-    }
-
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  const current = readParentApprovalMeta(issue.body);
-  const alreadyApproved =
-    current &&
-    normalizeKey(current.parent) === normalizeKey(parent) &&
-    normalizeKey(current.target) === normalizeKey(target) &&
-    Boolean(normalizeLogin(current.approvedBy));
-
-  if (alreadyApproved) {
-    await clearParentOwnerActionState(context, params);
-    return false;
-  }
-
-  await ensureParentApprovalMarker(context, params, issue, { v: 1, parent, target, owners });
-
-  await setParentOwnerActionState(context, params);
-  await assignParentOwnersForApproval(context, params, owners);
-
-  const mentions = owners.map((o) => `@${o}`).join(' ');
-  const tag = `nsreq:parent-approval:${normalizeKey(parent)}:${normalizeKey(target)}`;
-
-  await postOnce(
-    context,
-    params,
-    `### 🔒 Parent owner approval required
-
-Sub-namespace request under \`${parent}\` (target: \`${target}\`).
-
-${mentions}
-
-Please confirm by commenting \`Approved\`. After that, the bot will continue with the standard review workflow.`,
-    { minimizeTag: tag }
-  );
-
-  return true;
-}
-
-async function handleParentOwnerApprovalIfNeeded(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData,
-  commenter: string
-): Promise<boolean> {
-  const meta = readParentApprovalMeta(issue.body);
-  if (!meta) return false;
-  if (normalizeLogin(meta.approvedBy)) return false;
-
-  const commenterLogin = normalizeLogin(commenter);
-  const owners = uniqLogins(meta.owners || []);
-  const isOwner = owners.some((o) => o.toLowerCase() === commenterLogin.toLowerCase());
-
-  const tagBase = `nsreq:parent-approval:${normalizeKey(meta.parent)}:${normalizeKey(meta.target)}`;
-
-  if (!isOwner) {
-    await setParentOwnerActionState(context, params);
-    await assignParentOwnersForApproval(context, params, owners);
-
-    const mentions = owners.map((o) => `@${o}`).join(' ');
-    await postOnce(
-      context,
-      params,
-      `Approval ignored: this request requires parent owner approval for \`${meta.parent}\` first.
-
-${mentions}`,
-      { minimizeTag: `${tagBase}:pending` }
-    );
-    return true;
-  }
-
-  const reval = await validateRequestIssue(context, params, issue, { template, formData: parsedFormData });
-  if (reval.errors?.length) {
-    const listFallback = (reval.errors || []).map((e) => `- ${e}`).join('\n');
-    const message =
-      reval.errorsFormattedSingle?.trim() ||
-      reval.errorsFormatted?.trim() ||
-      listFallback ||
-      'Unknown validation error.';
-    await postOnce(
-      context,
-      params,
-      buildDetectedIssuesBody(
-        message,
-        normalizeMachineReadableIssues(
-          (reval.validationIssues || []).map((validationIssue) => ({
-            field: toStringTrim(validationIssue.path) || 'details',
-            message: toStringTrim(validationIssue.message),
-          }))
-        )
-      ),
-      {
-        minimizeTag: 'nsreq:validation',
-      }
-    );
-    await clearParentOwnerActionState(context, params);
-    await setStateLabel(context, params, issue, 'author');
-    return true;
-  }
-
-  const tpl = reval.template || template;
-  const bodyStr = readIssueBodyForProcessing(issue.body);
-  const parsedNow = parseForm(bodyStr, tpl);
-  const snapshotHash = calcSnapshotHash(parsedNow, tpl, bodyStr);
-  const effRt = resolveEffectiveRequestType(tpl, parsedNow);
-
-  await ensureParentApprovalMarker(context, params, issue, {
-    v: 1,
-    parent: meta.parent,
-    target: meta.target,
-    owners,
-    approvedBy: commenterLogin,
-    approvedAt: new Date().toISOString(),
-  });
-
-  await clearParentOwnerActionState(context, params);
-
-  const approvalOutcome = await maybeHandleApprovalDecision(
-    context,
-    params,
-    issue,
-    tpl,
-    parsedNow,
-    effRt,
-    reval.namespace
-  );
-
-  if (approvalOutcome !== 'continue') return true;
-
-  if (isSubContextRequestType(effRt)) {
-    await finalizeApprovedRequest(context, params, issue, tpl, parsedNow, {
-      approvalPrefix: `Approved by parent namespace owner @${commenterLogin}`,
-    });
-    return true;
-  }
-
-  await postOnce(context, params, `Parent namespace approved by @${commenterLogin}. Continuing with standard review.`, {
-    minimizeTag: `${tagBase}:approved`,
-  });
-
-  const manualApproversOverride = await resolveManualReviewApproverOverrideFromApprovalHook(
-    context,
-    params,
-    issue,
-    tpl,
-    parsedNow,
-    effRt
-  );
-
-  const hookApprovers = manualApproversOverride.length
-    ? []
-    : await resolveAdditionalIssueApproversFromApprovalHook(context, params, issue, tpl, parsedNow, effRt);
-
-  await handoverToCpa(context, params, issue, reval.nsType, reval.namespace, [], {
-    snapshotHash,
-    requestType: effRt,
-    extraApprovers: hookApprovers,
-    manualApproversOverride,
-  });
-
-  return true;
-}
-
-const ROUTING_LOCK_NOTICE_INFLIGHT = new Map<string, Promise<void>>();
-
-function routingNoticeKey(params: IssueParams): string {
-  return `${params.owner}/${params.repo}#${params.issue_number}`;
-}
-
-async function postRoutingLockNoticeOnce(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  expected: string
-): Promise<void> {
-  const key = routingNoticeKey(params);
-  const existing = ROUTING_LOCK_NOTICE_INFLIGHT.get(key);
-  if (existing) {
-    await existing;
-    return;
-  }
-
-  const p = Promise.resolve()
-    .then(async (): Promise<void> => {
-      await postOnce(context, params, `Routing label is locked to "${expected}". Manual changes were reverted.`, {
-        minimizeTag: 'nsreq:routing-label-lock',
-      });
-    })
-    .finally(() => {
-      ROUTING_LOCK_NOTICE_INFLIGHT.delete(key);
-    });
-
-  ROUTING_LOCK_NOTICE_INFLIGHT.set(key, p);
-  await p;
-}
-
-async function isRoutingLabelName(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  labelName: unknown
-): Promise<boolean> {
-  const name = toStringTrim(labelName);
-  if (!name) return false;
-  try {
-    return Boolean(await tryLoadTemplateForLabels(context, params, issue, [name]));
-  } catch {
-    return false;
-  }
-}
-
-type RoutingLockMeta = { v: 1; expected: string };
-
-function readRoutingLockExpected(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  const m = body.match(ROUTING_LOCK_READ_RE);
-  if (!m) return '';
-  try {
-    const meta = JSON.parse(String(m[1] || ''));
-    return toStringTrim((meta as Record<string, unknown>)?.['expected']);
-  } catch {
-    return '';
-  }
-}
-
-function stripRoutingLockFromBody(issueBody: unknown): string {
-  const body = String(issueBody || '');
-  return body.replace(ROUTING_LOCK_STRIP_RE, '').trimEnd();
-}
-
-function readIssueBodyForProcessing(issueBody: unknown): string {
-  return toStringTrim(stripContactApprovalFromBody(stripParentApprovalFromBody(stripRoutingLockFromBody(issueBody))));
+    readYamlFromRepo,
+    extractParentContactCandidates,
+    lookupGithubLoginsByEmail,
+    resolveEffectiveConstants,
+    resolveWorkflowLabel,
+    fetchIssueLabels,
+    removeExactLabelsFromIssue,
+    ensureLabelsPresentOnce,
+    ensureAssigneesPresent,
+    postOnce,
+    isSubContextRequestType,
+    setStateLabel,
+    log,
+  };
 }
 
 function buildCompatibleRequestSnapshotHashes(
@@ -8892,38 +2777,13 @@ function buildCompatibleRequestSnapshotHashes(
   );
 }
 
-async function detectRoutingLabels(
-  context: BotContext<RequestEvents>,
-  params: IssueParams,
-  issue: IssueLike,
-  labels: string[]
-): Promise<string[]> {
-  const uniq: string[] = [];
-  const seen = new Set<string>();
-  for (const l of labels) {
-    const name = toStringTrim(l);
-    const key = normalizeKey(name);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(name);
-  }
-
-  const routing: string[] = [];
-  for (const l of uniq) {
-    const tpl = await tryLoadTemplateForLabels(context, params, issue, [l]);
-    if (tpl) routing.push(l);
-  }
-  return routing;
-}
-
 async function detectSingleRoutingLabel(
   context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
   labels: string[]
 ): Promise<string> {
-  const routing = await detectRoutingLabels(context, params, issue, labels);
-  return routing.length === 1 ? routing[0] : '';
+  return await detectSingleRoutingLabelApplication(context, params, issue, labels, buildIssueWorkflowGuardCallbacks());
 }
 
 async function ensureRoutingLockMarker(
@@ -8932,23 +2792,13 @@ async function ensureRoutingLockMarker(
   issue: IssueLike,
   expectedLabel: string
 ): Promise<boolean> {
-  const expected = toStringTrim(expectedLabel);
-  if (!expected) return false;
-
-  const current = readRoutingLockExpected(issue.body);
-  if (normalizeKey(current) === normalizeKey(expected)) return false;
-
-  const cleaned = stripRoutingLockFromBody(issue.body);
-  const meta: RoutingLockMeta = { v: 1, expected };
-  const metaStr = JSON.stringify(meta);
-  const nextBody = `${cleaned}\n\n<!-- nsreq:routing-lock = ${metaStr} -->\n`;
-
-  try {
-    await context.octokit.issues.update({ ...params, body: nextBody });
-    return true;
-  } catch {
-    return false;
-  }
+  return await ensureRoutingLockMarkerApplication(
+    context,
+    params,
+    issue,
+    expectedLabel,
+    buildIssueWorkflowGuardCallbacks()
+  );
 }
 
 async function enforceRoutingLabelLock(
@@ -8958,241 +2808,202 @@ async function enforceRoutingLabelLock(
   expectedLabel: string,
   opts?: { changedLabel?: string }
 ): Promise<boolean> {
-  const expected = toStringTrim(expectedLabel);
-  const expectedKey = normalizeKey(expected);
-  if (!expectedKey) return false;
-
-  let labels: string[] = [];
-  try {
-    labels = await fetchIssueLabels(context, params);
-  } catch {
-    labels = toLabelNames(issue.labels);
-  }
-
-  const routingLabels = await detectRoutingLabels(context, params, issue, labels);
-  const toRemove = routingLabels.filter((l) => normalizeKey(l) !== expectedKey);
-
-  const hasExpected = labels.some((l) => normalizeKey(l) === expectedKey);
-
-  let changed = false;
-
-  if (toRemove.length) {
-    await removeExactLabelsFromIssue(context, params, toRemove);
-    changed = true;
-  }
-
-  if (!hasExpected) {
-    try {
-      await context.octokit.issues.addLabels({ ...params, labels: [expected] });
-      changed = true;
-    } catch {
-      // ignore label add errors
-    }
-  }
-
-  if (changed) {
-    const touchedLabel = toStringTrim(opts?.changedLabel);
-
-    // Only notify on routing-label events - avoid spamming on unrelated label changes.
-    const shouldNotify =
-      !touchedLabel ||
-      normalizeKey(touchedLabel) === expectedKey ||
-      (await isRoutingLabelName(context, params, issue, touchedLabel));
-
-    if (shouldNotify) {
-      await postRoutingLockNoticeOnce(context, params, expected);
-    }
-  }
-
-  return changed;
+  return await enforceRoutingLabelLockApplication(
+    context,
+    params,
+    issue,
+    expectedLabel,
+    buildIssueWorkflowGuardCallbacks(),
+    opts
+  );
 }
 
-async function normalizeIssueTitle(
+function buildIssueWorkflowGuardCallbacks(): IssueWorkflowGuardCallbacks<
+  BotContext<RequestEvents>,
+  IssueParams,
+  IssueLike,
+  TemplateLike,
+  FormData,
+  EffectiveConstants
+> {
+  return composeIssueWorkflowGuardCallbacks<
+    BotContext<RequestEvents>,
+    IssueParams,
+    IssueLike,
+    TemplateLike,
+    FormData,
+    EffectiveConstants
+  >({
+    tryLoadTemplateForLabels,
+    normalizeKey,
+    postOnce,
+    fetchIssueLabels,
+    toLabelNames,
+    removeExactLabelsFromIssue,
+    labelsMatching,
+    loadTemplateWithLabelRefresh,
+    parseForm,
+    readIssueBodyForProcessing,
+    isRequestIssue,
+    resolveEffectiveConstants,
+    resolveLockedWorkflowLabelKeys,
+    resolveWorkflowLabel,
+    resolveEffectiveRequestType,
+    resolveApproverRoutingForRequestType,
+    uniqLogins,
+    isConfiguredApprover,
+    setStateLabel,
+    removeRejectedStatusLabel,
+    removeProgressStatusLabels,
+    log,
+    getErrorMessage,
+  });
+}
+
+async function handleClosedIssueWorkflowGuard(
+  context: BotContext<RequestEvents>,
+  params: IssueParams,
+  issue: IssueLike
+): Promise<void> {
+  await handleClosedIssueWorkflowGuardApplication(context, params, issue, buildIssueWorkflowGuardCallbacks());
+}
+
+async function handleIssueLabelChangeWorkflowGuard(
   context: BotContext<RequestEvents>,
   params: IssueParams,
   issue: IssueLike,
-  template: TemplateLike,
-  parsedFormData: FormData
+  action: string,
+  changedLabel: string,
+  senderLogin: string | undefined | null
 ): Promise<void> {
-  try {
-    const resourceName = extractResourceNameFromForm(parsedFormData, template);
-    const rawPrefix = toStringTrim(template?.title || template?.name || 'Request');
-    const prefix = head(rawPrefix);
-
-    if (!prefix || !resourceName) return;
-
-    const desiredTitle = `${prefix}: ${resourceName}`;
-    if (toStringTrim(issue.title) === desiredTitle) return;
-
-    await context.octokit.issues.update({
-      owner: params.owner,
-      repo: params.repo,
-      issue_number: params.issue_number,
-      title: desiredTitle,
-    });
-
-    issue.title = desiredTitle;
-  } catch (err: unknown) {
-    log(context, 'warn', { err: err instanceof Error ? err.message : String(err) }, 'Failed to normalize issue title');
-  }
-}
-
-async function closeOutdatedRequestPrs(
-  context: BotContext<RequestEvents>,
-  { owner, repo, issue_number }: IssueParams,
-  template: TemplateLike,
-  options: { parsedFormData?: FormData; currentHash?: string; acceptedHashes?: string[] } = {}
-): Promise<void> {
-  const ensureFormAndHash = async (): Promise<{
-    parsedFormData: FormData;
-    currentHash: string;
-    acceptedHashes: string[];
-  }> => {
-    const { parsedFormData: givenForm, currentHash: givenHash, acceptedHashes: givenAcceptedHashes } = options;
-
-    if (givenForm && givenHash) {
-      const acceptedHashes = Array.from(
-        new Set((givenAcceptedHashes || [givenHash]).map((value) => toStringTrim(value)).filter(Boolean))
-      );
-
-      return {
-        parsedFormData: givenForm,
-        currentHash: givenHash,
-        acceptedHashes: acceptedHashes.length ? acceptedHashes : [givenHash],
-      };
-    }
-
-    const { data } = await context.octokit.issues.get({ owner, repo, issue_number });
-    const issue = data as unknown as IssueLike;
-    const bodyStr = readIssueBodyForProcessing(issue.body);
-    const form = parseForm(bodyStr, template);
-    const acceptedHashes = buildCompatibleRequestSnapshotHashes(issue.body, form, template);
-    const currentHash = acceptedHashes[0] || calcSnapshotHash(form, template, bodyStr);
-
-    return {
-      parsedFormData: form,
-      currentHash,
-      acceptedHashes,
-    };
-  };
-
-  const closePr = async (prNum: number, ref: string): Promise<void> => {
-    try {
-      await context.octokit.pulls.update({ owner, repo, pull_number: prNum, state: 'closed' });
-    } catch {
-      /* empty */
-    }
-    try {
-      await context.octokit.git.deleteRef({ owner, repo, ref: `heads/${ref}` });
-    } catch {
-      /* empty */
-    }
-  };
-
-  const { currentHash, acceptedHashes } = await ensureFormAndHash();
-  const acceptedHashSet = new Set((acceptedHashes || []).map((value) => toStringTrim(value)).filter(Boolean));
-
-  if (currentHash) acceptedHashSet.add(currentHash);
-
-  const prs = await findOpenIssuePrs(context, { owner, repo }, issue_number);
-  if (!prs.length) return;
-
-  const eff = resolveEffectiveConstants(context);
-  const onApproved = eff.labelOnApproved;
-  const closed: number[] = [];
-
-  for (const pr of prs) {
-    const prHash = extractHashFromPrBody(toStringTrim(pr.body));
-
-    if (!prHash) continue;
-    if (acceptedHashSet.has(prHash)) continue;
-
-    await closePr(pr.number, pr.head.ref);
-    closed.push(pr.number);
-  }
-
-  if (!closed.length) return;
-
-  const list = closed.map((n) => `#${n}`).join(', ');
-  await postOnce(
+  await handleIssueLabelChangeWorkflowGuardApplication(
     context,
-    { owner, repo, issue_number },
-    `Form updated → closing outdated PR(s): ${list}. Please re-approve to open a new PR.`,
-    { minimizeTag: 'nsreq:pr-outdated' }
+    params,
+    issue,
+    action,
+    changedLabel,
+    senderLogin,
+    buildIssueWorkflowGuardCallbacks()
   );
-
-  if (!onApproved) return;
-  try {
-    await context.octokit.issues.removeLabel({ owner, repo, issue_number, name: onApproved });
-  } catch {
-    /* empty */
-  }
-}
-
-function readRepoInfoFromPayload(payload: unknown): RepoInfo | null {
-  if (!isPlainObject(payload)) return null;
-
-  const repoObj = payload['repository'];
-  if (!isPlainObject(repoObj)) return null;
-
-  const repoName = toStringTrim(repoObj['name']);
-  const ownerObj = isPlainObject(repoObj['owner']) ? repoObj['owner'] : null;
-  const ownerLogin = ownerObj ? toStringTrim(ownerObj['login']) : '';
-
-  if (!ownerLogin || !repoName) return null;
-
-  return { owner: ownerLogin, repo: repoName };
 }
 
 export default function requestHandler(app: Probot): void {
-  const getStaticConfig = async (
-    context: BotContext<RequestEvents>,
-    options: StaticConfigLoadOptions = {}
-  ): Promise<NormalizedStaticConfig> => {
-    const forceReload = options.forceReload === true;
+  const getStaticConfig = createStaticConfigContextLoader<BotContext<RequestEvents>>(app.log || console);
 
-    if (!forceReload && context.resourceBotConfig && context.resourceBotHooks !== undefined) {
-      return context.resourceBotConfig;
-    }
+  const autoMergeRuntime = createAutoMergeRuntime({
+    getStaticConfig,
+    evaluateHeadGreenForApprovalReevaluation,
+    listOpenPullRequests,
+    readFreshPullRequest,
+    isSequentialDirectRegistryPr,
+    getSequentialRegistryPrActive,
+    clearSequentialRegistryPrActive,
+    markSequentialRegistryPrHeadSkipped,
+    markSequentialRegistryPrActive,
+    requestPullRequestBranchUpdate,
+    isSequentialRegistryPrActiveBlocking,
+    parseLinkedIssueNumberFromPr,
+    isSnapshotManagedRequestPr,
+    pullRequestTargetsBranch,
+    isSequentialRegistryPrHeadSkipped,
+    listChangedYamlFilesForPrWithFallback,
+    shouldUpdatePullRequestBranch,
+    isPullRequestApprovedForBranchMaintenance,
+    waitForPullRequestMergeability,
+    hasAutoApprovedPrHead,
+    isCrossRepositoryPullRequest,
+    tryMergeIfGreen,
+    maybeHandleStandaloneDirectPrApproval,
+    buildIssueParams: (repoInfo: RepoInfo, issueNumber: number) => ({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      issue_number: issueNumber,
+    }),
+    readLinkedIssue: async (context: BotContext<RequestEvents>, params: IssueParams): Promise<IssueLike> => {
+      const res = await context.octokit.issues.get(params);
+      return res.data as unknown as IssueLike;
+    },
+    log,
+    getErrorMessage,
+    getHttpStatus,
+    hasIssueFormInputs,
+    loadTemplateWithLabelRefresh,
+    parseForm,
+    readIssueBodyForProcessing,
+    isRequestIssue,
+    buildCompatibleRequestSnapshotHashes,
+    calcSnapshotHash,
+    extractHashFromPrBody,
+    closeOutdatedRequestPrs,
+    maybeHandleDirectPrApprovalForMerge,
+    isPullRequestOpen,
+  });
 
-    try {
-      const { config, hooks, hooksSource } = await loadStaticConfig(context, {
-        validate: false,
-        updateIssue: false,
-        forceReload,
-      });
+  const runOneSequentialDirectRegistryPrMaintenance = autoMergeRuntime.runOneSequentialDirectRegistryPrMaintenance;
+  tryMergeApprovedPrOrUpdateBranchForDirectPr = autoMergeRuntime.tryMergeApprovedPrOrUpdateBranch;
+  const tryAutoMerge = autoMergeRuntime.tryAutoMerge;
+  const handleBlockingRegistryHeadConclusion = autoMergeRuntime.handleBlockingRegistryHeadConclusion;
 
-      context.resourceBotConfig = config;
-      context.resourceBotHooks = hooks;
-      context.resourceBotHooksSource = hooksSource || null;
+  const checkWorkflowRuntime = createCheckWorkflowRuntime<
+    BotContext<RequestEvents>,
+    RepoInfo,
+    PullRequestLike,
+    PullRequestFileLike,
+    CheckRunLike,
+    CheckSuiteLike,
+    SequentialRegistryPrResult
+  >({
+    log,
+    getErrorMessage,
+    getHttpStatus,
+    toStringTrim,
+    isDebugEnabled: DBG,
+    getStaticConfig,
+    isPullRequestOpen,
+    isSafeRegistryWorkflowApprovalFile,
+    listChangedFilesForPr,
+    parseLinkedIssueNumberFromPr,
+    isSnapshotManagedRequestPr,
+    evaluateDirectPrOnApproval,
+    hasAllowedStandaloneDirectPrApprovalForCurrentHead,
+    readFreshPullRequest,
+    isPlainObject,
+    isSequentialRegistryPrActiveBlocking,
+    listOpenPullRequests,
+    isSequentialRegistryPrHeadSkipped,
+    listChangedYamlFilesForPrWithFallback,
+    isPullRequestApprovedForBranchMaintenance,
+    waitForPullRequestMergeability,
+    isPullRequestDirty,
+    readMergeableState,
+    shouldUpdatePullRequestBranch,
+    requestPullRequestBranchUpdate,
+    markSequentialRegistryPrHeadSkipped,
+    readDefaultBranchFromPayload,
+    runOneSequentialDirectRegistryPrMaintenance,
+    readCheckRunFromPayload,
+    readCheckSuiteFromPayload,
+    readRepoInfoFromPayload,
+    readCheckRunPrNumbers,
+    resolveCheckSuitePrNumbers,
+    readCheckSuiteId,
+    listAllCheckRunsForSuite,
+    readCheckRunId,
+    readFirstRegistryValidationArtifactsForSuiteRuns,
+    collapseBotCommentsByPrefix,
+    postCheckSuiteRegistryValidationComments,
+    tryAutoMerge,
+    handleBlockingRegistryHeadConclusion,
+    isBlockingCheckConclusion,
+  });
 
-      log(
-        context,
-        'info',
-        {
-          forceReload,
-          hooksSource: context.resourceBotHooksSource,
-        },
-        'static-config:context-loaded'
-      );
-
-      return context.resourceBotConfig;
-    } catch (err: unknown) {
-      (app.log || console).warn?.(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          forceReload,
-        },
-        'failed to load resource-bot static config, using defaults'
-      );
-
-      context.resourceBotConfig = DEFAULT_CONFIG;
-      context.resourceBotHooks = null;
-      context.resourceBotHooksSource = null;
-
-      return context.resourceBotConfig;
-    }
-  };
+  const maybeApprovePendingWorkflowRunsForRegistryPrWithRetry =
+    checkWorkflowRuntime.maybeApprovePendingWorkflowRunsForRegistryPrWithRetry;
+  const updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry =
+    checkWorkflowRuntime.updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry;
+  const reevaluateOpenDirectPullRequestsAfterDefaultBranchPush =
+    checkWorkflowRuntime.reevaluateOpenDirectPullRequestsAfterDefaultBranchPush;
+  const buildCheckCompletedHandlerCallbacks = checkWorkflowRuntime.buildCheckCompletedHandlerCallbacks;
 
   const shouldSkipIssueEditedEvent = (
     context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
@@ -9209,8 +3020,7 @@ export default function requestHandler(app: Probot): void {
     return !bodyOrLabelChanged;
   };
 
-  // normalizeIssueTitle moved to outer scope
-  const isApprovalComment = (context: BotContext<RequestEvents>, strippedText: string): boolean => {
+  const isApprovalCommentForContext = (context: BotContext<RequestEvents>, strippedText: string): boolean => {
     const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
     const wf = cfg?.workflow ?? {};
     let labelsCfg: Record<string, unknown> = {};
@@ -9226,1128 +3036,214 @@ export default function requestHandler(app: Probot): void {
       approvalKeyword = toStringTrim(approvalSuccessful);
     }
 
-    return isExplicitApprovalCommand(strippedText, approvalKeyword);
+    return isApprovalComment(strippedText, approvalKeyword);
   };
 
   // moved to outer scope
-  app.on(
-    ['issues.opened', 'issues.edited', 'issues.reopened'],
-    async (context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>): Promise<void> => {
-      await getStaticConfig(context);
-
-      if (shouldSkipIssueEditedEvent(context)) return;
-
-      const sender = context.payload.sender as unknown as SenderLike;
-      const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
-      if (action === 'edited' && isBotSender(sender)) return; // prevent loops
-
-      const issue = context.payload.issue as unknown as IssueLike;
-
-      if (DBG) {
-        const safeLabels = toLabelNames(issue?.labels);
-        const payload = context.payload as unknown;
-
-        let changesKeys: string[] = [];
-        if (isPlainObject(payload) && 'changes' in payload) {
-          const c = payload['changes'];
-          if (isPlainObject(c)) changesKeys = Object.keys(c);
-        }
-
-        log(
-          context,
-          'debug',
-          {
-            action: (context.payload as unknown as Record<string, unknown>)?.action,
-            issueNumber: issue?.number,
-            issueId: issue?.id,
-            title: issue?.title,
-            state: issue?.state,
-            user: issue?.user?.login,
-            created_at: issue?.created_at,
-            updated_at: issue?.updated_at,
-            labels: safeLabels,
-            bodyLen: String(issue?.body || '').length,
-            bodyHead: String(issue?.body || '').slice(0, 300),
-            changesKeys,
-          },
-          'dbg:issues:payload.issue'
-        );
-      }
-
-      const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-      await processIssueEvent(app, context, params, issue);
-    }
-  );
-
-  app.on('issues.closed', async (context: BotContext<'issues.closed'>): Promise<void> => {
-    await getStaticConfig(context);
-
-    const issue = context.payload.issue as unknown as IssueLike;
-
-    if (!process.env.JEST_WORKER_ID) {
-      if (!hasIssueFormInputs(issue)) return;
-    }
-
-    const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-    const params: IssueParams = { owner, repo, issue_number: issueNumber };
-
-    let template: TemplateLike;
-    try {
-      template = await loadTemplateWithLabelRefresh(context, params, issue);
-    } catch {
-      // Not a request issue
-      return;
-    }
-
-    const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-    if (!isRequestIssue(context, template, parsedFormData)) return;
-
-    const approvedLabels = resolveApprovedLabels(context);
-    const rejectedLabel = resolveRejectedLabel(context);
-    const rejectedLabels = resolveRejectedLabels(context);
-
-    let labels: string[] = [];
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      labels = toLabelNames(issue.labels);
-    }
-
-    const hasApproved = labelsMatchingAny(labels, approvedLabels).length > 0;
-
-    // If approved, keep it clean
-    if (hasApproved) {
-      await removeRejectedStatusLabel(context, params, labels);
-      await removeProgressStatusLabels(context, params, labels);
-      return;
-    }
-
-    // Closed but not approved -> mark as rejected
-    const hasRejected = labelsMatchingAny(labels, rejectedLabels).length > 0;
-
-    if (rejectedLabel && !hasRejected) {
-      try {
-        await context.octokit.issues.addLabels({
-          ...params,
-          labels: [rejectedLabel],
-        });
-      } catch (e: unknown) {
-        log(
-          context,
-          'warn',
-          { err: e instanceof Error ? e.message : String(e), label: rejectedLabel },
-          'failed to add rejected status label'
-        );
-      }
-    }
-
-    // Clean up progress status labels once Rejected is present.
-    try {
-      labels = await fetchIssueLabels(context, params);
-    } catch {
-      // best effort
-    }
-
-    if (labelsMatchingAny(labels, rejectedLabels).length) {
-      await removeProgressStatusLabels(context, params, labels);
-
-      const approvedMatches = labelsMatchingAny(labels, approvedLabels);
-      if (approvedMatches.length) {
-        await removeExactLabelsFromIssue(context, params, approvedMatches);
-      }
-    }
+  const handleIssueLifecycle = createIssueLifecycleEventHandler<
+    BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
+    IssueParams,
+    IssueLike,
+    SenderLike
+  >({
+    getStaticConfig: async (
+      context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>
+    ): Promise<unknown> => await getStaticConfig(context),
+    shouldSkipIssueEditedEvent,
+    isPlainObject,
+    toStringTrim,
+    isBotSender,
+    toLabelNames,
+    processIssueEvent: async (
+      context: BotContext<'issues.opened' | 'issues.edited' | 'issues.reopened'>,
+      params: IssueParams,
+      issue: IssueLike
+    ): Promise<void> => await processIssueEvent(app, context, params, issue),
+    log,
+    isDebugEnabled: DBG,
   });
 
-  app.on(
-    ['issues.labeled', 'issues.unlabeled'],
-    async (context: BotContext<'issues.labeled' | 'issues.unlabeled'>): Promise<void> => {
-      await getStaticConfig(context);
-
-      const sender = context.payload.sender as unknown as SenderLike;
-      if (isBotSender(sender)) return; // prevent loops
-
-      const issue = context.payload.issue as unknown as IssueLike;
-
-      if (!process.env.JEST_WORKER_ID) {
-        if (!hasIssueFormInputs(issue)) return;
-      }
-      const action = toStringTrim((context.payload as unknown as Record<string, unknown>)['action']).toLowerCase();
-
-      const changedLabel = readPayloadLabelName(context.payload as unknown);
-      if (!changedLabel) return;
-
-      const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-
-      let labels = toLabelNames(issue.labels);
-
-      const expectedRouting = readRoutingLockExpected(issue.body);
-      const hasRoutingLock = Boolean(expectedRouting);
-
-      // Enforce routing label lock. This closes swap/multi-label bypasses.
-      if (expectedRouting) {
-        const enforced = await enforceRoutingLabelLock(context, params, issue, expectedRouting, { changedLabel });
-        if (enforced) {
-          try {
-            labels = await fetchIssueLabels(context, params);
-          } catch {
-            // ignore
-          }
-        }
-      }
-
-      // 2) Load template
-      let template: TemplateLike | null = null;
-      let parsedFormData: FormData = {};
-
-      try {
-        template = await loadTemplateWithLabelRefresh(context, params, issue);
-        parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-      } catch {
-        if (!hasRoutingLock) return;
-      }
-
-      if (!hasRoutingLock && !isRequestIssue(context, template, parsedFormData)) return;
-
-      const eff = resolveEffectiveConstants(context);
-
-      const authorActionLabel = resolveAuthorActionLabel(context);
-      const approverActionLabel = resolveApproverActionLabel(context);
-      const parentOwnerActionLabel = resolveParentOwnerActionLabel(context);
-
-      const approvedLabels = resolveApprovedLabels(context);
-
-      const rejectedLabel = resolveRejectedLabel(context);
-      const rejectedLabels = resolveRejectedLabels(context);
-
-      const progressStateKeys = new Set(
-        [authorActionLabel, approverActionLabel, parentOwnerActionLabel].map(normalizeKey).filter(Boolean)
-      );
-
-      const isProgressStateLabel = (k: string): boolean => progressStateKeys.has(k);
-
-      const lockedKeys = resolveLockedWorkflowLabelKeys(context);
-      const changedKey = normalizeKey(changedLabel);
-
-      const parentOwnerActionKey = normalizeKey(parentOwnerActionLabel);
-      if (parentOwnerActionKey) lockedKeys.add(parentOwnerActionKey);
-
-      const effectiveRequestType = template ? resolveEffectiveRequestType(template, parsedFormData) : '';
-      const approverRouting = effectiveRequestType
-        ? resolveApproverRoutingForRequestType(
-            context,
-            effectiveRequestType,
-            eff.approverUsernames,
-            eff.approverPoolUsernames
-          )
-        : {
-            approvalUsernames: uniqLogins([...(eff.approverUsernames || []), ...(eff.approverPoolUsernames || [])]),
-            autoAssigneePoolUsernames: uniqLogins(eff.approverPoolUsernames || []),
-          };
-
-      const senderIsConfiguredApprover = isConfiguredApprover(sender?.login, approverRouting.approvalUsernames);
-
-      const managedWorkflowKeys = new Set<string>(Array.from(lockedKeys));
-      for (const label of [
-        authorActionLabel,
-        approverActionLabel,
-        parentOwnerActionLabel,
-        ...approvedLabels,
-        ...rejectedLabels,
-      ]) {
-        const key = normalizeKey(label);
-        if (key) managedWorkflowKeys.add(key);
-      }
-
-      // Configured approvers may manage workflow labels manually
-      // Keep routing-label lock logic above intact
-      if (senderIsConfiguredApprover && changedKey && managedWorkflowKeys.has(changedKey)) {
-        return;
-      }
-
-      if (changedKey && lockedKeys.has(changedKey) && !isProgressStateLabel(changedKey)) {
-        // Let the existing "Approved label" guard handle manual approval attempts.
-        const isManualApprovedAdd =
-          action === 'labeled' && labelsMatchingAny([changedLabel], approvedLabels).length > 0;
-
-        const isManualRejectedAdd =
-          action === 'labeled' &&
-          labelsMatchingAny([changedLabel], rejectedLabels).length > 0 &&
-          toStringTrim(issue.state).toLowerCase() !== 'closed';
-
-        if (!isManualApprovedAdd && !isManualRejectedAdd) {
-          if (action === 'labeled') {
-            await removeExactLabelsFromIssue(context, params, [changedLabel]);
-          } else if (action === 'unlabeled') {
-            try {
-              await context.octokit.issues.addLabels({ ...params, labels: [changedLabel] });
-            } catch {
-              // ignore label add errors
-            }
-          }
-
-          await postOnce(
-            context,
-            params,
-            `Label "${changedLabel}" was reverted. Workflow labels from config are managed by the bot and cannot be changed manually.`,
-            { minimizeTag: 'nsreq:workflow-label-lock' }
-          );
-
-          return;
-        }
-      }
-
-      // 3) Manual "Approved" label => rollback
-      if (action === 'labeled' && labelsMatchingAny([changedLabel], approvedLabels).length) {
-        const approvedMatches = labelsMatchingAny(labels, approvedLabels);
-        await removeExactLabelsFromIssue(context, params, approvedMatches);
-
-        // Best effort: keep existing progress label
-        const hasAuthor = labelsMatching(labels, authorActionLabel).length > 0;
-        const hasReview = labelsMatching(labels, approverActionLabel).length > 0;
-        await setStateLabel(context, params, issue, hasAuthor ? 'author' : hasReview ? 'review' : 'review');
-
-        await postOnce(
-          context,
-          params,
-          'Approved label change reverted. Please comment "Approved" to approve a request.',
-          { minimizeTag: 'nsreq:label-guard' }
-        );
-        return;
-      }
-
-      // 4) Manual "Rejected" on open issues => rollback
-      if (
-        action === 'labeled' &&
-        labelsMatchingAny([changedLabel], rejectedLabels).length &&
-        toStringTrim(issue.state).toLowerCase() !== 'closed'
-      ) {
-        const rejectedMatches = labelsMatchingAny(labels, rejectedLabels);
-        await removeExactLabelsFromIssue(context, params, rejectedMatches);
-
-        await postOnce(
-          context,
-          params,
-          `Label "${changedLabel}" change reverted. Rejected state is managed automatically when a request is closed without approval.`,
-          { minimizeTag: 'nsreq:label-guard' }
-        );
-        return;
-      }
-
-      // 5) Closed issues: enforce terminal state (Approved vs Rejected) + cleanup
-      if (toStringTrim(issue.state).toLowerCase() === 'closed') {
-        let latest = labels;
-        try {
-          latest = await fetchIssueLabels(context, params);
-        } catch {
-          // ignore
-        }
-
-        const hasApproved = labelsMatchingAny(latest, approvedLabels).length > 0;
-
-        if (hasApproved) {
-          await removeRejectedStatusLabel(context, params, latest);
-          await removeProgressStatusLabels(context, params, latest);
-          return;
-        }
-
-        const hasRejected = labelsMatchingAny(latest, rejectedLabels).length > 0;
-
-        if (rejectedLabel && !hasRejected) {
-          try {
-            await context.octokit.issues.addLabels({
-              ...params,
-              labels: [rejectedLabel],
-            });
-          } catch {
-            // ignore
-          }
-        }
-
-        try {
-          latest = await fetchIssueLabels(context, params);
-        } catch {
-          // ignore
-        }
-
-        await removeProgressStatusLabels(context, params, latest);
-
-        // mutual exclusivity
-        const approvedMatches = labelsMatchingAny(latest, approvedLabels);
-        if (approvedMatches.length) {
-          await removeExactLabelsFromIssue(context, params, approvedMatches);
-        }
-        return;
-      }
-    }
-  );
-
-  app.on(
-    ['issue_comment.created', 'issue_comment.edited'],
-    async (context: BotContext<'issue_comment.created' | 'issue_comment.edited'>): Promise<void> => {
-      await getStaticConfig(context);
-
-      const issue = context.payload.issue as unknown as IssueLike;
-      const comment = context.payload.comment as unknown as CommentLike;
-      const sender = context.payload.sender as unknown as SenderLike;
-
-      const commenter = String(comment?.user?.login || '');
-
-      if (DBG) {
-        log(
-          context,
-          'debug',
-          {
-            event: context.name,
-            action: (context.payload as unknown as Record<string, unknown>)?.action,
-            issue: issue?.number,
-            commenter,
-          },
-          'requestHandler:issue-comment-event'
-        );
-      }
-
-      if (isBotSender(sender)) return;
-
-      const { owner, repo, issue_number: issueNumber } = context.issue() as IssueParams;
-      const params: IssueParams = { owner, repo, issue_number: issueNumber };
-      const repoInfo: RepoInfo = { owner, repo };
-
-      const stripped = stripQuoteAndCode(comment.body || '');
-      const isApproval = isApprovalComment(context, stripped);
-
-      if (!process.env.JEST_WORKER_ID && !hasIssueFormInputs(issue)) {
-        const isPullRequestConversation = isPlainObject((issue as Record<string, unknown>)['pull_request']);
-
-        if (isPullRequestConversation && isApproval) {
-          const pr = await readFreshPullRequest(context, repoInfo, issueNumber);
-          if (pr && parseLinkedIssueNumberFromPr(pr, repoInfo) === null) {
-            await handleDirectPrApprovalComment(context, repoInfo, pr, commenter);
-          }
-        }
-
-        return;
-      }
-
-      let template: TemplateLike;
-      try {
-        template = await loadTemplateWithLabelRefresh(context, params, issue);
-      } catch (e: unknown) {
-        log(
-          context,
-          'error',
-          { err: e instanceof Error ? e.message : String(e), owner, repo, issue: issue?.number },
-          'Error loading template in issue_comment handler'
-        );
-        return;
-      }
-
-      const parsedFormData = template ? parseForm(readIssueBodyForProcessing(issue.body), template) : {};
-      if (!isRequestIssue(context, template, parsedFormData)) {
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            { issue: issue.number, parsedKeys: Object.keys(parsedFormData || {}) },
-            'requestHandler:issue-comment-event skipped (not a request issue)'
-          );
-        }
-        return;
-      }
-
-      if (isApproval) {
-        const handled = await handleParentOwnerApprovalIfNeeded(
-          context,
-          params,
-          issue,
-          template,
-          parsedFormData,
-          commenter
-        );
-        if (handled) return;
-
-        const contactHandled = await handleSystemContactOwnerApprovalIfNeeded(
-          context,
-          params,
-          issue,
-          template,
-          parsedFormData,
-          commenter
-        );
-        if (contactHandled) return;
-
-        await handleApprovalComment(context, params, issue, template, parsedFormData, commenter);
-        return;
-      }
-
-      if (comment.user.login === issue.user?.login) {
-        const saysUpdated = /\b(updated|update|fixed|fix(ed)?|addressed|done)\b/i.test(toStringTrim(comment.body));
-        if (!saysUpdated) return;
-        await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData);
-      }
-    }
-  );
-
-  const runAutoMergeEvaluation = async (
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    normalizedHeadSha: string
-  ): Promise<void> => {
-    await getStaticConfig(context);
-
-    const greenResult = await evaluateHeadGreenForApprovalReevaluation(context, repoInfo, normalizedHeadSha);
-
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: normalizedHeadSha,
-        green: greenResult.green,
-        greenReason: greenResult.reason,
-        statusState: greenResult.statusState,
-        blockingRuns: greenResult.blockingRuns,
-        latestRuns: greenResult.latestRuns.slice(0, 30),
-      },
-      'auto-merge:head-green'
-    );
-
-    if (!greenResult.green) return;
-
-    const candidates = (await listOpenPullRequests(context, repoInfo)).filter(
-      (pr) => toStringTrim(pr.head?.sha) === normalizedHeadSha
-    );
-
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        headSha: normalizedHeadSha,
-        candidatePrNumbers: candidates.map((pr) => pr.number),
-      },
-      'auto-merge:candidates'
-    );
-
-    for (const pr of candidates) {
-      try {
-        await processPullRequestForAutoMerge(context, repoInfo, pr);
-        await releaseSequentialRegistryPrIfNotApprovedAfterGreen(context, repoInfo, pr);
-        await advanceSequentialRegistryPrQueueAfterTerminalState(
-          context,
-          repoInfo,
-          pr,
-          'sequential-direct-pr:advance-after-terminal-state'
-        );
-      } catch (e: unknown) {
-        log(
-          context,
-          'warn',
-          {
-            err: e instanceof Error ? e.message : String(e),
-            prNumber: pr.number,
-          },
-          'auto-merge candidate processing failed'
-        );
-
-        const freshPr = (await readFreshPullRequest(context, repoInfo, pr.number)) || pr;
-        const baseBranch = toStringTrim(freshPr.base?.ref) || toStringTrim(pr.base?.ref);
-        const isSequentialDirectRegistry = baseBranch
-          ? await isSequentialDirectRegistryPr(context, repoInfo, freshPr, baseBranch)
-          : false;
-
-        if (!isSequentialDirectRegistry) {
-          continue;
-        }
-
-        const active = getSequentialRegistryPrActive(repoInfo);
-        const wasActiveSequentialPr = active?.prNumber === freshPr.number || active?.prNumber === pr.number;
-
-        markSequentialRegistryPrHeadSkipped(context, repoInfo, freshPr, 'auto-merge-candidate-processing-failed');
-
-        if (wasActiveSequentialPr) {
-          clearSequentialRegistryPrActive(repoInfo);
-
-          if (baseBranch) {
-            await runOneSequentialDirectRegistryPrMaintenance(
-              context,
-              repoInfo,
-              baseBranch,
-              'sequential-direct-pr:advance-after-processing-failure'
-            );
-          }
-        }
-      }
-    }
-  };
-
-  const tryAutoMerge = async (
-    context: BotContext<RequestEvents>,
-    repoInfo: RepoInfo,
-    headSha: string
-  ): Promise<void> => {
-    const normalizedHeadSha = toStringTrim(headSha);
-    if (!normalizedHeadSha) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-        },
-        'auto-merge:skip-missing-head-sha'
-      );
-      return;
-    }
-
-    const key = `${repoInfo.owner}/${repoInfo.repo}:${normalizedHeadSha}:auto-merge-evaluation`.toLowerCase();
-
-    const existing = AUTO_MERGE_EVALUATION_INFLIGHT.get(key);
-    if (existing) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          headSha: normalizedHeadSha,
-        },
-        'auto-merge:evaluation deduped: already in flight'
-      );
-
-      await existing;
-      return;
-    }
-
-    if (isAutoMergeEvaluationRecentlyCompleted(key)) {
-      log(
-        context,
-        'info',
-        {
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          headSha: normalizedHeadSha,
-        },
-        'auto-merge:evaluation skipped: recently completed'
-      );
-
-      return;
-    }
-
-    const pending = runAutoMergeEvaluation(context, repoInfo, normalizedHeadSha).finally(() => {
-      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
-      markAutoMergeEvaluationRecentlyCompleted(key);
-    });
-
-    AUTO_MERGE_EVALUATION_INFLIGHT.set(key, pending);
-    await pending;
-  };
-
-  const maybeHandleDefaultBranchCheckSuiteSuccess = async (
-    context: BotContext<RequestEvents>,
-    payload: unknown,
-    checkSuite: CheckSuiteLike | null,
-    repoInfo: RepoInfo
-  ): Promise<void> => {
-    const defaultBranch = readDefaultBranchFromPayload(payload);
-    const headBranch = toStringTrim(checkSuite?.head_branch);
-    const headSha = toStringTrim(checkSuite?.head_sha);
-    const conclusion = toStringTrim(checkSuite?.conclusion).toLowerCase();
-    const status = toStringTrim(checkSuite?.status).toLowerCase();
-
-    let isDefaultBranchSuite = Boolean(defaultBranch && headBranch && headBranch === defaultBranch);
-    let defaultBranchHeadSha = '';
-
-    if (!isDefaultBranchSuite && defaultBranch && headSha) {
-      try {
-        const branch = await context.octokit.repos.getBranch({
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          branch: defaultBranch,
-        });
-
-        defaultBranchHeadSha = toStringTrim(
-          (branch as unknown as { data?: { commit?: { sha?: string | null } } })?.data?.commit?.sha
-        );
-
-        isDefaultBranchSuite = Boolean(defaultBranchHeadSha && defaultBranchHeadSha === headSha);
-      } catch (error: unknown) {
-        log(
-          context,
-          'warn',
-          {
-            owner: repoInfo.owner,
-            repo: repoInfo.repo,
-            defaultBranch,
-            headSha,
-            err: getErrorMessage(error),
-            status: getHttpStatus(error),
-          },
-          'default-branch-check-suite:branch-head-read-failed'
-        );
-      }
-    }
-
-    log(
-      context,
-      'info',
-      {
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        defaultBranch,
-        headBranch,
-        headSha,
-        defaultBranchHeadSha,
-        conclusion,
-        status,
-        isDefaultBranchSuite,
-      },
-      'default-branch-check-suite:evaluated'
-    );
-
-    if (!isDefaultBranchSuite) return;
-    if (status && status !== 'completed') return;
-    if (conclusion !== 'success') return;
-
-    await getStaticConfig(context, { forceReload: true });
-
-    const directResult = await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-      context,
-      repoInfo,
-      defaultBranch,
-      'default-branch-check-suite:direct-pr-reevaluation'
-    );
-
-    if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
-      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, defaultBranch);
-    }
-  };
-
-  app.on('push', async (context: BotContext<'push'>): Promise<void> => {
-    const payload = context.payload as unknown;
-    const repoInfo = readRepoInfoFromPayload(payload);
-    const ref = isPlainObject(payload) ? toStringTrim(payload['ref']) : '';
-    const baseBranch = readDefaultBranchFromPush(payload);
-    const changedFiles = readPushChangedFiles(payload);
-    const approvalConfigChangedFiles = changedFiles.filter(isApprovalConfigChangePath);
-    const defaultBranchPush = isDefaultBranchPush(payload);
-
-    log(
-      context,
-      'info',
-      {
-        event: toStringTrim((context as unknown as { name?: string }).name),
-        ref,
-        defaultBranch: baseBranch,
-        isDefaultBranchPush: defaultBranchPush,
-        owner: repoInfo?.owner,
-        repo: repoInfo?.repo,
-        changedFilesCount: changedFiles.length,
-        approvalConfigChangedFiles,
-      },
-      'default-branch-push:received'
-    );
-
-    if (!defaultBranchPush) return;
-
-    if (!repoInfo) {
-      log(
-        context,
-        'warn',
-        {
-          ref,
-          defaultBranch: baseBranch,
-        },
-        'default-branch-push:missing-repo-info'
-      );
-      return;
-    }
-
-    await getStaticConfig(context, { forceReload: true });
-
-    const directPrReevaluationReason = approvalConfigChangedFiles.length
-      ? 'default-branch-push:approval-config-change'
-      : 'default-branch-push:direct-pr-reevaluation';
-
-    const directResult = await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(
-      context,
-      repoInfo,
-      baseBranch,
-      directPrReevaluationReason
-    );
-
-    if (!directResult.updated && !directResult.processed && !directResult.blockedByActive) {
-      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch);
-    }
+  const handleIssueClosed = createIssueClosedEventHandler<BotContext<'issues.closed'>, IssueParams, IssueLike>({
+    getStaticConfig: async (context: BotContext<'issues.closed'>): Promise<unknown> => await getStaticConfig(context),
+    hasIssueFormInputs,
+    isJestWorker: (): boolean => Boolean(process.env.JEST_WORKER_ID),
+    handleClosedIssueWorkflowGuard: async (
+      context: BotContext<'issues.closed'>,
+      params: IssueParams,
+      issue: IssueLike
+    ): Promise<void> => await handleClosedIssueWorkflowGuard(context, params, issue),
   });
 
-  app.on(
-    ['pull_request.opened', 'pull_request.synchronize', 'pull_request.reopened', 'pull_request.ready_for_review'],
-    async (
-      context: BotContext<
-        'pull_request.opened' | 'pull_request.synchronize' | 'pull_request.reopened' | 'pull_request.ready_for_review'
-      >
-    ): Promise<void> => {
-      await getStaticConfig(context);
+  const handleIssueLabelChange = createIssueLabelChangeEventHandler<
+    BotContext<'issues.labeled' | 'issues.unlabeled'>,
+    IssueParams,
+    IssueLike,
+    SenderLike
+  >({
+    getStaticConfig: async (context: BotContext<'issues.labeled' | 'issues.unlabeled'>): Promise<unknown> =>
+      await getStaticConfig(context),
+    isBotSender,
+    hasIssueFormInputs,
+    isJestWorker: (): boolean => Boolean(process.env.JEST_WORKER_ID),
+    toStringTrim,
+    readPayloadLabelName,
+    handleIssueLabelChangeWorkflowGuard: async (
+      context: BotContext<'issues.labeled' | 'issues.unlabeled'>,
+      params: IssueParams,
+      issue: IssueLike,
+      action: string,
+      changedLabel: string,
+      senderLogin: string | undefined | null
+    ): Promise<void> =>
+      await handleIssueLabelChangeWorkflowGuard(context, params, issue, action, changedLabel, senderLogin),
+  });
 
-      const payload = context.payload as unknown;
-      const repoInfo = readRepoInfoFromPayload(payload);
+  const handleIssueComment = createIssueCommentEventHandler<
+    BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+    IssueParams,
+    IssueLike,
+    CommentLike,
+    SenderLike,
+    PullRequestLike,
+    TemplateLike,
+    FormData
+  >({
+    getStaticConfig: async (context: BotContext<'issue_comment.created' | 'issue_comment.edited'>): Promise<unknown> =>
+      await getStaticConfig(context),
+    isPlainObject,
+    isBotSender,
+    hasIssueFormInputs,
+    isJestWorker: (): boolean => Boolean(process.env.JEST_WORKER_ID),
+    stripQuoteAndCode,
+    isApprovalCommentForContext: (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      strippedText: string
+    ): boolean => isApprovalCommentForContext(context, strippedText),
+    isAuthorUpdateComment,
+    readFreshPullRequest: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      repoInfo: RepoInfo,
+      prNumber: number
+    ): Promise<PullRequestLike | null> => await readFreshPullRequest(context, repoInfo, prNumber),
+    parseLinkedIssueNumberFromPr,
+    handleDirectPrApprovalComment: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      repoInfo: RepoInfo,
+      pr: PullRequestLike,
+      commenter: string
+    ): Promise<void> => await handleDirectPrApprovalComment(context, repoInfo, pr, commenter),
+    loadTemplateWithLabelRefresh: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike
+    ): Promise<TemplateLike> => await loadTemplateWithLabelRefresh(context, params, issue),
+    readIssueBodyForProcessing,
+    parseForm,
+    isRequestIssue: (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      template: TemplateLike,
+      parsedFormData: FormData
+    ): boolean => isRequestIssue(context, template, parsedFormData),
+    handleParentOwnerApprovalIfNeeded: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData,
+      commenter: string
+    ): Promise<boolean> =>
+      await handleParentOwnerApprovalIfNeeded(context, params, issue, template, parsedFormData, commenter),
+    handleSystemContactOwnerApprovalIfNeeded: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData,
+      commenter: string
+    ): Promise<boolean> =>
+      await handleSystemContactOwnerApprovalIfNeeded(context, params, issue, template, parsedFormData, commenter),
+    handleApprovalComment: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData,
+      commenter: string
+    ): Promise<void> => await handleApprovalComment(context, params, issue, template, parsedFormData, commenter),
+    handleAuthorUpdateComment: async (
+      context: BotContext<'issue_comment.created' | 'issue_comment.edited'>,
+      params: IssueParams,
+      issue: IssueLike,
+      template: TemplateLike,
+      parsedFormData: FormData
+    ): Promise<void> => await handleAuthorUpdateComment(app, context, params, issue, template, parsedFormData),
+    log,
+    isDebugEnabled: DBG,
+  });
 
-      if (!repoInfo) return;
+  const handlePush = createPushEventHandler<BotContext<'push'>, RepoInfo, SequentialRegistryPrResult>({
+    readRepoInfoFromPayload,
+    isPlainObject,
+    toStringTrim,
+    readDefaultBranchFromPush,
+    readPushChangedFiles,
+    isApprovalConfigChangePath,
+    isDefaultBranchPush,
+    getStaticConfig: async (context: BotContext<'push'>, options: { forceReload?: boolean }): Promise<unknown> =>
+      await getStaticConfig(context, options),
+    reevaluateOpenDirectPullRequestsAfterDefaultBranchPush: async (
+      context: BotContext<'push'>,
+      repoInfo: RepoInfo,
+      baseBranch: string,
+      reason: string
+    ): Promise<SequentialRegistryPrResult> =>
+      await reevaluateOpenDirectPullRequestsAfterDefaultBranchPush(context, repoInfo, baseBranch, reason),
+    updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry: async (
+      context: BotContext<'push'>,
+      repoInfo: RepoInfo,
+      baseBranch: string
+    ): Promise<boolean> =>
+      await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry(context, repoInfo, baseBranch),
+    log,
+  });
 
-      const prRaw = isPlainObject(payload) ? payload['pull_request'] : null;
-      if (!isPlainObject(prRaw)) return;
+  const handlePullRequest = createPullRequestEventHandler<
+    BotContext<
+      'pull_request.opened' | 'pull_request.synchronize' | 'pull_request.reopened' | 'pull_request.ready_for_review'
+    >,
+    RepoInfo,
+    PullRequestLike
+  >({
+    getStaticConfig,
+    readRepoInfoFromPayload,
+    isPlainObject,
+    isPullRequestOpen,
+    maybeApprovePendingWorkflowRunsForRegistryPrWithRetry,
+    toStringTrim,
+  });
 
-      const pr = prRaw as unknown as PullRequestLike;
+  const handleCheck = createCheckEventHandler<BotContext<'check_suite.completed' | 'check_run.completed'>>({
+    toStringTrim,
+    handleCheckCompletedEvent: async (context, payload, eventName): Promise<void> => {
+      await handleCheckCompletedEventApplication(context, payload, eventName, buildCheckCompletedHandlerCallbacks());
+    },
+  });
 
-      if (!isPullRequestOpen(pr)) return;
+  const handleStatus = createStatusEventHandler<BotContext<'status'>, RepoInfo>({
+    isPlainObject,
+    toStringTrim,
+    toRepoInfo: (owner, repo) => ({ owner, repo }),
+    tryAutoMerge,
+  });
 
-      await maybeApprovePendingWorkflowRunsForRegistryPrWithRetry(
-        context,
-        repoInfo,
-        pr,
-        `pull-request:${toStringTrim((payload as Record<string, unknown>)['action']) || 'event'}`
-      );
-    }
-  );
-
-  app.on(
-    ['check_suite.completed', 'check_run.completed'],
-    async (context: BotContext<'check_suite.completed' | 'check_run.completed'>): Promise<void> => {
-      const payload = context.payload as unknown;
-      const action = isPlainObject(payload) ? toStringTrim(payload['action']).toLowerCase() : '';
-      const eventName = toStringTrim((context as unknown as { name?: string }).name);
-      const run = readCheckRunFromPayload(payload);
-      const checkSuite = readCheckSuiteFromPayload(payload);
-      const repoInfo = readRepoInfoFromPayload(payload);
-
-      log(
-        context,
-        'info',
-        {
-          event: eventName,
-          action,
-          hasCheckRun: Boolean(run),
-          hasCheckSuite: Boolean(checkSuite),
-          checkRunHeadSha: toStringTrim(run?.head_sha),
-          checkRunStatus: toStringTrim(run?.status).toLowerCase(),
-          checkRunConclusion: toStringTrim(run?.conclusion).toLowerCase(),
-          checkSuiteHeadSha: toStringTrim(checkSuite?.head_sha),
-          checkSuiteHeadBranch: toStringTrim(checkSuite?.head_branch),
-          checkSuiteStatus: toStringTrim(checkSuite?.status).toLowerCase(),
-          checkSuiteConclusion: toStringTrim(checkSuite?.conclusion).toLowerCase(),
-          owner: repoInfo?.owner,
-          repo: repoInfo?.repo,
-        },
-        'checks:event-classification'
-      );
-
-      if (run) {
-        const conclusion = toStringTrim(run?.conclusion).toLowerCase();
-        const status = toStringTrim(run?.status).toLowerCase();
-        const headShaStr = toStringTrim(run?.head_sha);
-
-        if (!repoInfo) {
-          log(
-            context,
-            'warn',
-            {
-              event: eventName,
-              action,
-              conclusion,
-              status,
-              headShaStr,
-            },
-            'checks:check-run-missing-repo-info'
-          );
-          return;
-        }
-
-        const prNumbers = readCheckRunPrNumbers(run);
-
-        log(
-          context,
-          'info',
-          {
-            owner: repoInfo.owner,
-            repo: repoInfo.repo,
-            conclusion,
-            status,
-            headShaStr,
-            prNumbers,
-          },
-          'checks:check-run resolved'
-        );
-
-        if (status !== 'completed') return;
-        if (conclusion && conclusion !== 'success') {
-          if (isBlockingCheckConclusion(conclusion)) {
-            await getStaticConfig(context);
-
-            if (conclusion === 'action_required') {
-              const approvedWorkflow = await maybeApprovePendingWorkflowRunsForPrNumbers(
-                context,
-                repoInfo,
-                prNumbers,
-                headShaStr,
-                `check-run:${conclusion}`
-              );
-
-              if (approvedWorkflow) return;
-            }
-
-            await handleBlockingRegistryHeadConclusion(
-              context,
-              repoInfo,
-              headShaStr,
-              readDefaultBranchFromPayload(payload),
-              `check-run:${conclusion}`
-            );
-          }
-
-          return;
-        }
-        if (conclusion !== 'success') return;
-        if (!headShaStr) return;
-
-        for (const prNumber of prNumbers) {
-          await collapseBotCommentsByPrefix(
-            context,
-            { owner: repoInfo.owner, repo: repoInfo.repo, issue_number: prNumber },
-            {
-              tagPrefix: 'nsreq:ci-validation',
-              collapseBody: 'Validation issues resolved.',
-              classifier: 'RESOLVED',
-            }
-          );
-        }
-
-        await tryAutoMerge(context, repoInfo, headShaStr);
-        return;
-      }
-
-      if (!checkSuite) return;
-      if (!repoInfo) return;
-
-      const conclusion = toStringTrim(checkSuite.conclusion).toLowerCase();
-      const headShaStr = toStringTrim(checkSuite.head_sha);
-      const ownerLogin = repoInfo.owner;
-      const repoName = repoInfo.repo;
-
-      const prNumbers = await resolveCheckSuitePrNumbers(context, repoInfo, checkSuite, headShaStr);
-
-      log(
-        context,
-        'info',
-        {
-          ownerLogin,
-          repoName,
-          conclusion,
-          headShaStr,
-          checkSuiteHeadBranch: toStringTrim(checkSuite.head_branch),
-          checkSuiteStatus: toStringTrim(checkSuite.status).toLowerCase(),
-          prNumbers,
-        },
-        'checks:context resolved'
-      );
-
-      // success -> collapse old CI validation comments + keep existing auto-merge behavior
-      if (conclusion === 'success') {
-        for (const prNumber of prNumbers) {
-          await collapseBotCommentsByPrefix(
-            context,
-            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
-            {
-              tagPrefix: 'nsreq:ci-validation',
-              collapseBody: 'Validation issues resolved.',
-              classifier: 'RESOLVED',
-            }
-          );
-        }
-
-        await maybeHandleDefaultBranchCheckSuiteSuccess(context, payload, checkSuite, {
-          owner: ownerLogin,
-          repo: repoName,
-        });
-
-        if (!headShaStr) return;
-        await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, headShaStr);
-        return;
-      }
-
-      if (isBlockingCheckConclusion(conclusion)) {
-        await getStaticConfig(context);
-
-        if (conclusion === 'action_required') {
-          const approvedWorkflow = await maybeApprovePendingWorkflowRunsForPrNumbers(
-            context,
-            { owner: ownerLogin, repo: repoName },
-            prNumbers,
-            headShaStr,
-            `check-suite:${conclusion}`
-          );
-
-          if (approvedWorkflow) return;
-        }
-
-        await handleBlockingRegistryHeadConclusion(
-          context,
-          { owner: ownerLogin, repo: repoName },
-          headShaStr,
-          readDefaultBranchFromPayload(payload),
-          `check-suite:${conclusion}`
-        );
-      }
-
-      // failure -> comment on PR if registry-validate annotations exist
-      const suiteId = readCheckSuiteId(checkSuite);
-      if (!suiteId) return;
-      if (!prNumbers.length) return;
-
-      if (DBG) {
-        log(context, 'debug', { suiteId, prNumbers }, 'dbg:checks:failure suite');
-      }
-
-      let runsForSuite: CheckRunLike[] = [];
-      try {
-        runsForSuite = await listAllCheckRunsForSuite(context, ownerLogin, repoName, suiteId);
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            {
-              suiteId,
-              runsForSuite: runsForSuite.map((r) => ({
-                id: readCheckRunId(r),
-                conclusion: toStringTrim(r.conclusion),
-                url: toStringTrim(r.html_url),
-              })),
-            },
-            'dbg:checks:runs listed for suite'
-          );
-        }
-      } catch {
-        return;
-      }
-
-      // Build PR "files changed" URLs once (best-effort).
-      const prFilesUrlByNumber = new Map<number, string>();
-      for (const prNumber of prNumbers) {
-        try {
-          const pr = await context.octokit.pulls.get({
-            owner: ownerLogin,
-            repo: repoName,
-            pull_number: prNumber,
-          });
-          // pr.data is expected to be PullRequestLike, but may have extra fields
-          const html = toStringTrim((pr.data as { html_url?: string })?.html_url);
-          if (html) prFilesUrlByNumber.set(prNumber, `${html}/files`);
-        } catch {
-          // ignore
-        }
-      }
-
-      // Find the first run that contains registry-validate annotations and post from it.
-      for (const r of runsForSuite) {
-        const runId = readCheckRunId(r);
-        if (!runId) continue;
-
-        let annotations: CheckRunAnnotationLike[] = [];
-        try {
-          annotations = await listAllCheckRunAnnotations(context, ownerLogin, repoName, runId);
-        } catch {
-          continue;
-        }
-
-        const relevant = annotations.filter(isRegistryValidateAnnotation);
-        if (DBG) {
-          log(
-            context,
-            'debug',
-            { checkRunId: runId, annotationsTotal: annotations.length, relevant: relevant.length },
-            'dbg:checks:annotations loaded (suite run)'
-          );
-        }
-        if (!relevant.length) continue;
-
-        const byFile = new Map<string, string[]>();
-        const machineReadableSources: RegistryValidationMachineReadableSource[] = [];
-        for (const a of relevant) {
-          const file = toStringTrim(a.path) || 'unknown file';
-          const rawMsg = toStringTrim(a.message) || toStringTrim(a.raw_details);
-          const msg = stripRegistrySuffix(rawMsg);
-          if (!msg) continue;
-          const schemaMeta = /\bschema=([^\s\]]+)/.exec(rawMsg) ?? /\[schema=([^\]]+)\]/.exec(rawMsg);
-          const arr = byFile.get(file) ?? [];
-          arr.push(msg);
-          byFile.set(file, arr);
-
-          machineReadableSources.push({
-            filePath: file,
-            message: msg,
-            schemaPath: schemaMeta?.[1] ? toStringTrim(schemaMeta[1]) : '',
-          });
-        }
-
-        const currentCiTags = ['nsreq:ci-validation'];
-
-        for (const prNumber of prNumbers) {
-          await collapseBotCommentsByPrefix(
-            context,
-            { owner: ownerLogin, repo: repoName, issue_number: prNumber },
-            {
-              tagPrefix: 'nsreq:ci-validation',
-              keepTags: currentCiTags,
-              collapseBody: 'Validation issues resolved.',
-              classifier: 'RESOLVED',
-            }
-          );
-        }
-
-        const body = await buildRegistryValidationAggregatePrCommentBody(
-          context,
-          { owner: ownerLogin, repo: repoName },
-          byFile,
-          machineReadableSources
-        );
-        if (!body) break;
-
-        for (const prNumber of prNumbers) {
-          if (DBG) {
-            log(
-              context,
-              'debug',
-              { prNumber, files: Array.from(byFile.keys()), bodyLen: body.length },
-              'dbg:checks:posting PR comment'
-            );
-          }
-
-          await postOnce(context, { owner: ownerLogin, repo: repoName, issue_number: prNumber }, body, {
-            minimizeTag: 'nsreq:ci-validation',
-          });
-        }
-
-        break; // avoid spamming multiple runs/suite events
-      }
-    }
-  );
-
-  app.on('status', async (context: BotContext<'status'>): Promise<void> => {
-    const payload = context.payload as unknown;
-    const state = isPlainObject(payload) ? toStringTrim(payload['state']) : '';
-    if (state !== 'success') return;
-
-    const repoObj = isPlainObject(payload) ? payload['repository'] : undefined;
-    const repoName = isPlainObject(repoObj) ? toStringTrim(repoObj['name']) : '';
-    const ownerObj = isPlainObject(repoObj) ? repoObj['owner'] : undefined;
-    const ownerLogin = isPlainObject(ownerObj) ? toStringTrim(ownerObj['login']) : '';
-
-    const sha = isPlainObject(payload) ? toStringTrim(payload['sha']) : '';
-    if (!ownerLogin || !repoName || !sha) return;
-
-    await tryAutoMerge(context, { owner: ownerLogin, repo: repoName }, sha);
+  registerRequestEvents(app, {
+    handlePush,
+    handlePullRequest,
+    handleCheck,
+    handleStatus,
+    handleIssueLifecycle,
+    handleIssueClosed,
+    handleIssueLabelChange,
+    handleIssueComment,
   });
 }

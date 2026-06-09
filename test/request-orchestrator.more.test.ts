@@ -15049,6 +15049,131 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     expect(infoMsgs).toContain('workflow-approval:retry-skipped-no-trust-signal');
   });
 
+  test('buildReviewHandoverBody does not embed handover marker in body (postOnce appends it)', async () => {
+    const { buildReviewHandoverBody } = await import('../src/handlers/request/domain/review-handover-rendering.js');
+    const body = buildReviewHandoverBody('');
+    expect(body).not.toContain('<!-- nsreq:handover -->');
+    expect(body).toContain('### ✅ No issues detected');
+    expect(body).toContain('### ➡️ Routing to an approver for review');
+  });
+
+  test('pull_request.opened: schedules workflow approval retry when no runs are visible yet', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2005,
+        title: 'Direct registry PR',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/no-runs-pr', sha: 'sha-no-runs-pr' },
+        base: { ref: 'main' },
+      },
+    });
+
+    extractHashFromPrBody.mockReturnValue('');
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.agtwf05.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(
+          'type: system\nname: sap.agtwf05\ndescription: No-runs workflow approval test\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'approved',
+      comment: 'trusted registry-only PR',
+    } as any);
+
+    // ctx.octokit.request uses default: returns { data: { workflow_runs: [] } }
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+
+    expect(infoMsgs).toContain('workflow-approval:no-waiting-runs');
+    expect(infoMsgs).toContain('workflow-approval:retry-scheduled');
+    expect(infoMsgs).not.toContain('workflow-approval:retry-skipped-run-already-visible');
+  });
+
+  test('pull_request.opened: skips retry when workflow run is already visible as queued', async () => {
+    const { app, handlers } = mkApp();
+    requestHandler(app);
+
+    const ctx = mkPullRequestContext({
+      pr: {
+        number: 2006,
+        title: 'Direct registry PR',
+        body: 'manual direct pr',
+        state: 'open',
+        draft: false,
+        user: { login: 'external-user' },
+        head: { ref: 'feature/queued-run-pr', sha: 'sha-queued-run-pr' },
+        base: { ref: 'main' },
+      },
+    });
+
+    ctx.octokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'data/namespaces/sap.agtwf06.yaml', status: 'added' }],
+    });
+
+    ctx.octokit.request.mockImplementation(async (route: string) => {
+      if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+        return {
+          data: {
+            workflow_runs: [
+              {
+                id: 12349,
+                name: 'registry-validate',
+                status: 'queued',
+                conclusion: null,
+                head_sha: 'sha-queued-run-pr',
+                pull_requests: [{ number: 2006 }],
+              },
+            ],
+          },
+        };
+      }
+
+      return { data: {} };
+    });
+
+    extractHashFromPrBody.mockReturnValue('');
+
+    ctx.octokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(
+          'type: system\nname: sap.agtwf06\ndescription: Queued-run workflow approval test\n',
+          'utf8'
+        ).toString('base64'),
+        encoding: 'base64',
+      },
+    });
+
+    runApprovalHook.mockResolvedValue({
+      status: 'approved',
+      comment: 'trusted registry-only PR',
+    } as any);
+
+    await handlers['pull_request.opened'][0](ctx);
+
+    const infoMsgs = ctx.log.info.mock.calls.map((call: any[]) => call[1]);
+
+    expect(infoMsgs).toContain('workflow-approval:no-waiting-runs');
+    expect(infoMsgs).toContain('workflow-approval:retry-skipped-run-already-visible');
+    expect(infoMsgs).not.toContain('workflow-approval:retry-scheduled');
+  });
+
   test('check_suite.success: rejected linked direct PR closes linked PRs and reports closed PR numbers', async () => {
     const cfg = {
       requests: { product: { folderName: 'resources' } },
