@@ -1,5 +1,6 @@
 import type { Probot } from 'probot';
 import type { RequestEventHandler } from './types.js';
+import { dispatchWebhookHandler } from './webhook-dispatcher.js';
 
 export type CheckEventDependencies<ContextType> = {
   handleCheckCompletedEvent: (context: ContextType, payload: unknown, eventName: string) => Promise<void>;
@@ -19,6 +20,6 @@ export function createCheckEventHandler<ContextType extends { payload: unknown }
 
 export function registerCheckEvents<CheckContext>(app: Probot, handler: RequestEventHandler<CheckContext>): void {
   app.on(['check_suite.completed', 'check_run.completed'], async (context): Promise<void> => {
-    await handler(context as CheckContext);
+    await dispatchWebhookHandler(context as CheckContext, handler, { eventFamily: 'checks' });
   });
 }

@@ -1,5 +1,6 @@
 import type { Probot } from 'probot';
 import type { RequestEventHandler } from './types.js';
+import { dispatchWebhookHandler } from './webhook-dispatcher.js';
 
 type IssueParamsBase = {
   owner: string;
@@ -279,6 +280,6 @@ export function registerIssueCommentEvents<IssueCommentContext>(
   handler: RequestEventHandler<IssueCommentContext>
 ): void {
   app.on(['issue_comment.created', 'issue_comment.edited'], async (context): Promise<void> => {
-    await handler(context as IssueCommentContext);
+    await dispatchWebhookHandler(context as IssueCommentContext, handler, { eventFamily: 'issue_comment' });
   });
 }

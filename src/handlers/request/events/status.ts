@@ -1,5 +1,6 @@
 import type { Probot } from 'probot';
 import type { RequestEventHandler } from './types.js';
+import { dispatchWebhookHandler } from './webhook-dispatcher.js';
 
 export type StatusEventDependencies<ContextType, RepoInfoType> = {
   isPlainObject: (value: unknown) => value is Record<string, unknown>;
@@ -30,6 +31,6 @@ export function createStatusEventHandler<ContextType extends { payload: unknown 
 
 export function registerStatusEvents<StatusContext>(app: Probot, handler: RequestEventHandler<StatusContext>): void {
   app.on('status', async (context): Promise<void> => {
-    await handler(context as StatusContext);
+    await dispatchWebhookHandler(context as StatusContext, handler, { eventFamily: 'status' });
   });
 }
