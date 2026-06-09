@@ -303,15 +303,14 @@ export async function tryAutoMerge<
     return;
   }
 
-  const pending = (async (): Promise<void> => {
-    let isTerminal = false;
-    try {
-      isTerminal = await runAutoMergeEvaluationFn(context, repoInfo, normalizedHeadSha);
-    } finally {
-      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
+  const pending: Promise<void> = Promise.resolve()
+    .then(() => runAutoMergeEvaluationFn(context, repoInfo, normalizedHeadSha))
+    .then((isTerminal) => {
       if (isTerminal) markAutoMergeEvaluationRecentlyCompleted(key);
-    }
-  })();
+    })
+    .finally(() => {
+      AUTO_MERGE_EVALUATION_INFLIGHT.delete(key);
+    });
 
   AUTO_MERGE_EVALUATION_INFLIGHT.set(key, pending);
   await pending;
