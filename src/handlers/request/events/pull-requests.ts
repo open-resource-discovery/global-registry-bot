@@ -1,5 +1,6 @@
 import type { Probot } from 'probot';
 import type { RequestEventHandler } from './types.js';
+import { dispatchWebhookHandler } from './webhook-dispatcher.js';
 
 export type PullRequestEventDependencies<ContextType, RepoInfoType, PullRequestType> = {
   getStaticConfig: (context: ContextType) => Promise<unknown>;
@@ -47,7 +48,7 @@ export function registerPullRequestEvents<PullRequestContext>(
   app.on(
     ['pull_request.opened', 'pull_request.synchronize', 'pull_request.reopened', 'pull_request.ready_for_review'],
     async (context): Promise<void> => {
-      await handler(context as PullRequestContext);
+      await dispatchWebhookHandler(context as PullRequestContext, handler, { eventFamily: 'pull_request' });
     }
   );
 }

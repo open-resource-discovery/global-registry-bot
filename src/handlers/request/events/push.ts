@@ -1,5 +1,6 @@
 import type { Probot } from 'probot';
 import type { RequestEventHandler } from './types.js';
+import { dispatchWebhookHandler } from './webhook-dispatcher.js';
 
 type RepoInfoBase = {
   owner: string;
@@ -115,6 +116,6 @@ export function createPushEventHandler<
 
 export function registerPushEvents<PushContext>(app: Probot, handler: RequestEventHandler<PushContext>): void {
   app.on('push', async (context): Promise<void> => {
-    await handler(context as PushContext);
+    await dispatchWebhookHandler(context as PushContext, handler, { eventFamily: 'push' });
   });
 }
