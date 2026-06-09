@@ -103,41 +103,47 @@ function drainWebhookQueue(): void {
     active += 1;
 
     setImmediate(() => {
-      const startedAt = Date.now();
+      void (async (): Promise<void> => {
+        const startedAt = Date.now();
+        let failed = false;
+        let caughtError: unknown;
 
-      void task
-        .run()
-        .then(() => {
+        try {
+          await task.run();
+        } catch (error: unknown) {
+          failed = true;
+          caughtError = error;
+        } finally {
           const durationMs = Date.now() - startedAt;
 
-          task.log?.debug?.(
-            {
-              ...task.meta,
-              durationMs,
-              active,
-              queued: queue.length,
-            },
-            'webhook:async-handler-completed'
-          );
-        })
-        .catch((error: unknown) => {
-          const durationMs = Date.now() - startedAt;
-
-          task.log?.error?.(
-            {
-              ...task.meta,
-              err: getErrorMessage(error),
-              durationMs,
-              active,
-              queued: queue.length,
-            },
-            'webhook:async-handler-failed'
-          );
-        })
-        .finally(() => {
           active -= 1;
-          drainWebhookQueue();
-        });
+
+          const logMeta = {
+            ...task.meta,
+            durationMs,
+            active,
+            queued: queue.length,
+          };
+
+          try {
+            if (failed) {
+              task.log?.error?.(
+                {
+                  ...logMeta,
+                  err: getErrorMessage(caughtError),
+                },
+                'webhook:async-handler-failed'
+              );
+            } else {
+              task.log?.debug?.(logMeta, 'webhook:async-handler-completed');
+            }
+          } catch {
+            // Ignore logger failures so queue draining is not blocked.
+          } finally {
+            drainWebhookQueue();
+          }
+        }
+      })();
     });
   }
 }

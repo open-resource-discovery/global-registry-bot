@@ -105,6 +105,8 @@ describe('dispatchWebhookHandler', () => {
         deliveryId: 'delivery-1',
         owner: 'my-org',
         repo: 'my-repo',
+        active: 0,
+        queued: 0,
       }),
       'webhook:async-handler-failed'
     );
@@ -136,6 +138,8 @@ describe('dispatchWebhookHandler', () => {
         deliveryId: 'delivery-1',
         owner: 'my-org',
         repo: 'my-repo',
+        active: 0,
+        queued: 0,
       }),
       'webhook:async-handler-completed'
     );
