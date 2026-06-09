@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.9](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.9)] - 2026-06-09
+
 ## Request Bot Core Refactor and Webhook Reliability
 
 - Refactored the request handler into event, runtime, composition, and infrastructure layers.
