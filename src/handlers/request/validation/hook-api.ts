@@ -42,8 +42,10 @@ export interface HookApi {
   assertAllowedUrl(url: string): URL;
 }
 
-// NOTE: '*' means allow any public HTTPS host
-const DEFAULT_ALLOWED_HOSTS: readonly string[] = ['*'];
+// Deny-by-default: no external hosts are allowed unless explicitly configured.
+// Repo admins must add hosts to hooks.allowedHosts in .github/registry-bot/config.yaml.
+// Use ['*'] only in fully trusted self-hosted deployments.
+const DEFAULT_ALLOWED_HOSTS: readonly string[] = [];
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -300,7 +302,10 @@ export function createHookApi(
     if (!host) throw new Error('Invalid host');
 
     if (isLoopbackLikeHost(host)) throw new Error(`Host not allowed: ${host}`);
-    if (!allowAllHosts && !allow.has(host)) throw new Error(`Host not allowed: ${host}`);
+    if (!allowAllHosts && !allow.has(host))
+      throw new Error(
+        `Host not allowed: ${host}. Add the host to hooks.allowedHosts in .github/registry-bot/config.yaml`
+      );
 
     return u;
   }
