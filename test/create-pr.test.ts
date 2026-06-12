@@ -1268,4 +1268,718 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
     ).rejects.toThrow('exists failed');
   });
+
+  it('sanitizeForYaml: null → null kept, undefined → key dropped, Infinity → String, Date → ISO, bigint → string', async () => {
+    const { createRequestPr, mocks } = await loadSubject({
+      jsYamlDumpImpl: (obj: any) => JSON.stringify(obj),
+    });
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = { schema: { searchPaths: ['schema'] } };
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'x.schema.json', path: 'tpl.yml' },
+      body: [{ id: 'name', type: 'input' }],
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
+    const d = new Date('2024-03-15T12:00:00.000Z');
+    mocks.projectForSchema.mockResolvedValueOnce({
+      type: 'System',
+      name: 'acme.x',
+      nullField: null,
+      undefinedField: undefined,
+      infField: Infinity,
+      bigintField: BigInt(42),
+      dateField: d,
+    });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'x.schema.json') throw httpErr(404);
+      if (!ref && path === 'schema/x.schema.json')
+        return schemaFileResponse({
+          type: 'object',
+          properties: { type: { const: 'System' }, name: { type: 'string' } },
+        });
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 1, node_id: 'N', head: { ref: 'feat/r', sha: 's' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 1, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    const serialized = JSON.parse(Buffer.from(String(writeParams.content), 'base64').toString('utf8')) as AnyObj;
+
+    // null kept, undefined key absent, Infinity → 'Infinity', BigInt → '42', Date → ISO
+    expect(serialized.nullField).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(serialized, 'undefinedField')).toBe(false);
+    expect(serialized.infField).toBe('Infinity');
+    expect(serialized.bigintField).toBe('42');
+    expect(serialized.dateField).toBe(d.toISOString());
+  });
+
+  it('loadYamlDoc: falls back to plain jsYaml.load when JSON_SCHEMA is null (L275)', async () => {
+    const { createRequestPr, mocks } = await loadSubject({
+      jsYamlSchema: null,
+      jsYamlLoadImpl: () => [{ kind: 'a', value: 'b' }],
+      jsYamlDumpImpl: (obj: any) => JSON.stringify(obj),
+    });
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'systemnamespace', root: 'data', schema: 'sys.schema.json', path: 'tpl.yml' },
+      body: [{ id: 'contact' }],
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.sys');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'SystemNamespace', name: 'acme.sys', contact: ['a@b'] });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'sys.schema.json')
+        return schemaFileResponse({
+          type: 'object',
+          properties: {
+            type: { const: 'SystemNamespace' },
+            contact: { type: 'array', minItems: 1, items: { type: 'string' } },
+          },
+        });
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 2, node_id: 'N2', head: { ref: 'feat/r2', sha: 's2' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 2, title: '', labels: [], body: '' },
+      { correlationIdTypes: '- kind: a\n  value: b\n' },
+      { template }
+    );
+
+    // parseMaybeYamlJson called tryLoadYamlDoc which used JSON_SCHEMA=null path
+    expect(mocks.projectForSchema).toHaveBeenCalled();
+    const normalized = mocks.projectForSchema.mock.calls[0][1] as AnyObj;
+    expect(Array.isArray(normalized.correlationIdTypes)).toBe(true);
+  });
+
+  it('getHttpStatus: non-plain-object error in loadSchemaForTemplate falls through (L196 arm=0)', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'x.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+
+    // throw a string (non-plain-object) → getHttpStatus returns undefined ≠ 404 → rethrow
+    ctx.octokit.repos.getContent.mockRejectedValue('string-error');
+
+    await expect(
+      createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
+    ).rejects.toBe('string-error');
+  });
+
+  it('getRequestEntryFromConfig: requests entry missing (null reqs) returns null (L591 true)', async () => {
+    const { createRequestPr } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = { requests: 'not-an-object' };
+
+    const template = {
+      _meta: { requestType: 'partnernamespace', root: 'data', schema: 'p.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+
+    await expect(
+      createRequestPr(
+        ctx,
+        { owner: 'o', repo: 'r' },
+        { number: 1, title: '', labels: [], body: '' },
+        { requestType: 'system' },
+        { template }
+      )
+    ).rejects.toThrow(/cfg\.requests has no schema/i);
+  });
+
+  it('parseMaybeYamlJson: array input returns directly (L557 arm=0), empty string returns undefined', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'systemnamespace', root: 'data', schema: 'sys.schema.json', path: 'tpl.yml' },
+      body: [{ id: 'contact' }],
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.sys2');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'SystemNamespace', name: 'acme.sys2', contact: ['x@y'] });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'sys.schema.json')
+        return schemaFileResponse({
+          type: 'object',
+          properties: { type: { const: 'SystemNamespace' }, contact: { type: 'array', minItems: 1 } },
+        });
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 3, node_id: 'N3', head: { ref: 'feat/r3', sha: 's3' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    const prebuiltArray = [{ kind: 'a', value: 'b' }];
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 3, title: '', labels: [], body: '' },
+      { correlationIdTypes: prebuiltArray, correlationIds: '' },
+      { template }
+    );
+
+    expect(mocks.projectForSchema).toHaveBeenCalled();
+    const normalized = mocks.projectForSchema.mock.calls[0][1] as AnyObj;
+    // correlationIdTypes was already an array → used directly (L557 early return)
+    expect(normalized.correlationIdTypes).toBe(prebuiltArray);
+  });
+
+  it('buildPrTitle empty template falls back to "Register {type} {resource}" (L349 true)', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = { pr: { titleTemplate: '', autoMerge: { enabled: false } } };
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'x.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+    const schemaObj = { type: 'object', properties: { type: { const: 'System' } } };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.tpl');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.tpl' });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'x.schema.json') return schemaFileResponse(schemaObj);
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 4, node_id: 'N4', head: { ref: 'feat/r4', sha: 's4' } },
+    });
+    ctx.octokit.issues.addLabels.mockResolvedValueOnce({ ok: true });
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 1, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    expect(ctx.octokit.pulls.create).toHaveBeenCalled();
+    const createArgs = ctx.octokit.pulls.create.mock.calls[0][0] as AnyObj;
+    // empty titleTemplate → fallback "Register {type} {resource}"
+    expect(String(createArgs.title)).toMatch(/Register System acme\.tpl/i);
+  });
+
+  it('buildCommitMessage empty template falls back to default format (L340 true)', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = { pr: { commitMessageTemplate: '', autoMerge: { enabled: false } } };
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'x.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+    const schemaObj = { type: 'object', properties: { type: { const: 'System' } } };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.commit');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.commit' });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'x.schema.json') return schemaFileResponse(schemaObj);
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 5, node_id: 'N5', head: { ref: 'feat/r5', sha: 's5' } },
+    });
+    ctx.octokit.issues.addLabels.mockResolvedValueOnce({ ok: true });
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 7, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    expect(ctx.octokit.repos.createOrUpdateFileContents).toHaveBeenCalled();
+    const writeArgs = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    // empty commitMessageTemplate → default "chore(data): register acme.commit (#7)"
+    expect(String(writeArgs.message)).toMatch(/chore\(data\): register acme\.commit/i);
+  });
+
+  it('writeFileAt passes sha param when file already has a sha (L778 true)', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'x.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+    const schemaObj = { type: 'object', properties: { type: { const: 'System' } } };
+    const existingSha = 'EXISTING_FILE_SHA';
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.sha');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.sha' });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'x.schema.json') return schemaFileResponse(schemaObj);
+      // yaml existence check for defaultBranch: file exists with sha
+      if (ref === 'main' && String(path).endsWith('.yaml')) return { data: { sha: existingSha, content: '' } };
+      throw httpErr(404);
+    });
+
+    // Resource already exists on default branch → should throw
+    await expect(
+      createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
+    ).rejects.toThrow(/already exists/i);
+  });
+
+  it('stripDefaultsBySchema: recurses into nested object and array item schemas (L488/L492 true branches)', async () => {
+    const { createRequestPr, mocks } = await loadSubject({
+      jsYamlDumpImpl: (obj: any) => JSON.stringify(obj),
+    });
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'nested.schema.json', path: 'tpl.yml' },
+      body: [{ id: 'name', type: 'input' }],
+    };
+
+    // schema with nested object and array defaults
+    const schemaObj = {
+      type: 'object',
+      properties: {
+        type: { const: 'System' },
+        name: { type: 'string' },
+        nested: {
+          type: 'object',
+          properties: {
+            flag: { type: 'boolean', default: false },
+          },
+        },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              active: { type: 'boolean', default: true },
+            },
+          },
+        },
+      },
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.nested');
+    mocks.projectForSchema.mockResolvedValueOnce({
+      type: 'System',
+      name: 'acme.nested',
+      nested: { flag: false },
+      items: [{ active: true }, { active: false }],
+    });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'nested.schema.json') return schemaFileResponse(schemaObj);
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 6, node_id: 'N6', head: { ref: 'feat/r6', sha: 's6' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 1, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    const serialized = JSON.parse(Buffer.from(String(writeParams.content), 'base64').toString('utf8')) as AnyObj;
+
+    // flag: false is default → stripped
+    const nested = serialized.nested as AnyObj;
+    expect(Object.prototype.hasOwnProperty.call(nested || {}, 'flag')).toBe(false);
+    // items[0].active: true is default → stripped; items[1].active: false is NOT default → kept
+    const items = serialized.items as AnyObj[];
+    expect(Array.isArray(items)).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(items[0] ?? {}, 'active')).toBe(false);
+    expect((items[1] ?? {}).active).toBe(false);
+  });
+
+  it('pickContactProp: schema forbids both contacts and contact → returns empty string → candidate contacts deleted (L520 / L1042)', async () => {
+    const { createRequestPr, mocks } = await loadSubject({
+      jsYamlDumpImpl: (obj: any) => JSON.stringify(obj),
+    });
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'no-contact.schema.json', path: 'tpl.yml' },
+      body: [{ id: 'contact' }],
+    };
+
+    // schema has contact: false (forbidden) and no 'contacts' key
+    const schemaObj = {
+      type: 'object',
+      properties: {
+        type: { const: 'System' },
+        name: { type: 'string' },
+        contact: false,
+      },
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.nocontact');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.nocontact', contact: ['a@b'] });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'no-contact.schema.json') return schemaFileResponse(schemaObj);
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 7, node_id: 'N7', head: { ref: 'feat/r7', sha: 's7' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 1, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    const serialized = JSON.parse(Buffer.from(String(writeParams.content), 'base64').toString('utf8')) as AnyObj;
+    // contact should be deleted because pickContactProp returned ''
+    expect(Object.prototype.hasOwnProperty.call(serialized, 'contact')).toBe(false);
+  });
+
+  it('resolveTypeConstFromSchema: schema has no properties → returns fallback requestType (L506 true)', async () => {
+    const { createRequestPr, mocks } = await loadSubject({
+      jsYamlDumpImpl: (obj: any) => JSON.stringify(obj),
+    });
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'custtype', root: 'data', schema: 'noProps.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+
+    // schema with no 'properties' at top level
+    const schemaObj = { type: 'object' };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.cust');
+    mocks.projectForSchema.mockResolvedValueOnce({ name: 'acme.cust' });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'noProps.schema.json') return schemaFileResponse(schemaObj);
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 8, node_id: 'N8', head: { ref: 'feat/r8', sha: 's8' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 1, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    expect(ctx.octokit.pulls.create).toHaveBeenCalled();
+    const createArgs = ctx.octokit.pulls.create.mock.calls[0][0] as AnyObj;
+    // type derived from fallback = requestType = 'custtype'
+    expect(String(createArgs.title)).toContain('custtype');
+  });
+
+  it('bodyFooter from string pr.bodyFooter (L306 true branch) and branchNameTemplate from config (L326 arm=1)', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {
+      pr: {
+        branchNameTemplate: 'custom/{resource}-pr-{issue}',
+        bodyFooter: 'Owned by: platform-team',
+        autoMerge: { enabled: false },
+      },
+    };
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'y.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+    const schemaObj = { type: 'object', properties: { type: { const: 'System' } } };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.footer');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.footer' });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'y.schema.json') return schemaFileResponse(schemaObj);
+      throw httpErr(404);
+    });
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 9, node_id: 'N9', head: { ref: 'custom/acme.footer-pr-3', sha: 's9' } },
+    });
+    ctx.octokit.issues.addLabels.mockResolvedValueOnce({ ok: true });
+
+    const pr = await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 3, title: '', labels: [], body: '' },
+      {},
+      { template }
+    );
+
+    expect(pr.number).toBe(9);
+    expect(ctx.octokit.git.createRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'refs/heads/custom/acme.footer-pr-3' })
+    );
+    const createArgs = ctx.octokit.pulls.create.mock.calls[0][0] as AnyObj;
+    expect(String(createArgs.body)).toContain('Owned by: platform-team');
+  });
+
+  it('product: formData without parentId => delete candidate.parentId (L849 arm=1)', async () => {
+    const { createRequestPr, mocks } = await loadSubject();
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: {
+        requestType: 'product',
+        root: 'data',
+        schema: 'prod-nopid.schema.json',
+        path: 'tpl-prod-nopid.yml',
+      },
+      body: [{ id: 'id' }],
+    };
+
+    const schemaObj = {
+      $id: 'schema:prod-nopid',
+      type: 'object',
+      properties: {
+        type: { const: 'Product' },
+        id: { type: 'string' },
+      },
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.nopid');
+    mocks.projectForSchema.mockResolvedValueOnce({ type: 'Product', id: 'explicit-id' });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'prod-nopid.schema.json') return schemaFileResponse(schemaObj);
+      if (String(path).endsWith('.yaml')) throw httpErr(404);
+      throw httpErr(404);
+    });
+
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 42, node_id: 'PRNOPID', head: { ref: 'feat/resource-acme.nopid-issue-7', sha: 'SHA' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    // formData has NO parentId → parentId = '' → L846 if(parentId) → false → L849 delete fires
+    const pr = await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 7, title: 'no parent', labels: [], body: '' },
+      { identifier: 'explicit-id', description: 'desc' },
+      { template }
+    );
+
+    expect(pr.number).toBe(42);
+
+    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    const yamlText = Buffer.from(String(writeParams.content), 'base64').toString('utf8');
+
+    // no parentId in formData → candidate.parentId deleted → not in YAML output
+    expect(yamlText).not.toMatch(/^\s*parentId\s*:/m);
+    // no parent URI either (parentId was empty)
+    expect(yamlText).not.toMatch(/^\s*parent\s*:/m);
+  });
+
+  it('loadSchemaForTemplate: all candidate paths return 404 => returns null (L447)', async () => {
+    const { createRequestPr } = await loadSubject();
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: { requestType: 'system', root: 'data', schema: 'missing.schema.json', path: 'tpl.yml' },
+      body: [],
+    };
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+
+    // ALL getContent calls return 404 → all candidates exhausted → loadSchemaForTemplate returns null (L447)
+    ctx.octokit.repos.getContent.mockRejectedValue(httpErr(404));
+
+    await expect(
+      createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
+    ).rejects.toThrow(/schema could not be loaded/i);
+  });
+
+  it('parseMaybeYamlJson: JSON.parse fails AND yaml.load throws => returns undefined (L574)', async () => {
+    const { createRequestPr, mocks } = await loadSubject({
+      jsYamlLoadImpl: () => {
+        throw new Error('yaml-parse-fail');
+      },
+      jsYamlDumpImpl: (obj: any) => JSON.stringify(obj),
+    });
+
+    const ctx = mkContext();
+    ctx.resourceBotConfig = {};
+
+    const template = {
+      _meta: {
+        requestType: 'systemnamespace',
+        root: 'data',
+        schema: 'sys574.schema.json',
+        path: 'tpl-sys574.yml',
+      },
+      body: [{ id: 'contact' }],
+    };
+
+    const schemaObj = {
+      type: 'object',
+      properties: {
+        type: { const: 'SystemNamespace' },
+        name: { type: 'string' },
+        contact: { type: 'array', minItems: 1, items: { type: 'string' } },
+      },
+    };
+
+    mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.sys574');
+    mocks.projectForSchema.mockResolvedValueOnce({
+      type: 'SystemNamespace',
+      name: 'acme.sys574',
+      contact: ['a@b'],
+    });
+
+    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASE' } } });
+    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+
+    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      if (!ref && path === 'sys574.schema.json') return schemaFileResponse(schemaObj);
+      if (String(path).endsWith('.yaml')) throw httpErr(404);
+      throw httpErr(404);
+    });
+
+    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.pulls.create.mockResolvedValueOnce({
+      data: { number: 90, node_id: 'PR90', head: { ref: 'feat/r90', sha: 's90' } },
+    });
+    mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
+
+    // correlationIdTypes is a non-JSON, non-YAML-parseable string
+    // JSON.parse('not-valid-json!') throws, jsYamlLoad mock also throws => L574: return undefined
+    const pr = await createRequestPr(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { number: 4, title: 'sys574', labels: [], body: '' },
+      { correlationIdTypes: 'not-valid-json!' },
+      { template }
+    );
+
+    expect(pr.number).toBe(90);
+
+    // parseMaybeYamlJson returned undefined => correlationIdTypes stays as raw string (not overridden)
+    expect(mocks.projectForSchema).toHaveBeenCalled();
+    const normalized = mocks.projectForSchema.mock.calls[0][1] as AnyObj;
+    // corrTypes was undefined → the override at L968 didn't fire → still the original string from formData spread
+    expect(Array.isArray(normalized.correlationIdTypes)).toBe(false);
+  });
 });

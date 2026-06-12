@@ -2,7 +2,7 @@ import { withCustomConfig } from '@sap/eslint-config';
 
 export default withCustomConfig([
   {
-    ignores: ['dist', 'reports', 'node_modules', 'types/**/*.d.ts'],
+    ignores: ['dist', 'reports', 'node_modules', 'types/**/*.d.ts', '.claude/**'],
   },
   {
     files: ['src/**/*.[jt]s'],

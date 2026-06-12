@@ -754,6 +754,19 @@ describe('applyRequiredFieldValidation', () => {
     applyRequiredFieldValidation({ template, formData: {}, issueBody: '', formBucket: [], errors, isEmpty });
     expect(errors).toHaveLength(0);
   });
+
+  test('handles template with no body property (L70 || [] null arm)', () => {
+    const errors: string[] = [];
+    applyRequiredFieldValidation({ template: {}, formData: {}, issueBody: '', formBucket: [], errors, isEmpty });
+    expect(errors).toHaveLength(0);
+  });
+
+  test('uses field.id as label when field has no attributes.label (L74 label-falsy arm)', () => {
+    const template = { body: [{ id: 'myfield', validations: { required: true } }] };
+    const errors: string[] = [];
+    applyRequiredFieldValidation({ template, formData: {}, issueBody: 'plain body', formBucket: [], errors, isEmpty });
+    expect(errors.some((e) => e.includes('myfield'))).toBe(true);
+  });
 });
 
 describe('applySchemaIdentifierConsistencyCheck', () => {
@@ -808,6 +821,20 @@ describe('applySchemaIdentifierConsistencyCheck', () => {
       getObjectProp,
     });
     expect(errors).toHaveLength(0);
+  });
+
+  test('uses false for hasIdentifierFieldInTemplate when template.body is not an array (L97 false arm)', () => {
+    const schemaObj = { properties: { id: { 'x-form-field': 'identifier' } } };
+    const errors: string[] = [];
+    applySchemaIdentifierConsistencyCheck({
+      template: {},
+      schemaObj,
+      schemaBucket: [],
+      errors,
+      isPlainObject,
+      getObjectProp,
+    });
+    expect(errors.some((e) => e.includes('identifier'))).toBe(true);
   });
 });
 
@@ -1497,5 +1524,35 @@ describe('handleCheckCompletedEvent — check_run.completed with no PR mapping',
     };
     await handleCheckCompletedEvent({}, payload, 'check_suite.completed', cbs);
     expect(cbs.tryAutoMerge).toHaveBeenCalledWith({}, { owner: 'org', repo: 'repo' }, 'sha-suite');
+  });
+
+  test('L312 arm0 + L320 arm0: isDebugEnabled=true emits debug logs in postCheckSuiteRegistryValidationCommentsIfPresent', async () => {
+    // non-success conclusion → skips success branch → postCheckSuiteRegistryValidationCommentsIfPresent
+    // isBlockingCheckConclusion returns false → goes straight to postCheckSuiteRegistryValidationCommentsIfPresent
+    // readCheckSuiteId='42' (non-null) + prNumbers=[1] → enters the function body
+    // isDebugEnabled=true → L312 arm0 + L320 arm0 both log 'debug'
+    const suite = { id: 42, status: 'completed', conclusion: 'neutral', head_sha: 'sha-debug', head_branch: 'main' };
+    const cbs = mkCheckCompletedCallbacks({
+      readCheckSuiteFromPayload: jest.fn(() => suite),
+      resolveCheckSuitePrNumbers: jest.fn((): Promise<number[]> => Promise.resolve([1])),
+      readCheckSuiteId: jest.fn((): number => 42),
+      isBlockingCheckConclusion: jest.fn((): boolean => false),
+      listAllCheckRunsForSuite: jest.fn(
+        (): Promise<{ id: number; conclusion: string; html_url: string }[]> =>
+          Promise.resolve([{ id: 7, conclusion: 'neutral', html_url: 'https://github.com/run/7' }])
+      ),
+      readCheckRunId: jest.fn((r: any) => r.id),
+      isDebugEnabled: true,
+    });
+    const payload = {
+      action: 'completed',
+      check_suite: suite,
+      repository: { owner: { login: 'org' }, name: 'repo' },
+    };
+    await handleCheckCompletedEvent({}, payload, 'check_suite.completed', cbs);
+    const logCalls = (cbs.log as jest.Mock).mock.calls;
+    const debugMsgs = logCalls.filter(([, level]: unknown[]) => level === 'debug').map(([, , , msg]: unknown[]) => msg);
+    expect(debugMsgs).toContain('dbg:checks:failure suite');
+    expect(debugMsgs).toContain('dbg:checks:runs listed for suite');
   });
 });

@@ -60,6 +60,37 @@ describe('src/handlers/request/pr/snapshot.ts', () => {
       expect(Object.prototype.hasOwnProperty.call(snap, 'empty')).toBe(false);
     });
 
+    it('pickSnapshot without template argument uses null default (L105 default-arg)', async () => {
+      const { mod } = await loadSubject();
+      const snap = mod.pickSnapshot({ x: 'v' } as any); // no template arg → default null
+      expect(snap).toEqual({ x: 'v' });
+    });
+
+    it('null formData falls back to empty object (L107 binary-expr)', async () => {
+      const { mod } = await loadSubject();
+      const snap = mod.pickSnapshot(null as any, null);
+      expect(snap).toEqual({});
+    });
+
+    it('template body entry without id is skipped (L120 if true)', async () => {
+      const { mod } = await loadSubject({ category: '' });
+      const snap = mod.pickSnapshot({ x: 'v' }, { name: 'T', body: [{ type: 'input' }] } as any);
+      expect(Object.prototype.hasOwnProperty.call(snap, 'x')).toBe(false);
+    });
+
+    it('template body entry without type uses empty string type (L122 binary-expr)', async () => {
+      const { mod } = await loadSubject({ category: '' });
+      const snap = mod.pickSnapshot({ x: 'v' }, { name: 'T', body: [{ id: 'x' }] } as any);
+      expect(snap.x).toBe('v');
+    });
+
+    it('template with no name and no title omits _template (L112/L113 false)', async () => {
+      const { mod } = await loadSubject({ category: 'system' });
+      const snap = mod.pickSnapshot({ x: 'v' }, { body: [{ id: 'x', type: 'input' }] } as any);
+      expect(Object.prototype.hasOwnProperty.call(snap, '_template')).toBe(false);
+      expect(snap['_category']).toBe('system');
+    });
+
     it('template-driven: does not include _category when categoryFromTemplate returns empty', async () => {
       const { mod } = await loadSubject({ category: '' });
 
@@ -124,6 +155,28 @@ describe('src/handlers/request/pr/snapshot.ts', () => {
       expect(h1).toMatch(/^[0-9a-f]{40}$/);
     });
 
+    it('rawBody default arg (no third arg) gives same result as explicit empty string (L152)', async () => {
+      const { mod } = await loadSubject({ category: 'system' });
+      const template = { name: 'T', body: [{ id: 'id', type: 'input' }] };
+      const h1 = (mod.calcSnapshotHash as any)({ id: 'x' }, template); // no rawBody → default ''
+      const h2 = mod.calcSnapshotHash({ id: 'x' }, template, '');
+      expect(h1).toBe(h2);
+    });
+
+    it('empty category and no template name: envelope has no _template/_category (L156/L164/L165 false)', async () => {
+      const { mod } = await loadSubject({ category: '' });
+      const template = { body: [{ id: 'id', type: 'input' }] } as any;
+      const h = mod.calcSnapshotHash({ id: 'x' }, template, '');
+      expect(h).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    it('template with title but no name uses title for templateName (L157 binary-expr arms)', async () => {
+      const { mod } = await loadSubject({ category: 'system' });
+      const template = { title: 'My Title', body: [{ id: 'id', type: 'input' }] } as any;
+      const h = mod.calcSnapshotHash({ id: 'x' }, template, '');
+      expect(h).toMatch(/^[0-9a-f]{40}$/);
+    });
+
     it('hash changes when template name changes', async () => {
       const { mod } = await loadSubject({ category: 'system' });
 
@@ -146,6 +199,11 @@ describe('src/handlers/request/pr/snapshot.ts', () => {
       expect(mod.extractHashFromPrBody(null)).toBeNull();
       expect(mod.extractHashFromPrBody(undefined)).toBeNull();
       expect(mod.extractHashFromPrBody('')).toBeNull();
+    });
+
+    it('returns null for non-empty body with no matching pattern (L177 cond-expr false)', async () => {
+      const { mod } = await loadSubject();
+      expect(mod.extractHashFromPrBody('random text without any snapshot marker')).toBeNull();
     });
 
     it('extracts marker hash (case-insensitive, whitespace tolerant)', async () => {

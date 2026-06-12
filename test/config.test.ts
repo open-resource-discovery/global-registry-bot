@@ -640,3 +640,392 @@ test('default config without validation logs debug and ignores hook loading fail
     else process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = prevFlag;
   }
 });
+
+// ─── YAML .yaml extension (right arm of || in parseConfigString) ─────────────
+
+test('loads .yaml config (exercises .yaml branch of parseConfigString)', async () => {
+  const owner = 'o_yaml_ext';
+  const repo = 'r_yaml_ext';
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YAML}`]: {
+        kind: 'file',
+        text: `requests:\n  mytype:\n    issueTemplate: templates/t.yml\n`,
+      },
+    },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.source).toBe(`repo:${CFG_YAML}`);
+  expect(result.config.requests).toHaveProperty('mytype');
+});
+
+// ─── validation/registry/schema fields in config ─────────────────────────────
+
+test('config with validation, registry, and schema fields (plain-object arms)', async () => {
+  const owner = 'o_vrs_obj';
+  const repo = 'r_vrs_obj';
+  const yaml = [
+    `requests:`,
+    `  t:`,
+    `    issueTemplate: templates/t.yml`,
+    `validation:`,
+    `  enabled: true`,
+    `registry:`,
+    `  baseUrl: https://example.com`,
+    `schema:`,
+    `  type: object`,
+  ].join('\n');
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.config.validation).toEqual({ enabled: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.registry as any).baseUrl).toBe('https://example.com');
+  expect(result.config.schema).toEqual({ type: 'object' });
+});
+
+test('config with validation/registry/schema as non-plain-object (coerced to {})', async () => {
+  const owner = 'o_vrs_str';
+  const repo = 'r_vrs_str';
+  const yaml = `validation: "not-an-object"\nregistry: 42\nschema: true\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.config.validation).toEqual({});
+  expect(result.config.registry).toEqual({});
+  expect(result.config.schema).toEqual({});
+});
+
+// ─── buildRequests edge cases ─────────────────────────────────────────────────
+
+test('buildRequests: non-plain-object request entry is treated as empty', async () => {
+  const owner = 'o_req_str';
+  const repo = 'r_req_str';
+  const yaml = `requests:\n  mytype: "not-an-object"\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.config.requests).toHaveProperty('mytype');
+});
+
+test('buildRequests: approvers=null is preserved as null', async () => {
+  const owner = 'o_approvers_null';
+  const repo = 'r_approvers_null';
+  const yaml = [`requests:`, `  mytype:`, `    issueTemplate: templates/t.yml`, `    approvers: ~`].join('\n');
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.requests as any).mytype.approvers).toBeNull();
+});
+
+// ─── buildPr autoMerge normalizations ────────────────────────────────────────
+
+test('buildPr: autoMerge.enabled as boolean false', async () => {
+  const owner = 'o_pr_false';
+  const repo = 'r_pr_false';
+  const yaml = `pr:\n  autoMerge:\n    enabled: false\n    method: squash\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.pr as any).autoMerge.enabled).toBe(false);
+});
+
+test('buildPr: autoMerge.enabled as null leaves enabled null', async () => {
+  const owner = 'o_pr_null';
+  const repo = 'r_pr_null';
+  const yaml = `pr:\n  autoMerge:\n    enabled: ~\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.pr as any).autoMerge.enabled).toBeNull();
+});
+
+test('buildPr: autoMerge.method as number is coerced to string', async () => {
+  const owner = 'o_pr_method_num';
+  const repo = 'r_pr_method_num';
+  const yaml = `pr:\n  autoMerge:\n    method: 1\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.pr as any).autoMerge.method).toBe('1');
+});
+
+test('buildPr: non-plain-object pr is treated as empty', async () => {
+  const owner = 'o_pr_str';
+  const repo = 'r_pr_str';
+  const yaml = `pr: "not-an-object"\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.config.pr).toBeDefined();
+});
+
+// ─── buildWorkflow edge cases ─────────────────────────────────────────────────
+
+test('buildWorkflow: approvers=null is preserved as null', async () => {
+  const owner = 'o_wf_approvers_null';
+  const repo = 'r_wf_approvers_null';
+  const yaml = `workflow:\n  approvers: ~\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.workflow as any).approvers).toBeNull();
+});
+
+test('buildWorkflow: non-plain-object labels is treated as empty', async () => {
+  const owner = 'o_wf_labels_str';
+  const repo = 'r_wf_labels_str';
+  const yaml = `workflow:\n  labels: "not-an-object"\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.workflow as any).labels).toBeDefined();
+});
+
+// ─── normalizeStaticConfig with null YAML ────────────────────────────────────
+
+test('YAML config that parses to null is treated as empty object', async () => {
+  const owner = 'o_null_yaml';
+  const repo = 'r_null_yaml';
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: `~\n` } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.source).toBe(`repo:${CFG_YML}`);
+});
+
+// ─── coerceOptionalString with boolean value ──────────────────────────────────
+
+test('coerceOptionalString: boolean value is coerced to string', async () => {
+  const owner = 'o_coerce_bool';
+  const repo = 'r_coerce_bool';
+  const yaml = `requests:\n  mytype:\n    issueTemplate: true\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.requests as any).mytype.issueTemplate).toBe('true');
+});
+
+// ─── cache hit path ───────────────────────────────────────────────────────────
+
+test('loadStaticConfig returns cached result on second call without forceReload', async () => {
+  const owner = 'o_cache_hit';
+  const repo = 'r_cache_hit';
+  const { context, getContent } = mkContext({
+    owner,
+    repo,
+    files: {
+      [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: `requests: {}\n` },
+    },
+  });
+
+  const r1 = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  const callCount = getContent.mock.calls.length;
+
+  const r2 = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: false });
+  expect(r2.source).toBe(r1.source);
+  expect(getContent.mock.calls.length).toBe(callCount);
+});
+
+// ─── L14 arm 1: getHttpStatus returns undefined for non-numeric status ────────
+
+test('readRepoFileIfExists: non-numeric status field causes re-throw', async () => {
+  const owner = 'o_non_numeric_status_x1';
+  const repo = 'r_non_numeric_status_x1';
+  const { context, getContent } = mkContext({ owner, repo, files: {} });
+  const err = Object.assign(new Error('bad-non-numeric-status'), { status: 'not-a-number' as unknown });
+  getContent.mockRejectedValueOnce(err);
+  await expect(loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true })).rejects.toThrow(
+    'bad-non-numeric-status'
+  );
+});
+
+// ─── L20 arm 0: normalizeStringArray with non-array value ────────────────────
+
+test('normalizeStringArray: string approvers value produces empty array', async () => {
+  const owner = 'o_approvers_str_x1';
+  const repo = 'r_approvers_str_x1';
+  const yaml = `requests:\n  mytype:\n    approvers: "single-string"\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.requests as any)?.mytype?.approvers).toEqual([]);
+});
+
+// ─── L21 arm 1: null item in array triggers x ?? '' path ─────────────────────
+
+test('normalizeStringArray: null array item coalesces to empty string and is filtered', async () => {
+  const owner = 'o_null_arr_item_x1';
+  const repo = 'r_null_arr_item_x1';
+  const yaml = `workflow:\n  labels:\n    global:\n      - ~\n      - valid\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const globalLabels = (result.config.workflow as any)?.labels?.global;
+  expect(globalLabels).toEqual(['valid']);
+});
+
+// ─── L27 arm 1: coerceOptionalString with object/array falls through to else ──
+
+test('coerceOptionalString: array branchNameTemplate is left unchanged (falls to implicit else)', async () => {
+  const owner = 'o_coerce_array_x1';
+  const repo = 'r_coerce_array_x1';
+  const yaml = `pr:\n  branchNameTemplate:\n    - a\n    - b\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.pr as any)?.branchNameTemplate).toEqual(['a', 'b']);
+});
+
+// ─── L284 arm 0: deepMerge returns base when override is non-plain-object ─────
+
+test('deepMerge: YAML scalar string override leaves base config unchanged', async () => {
+  const owner = 'o_yaml_scalar_x1';
+  const repo = 'r_yaml_scalar_x1';
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: 'hello' } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.source).toBe(`repo:${CFG_YAML}`);
+});
+
+// ─── L305 arm 1: buildRequests with non-plain requests value ─────────────────
+
+test('buildRequests: string requests value yields empty requests map', async () => {
+  const owner = 'o_requests_str_x1';
+  const repo = 'r_requests_str_x1';
+  const yaml = `requests: "not-an-object"\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(Object.keys(result.config.requests ?? {})).toHaveLength(0);
+});
+
+// ─── L354 arm 1 + L375 arm 0: buildWorkflow with non-plain workflow value ─────
+
+test('buildWorkflow: string workflow value yields empty workflow and undefined approvers', async () => {
+  const owner = 'o_workflow_str_x1';
+  const repo = 'r_workflow_str_x1';
+  const yaml = `workflow: "not-an-object"\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config.workflow as any)?.approvers).toBeUndefined();
+});
+
+// ─── L389 arm 0: normalizeStaticConfig deletes top-level issueTemplate ────────
+
+test('normalizeStaticConfig: top-level issueTemplate is removed from config', async () => {
+  const owner = 'o_top_issue_tpl_x1';
+  const repo = 'r_top_issue_tpl_x1';
+  const yaml = `issueTemplate: some-template.md\nrequests: {}\n`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YML}`]: { kind: 'file', text: yaml } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((result.config as any).issueTemplate).toBeUndefined();
+});
+
+// ─── L751 arm 0: getCachedResult returns null when no cache entry exists ──────
+
+test('loadStaticConfig with forceReload=false and no prior cache loads from repo', async () => {
+  const owner = 'o_cache_miss_fresh_x1';
+  const repo = 'r_cache_miss_fresh_x1';
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: `requests: {}\n` } },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: false });
+  expect(result.source).toBe(`repo:${CFG_YAML}`);
+});
+
+// ─── L808 default-arg: loadStaticConfig called without options ────────────────
+
+test('loadStaticConfig uses default options when called without options argument', async () => {
+  const owner = 'o_default_opts_x1';
+  const repo = 'r_default_opts_x1';
+  const validYaml = `
+requests:
+  sample:
+    folderName: resources
+    schema: .github/registry-bot/schemas/sample.json
+    issueTemplate: .github/ISSUE_TEMPLATE/sample.md
+`;
+  const { context } = mkContext({
+    owner,
+    repo,
+    files: { [`${owner}/${repo}:${CFG_YAML}`]: { kind: 'file', text: validYaml } },
+    openIssues: [],
+  });
+  const result = await loadStaticConfig(context);
+  expect(result.source).toBe(`repo:${CFG_YAML}`);
+});

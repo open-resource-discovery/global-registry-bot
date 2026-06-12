@@ -1268,6 +1268,60 @@ describe('validation/run.ts extra coverage', () => {
 
     restore();
   });
+
+  it('validateRequestIssue: partnerNamespace authority requestType covers L644 + L654 (inferNsType/mapPartnerNamespace)', async () => {
+    // L654 arm0: mapPartnerNamespaceRequestTypeToConfigKey('authority') → 'authorityNamespace'
+    // L644 arm0: inferNsType('authorityNamespace') → 'authorityNamespace'.includes('authority') → 'authority'
+    const { mod, mocks, restore } = await loadSubject();
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: {
+          authorityNamespace: { folderName: 'data/namespaces', schema: '/authority.schema.json' },
+        },
+      },
+      hooks: null,
+      hooksSource: null,
+    } as any);
+
+    const schemaObj = {
+      type: 'object',
+      required: ['type', 'name'],
+      properties: { type: { const: 'authority' }, name: { type: 'string' } },
+    };
+
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (path === 'authority.schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
+      throw httpErr(404);
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+      issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
+    };
+
+    const template: any = {
+      body: [{ id: 'identifier', validations: { required: true } }],
+      _meta: { requestType: 'partnerNamespace', schema: '/partner.json', root: 'ignored' },
+    };
+
+    const res = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      { template, formData: { requestType: 'authority', identifier: 'sap.authority.test' } }
+    );
+
+    // L654 arm0: 'authority' → 'authorityNamespace'; L644 arm0: 'authorityNamespace'.includes('authority') → 'authority'
+    expect(res.nsType).toBe('authority');
+    // template meta was rewritten to authorityNamespace
+    expect(res.template?._meta?.requestType).toBe('authorityNamespace');
+
+    restore();
+  });
+
   it('validateRequestIssue: DBG logs additional-properties when nested object has extras', async () => {
     const { mod, mocks, restore } = await loadSubject({ dbg: '1' });
 
@@ -2652,5 +2706,213 @@ describe('STATIC_CONFIG_SCHEMA allowedVendorRoots', () => {
     };
 
     expect(validate(cfg)).toBe(false);
+  });
+});
+
+// Branch coverage: normalizeHookErrors + toStringSafe non-string arms
+describe('run.ts branch coverage: normalizeHookErrors mixed types + toStringSafe', () => {
+  // Helper: fresh module with custom HOOK_SECRETS to cover buildHookWorkerConfig branches
+  async function loadSubjectCustomSecrets(hookSecrets: Record<string, unknown>) {
+    jest.resetModules();
+
+    const loadSecrets = jest.fn(() => ({ HOOK_SECRETS: hookSecrets })) as unknown as jest.Mock;
+    const loadStaticConfig = jest.fn() as unknown as jest.Mock;
+    const loadTemplate = jest.fn() as unknown as jest.Mock;
+    const parseForm = jest.fn() as unknown as jest.Mock;
+    const createHookApi = jest.fn(() => ({ mocked: true })) as unknown as jest.Mock;
+    const runHookInWorker = jest.fn() as unknown as jest.Mock;
+
+    await jest.unstable_mockModule('../src/utils/secrets.js', () => ({ loadSecrets }));
+    await jest.unstable_mockModule('../src/config.js', () => ({ loadStaticConfig }));
+    await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({ parseForm, loadTemplate }));
+    await jest.unstable_mockModule('../src/handlers/request/validation/hook-api.js', () => ({ createHookApi }));
+    await jest.unstable_mockModule('../src/handlers/request/validation/hook-pool.js', () => ({ runHookInWorker }));
+
+    const mod = await import('../src/handlers/request/validation/run.js');
+    return { mod, mocks: { loadStaticConfig, loadTemplate, loadSecrets, createHookApi, runHookInWorker } };
+  }
+
+  it('L669 default-arg: validateRequestIssue without 4th arg uses default options={}', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+    mocks.loadTemplate.mockRejectedValueOnce(new Error('missing-template'));
+    mocks.loadStaticConfig.mockResolvedValueOnce({ config: {}, hooks: null, hooksSource: null, source: '' });
+
+    const ctx: any = {
+      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+    };
+
+    const res = await (mod as any).validateRequestIssue(ctx, { owner: 'o', repo: 'r' }, { body: 'body' });
+    expect(res.errors[0]).toContain('missing-template');
+
+    restore();
+  });
+
+  it('normalizeHookErrors: mixed array items cover all internal branches + toStringSafe arms', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    const schemaObj = {
+      type: 'object',
+      properties: { identifier: { type: 'string' }, type: { const: 'product' } },
+    };
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: { product: { folderName: 'data', schema: '/sch.json', issueTemplate: 'x' } },
+      },
+      source: 'repo:cfg',
+      hooks: {
+        customValidate: () => ['', null, 42, [], { message: '' }, { message: 'hook-err' }],
+      },
+      hooksSource: null,
+    });
+
+    const getContent = jest.fn(async (args: any) => {
+      if (String(args?.path).endsWith('sch.json')) {
+        return { data: { content: Buffer.from(JSON.stringify(schemaObj)).toString('base64'), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('not found'), { status: 404 });
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+    };
+
+    const template: any = {
+      body: [{ id: 'identifier', attributes: { label: 'ID' } }],
+      _meta: { requestType: 'product', schema: '/sch.json', root: 'data' },
+    };
+
+    const res = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      {
+        template,
+        formData: { identifier: 'test-id', namespace: 'test-id', type: 'product' },
+      }
+    );
+
+    expect(res.errors).toContain('42');
+    expect(res.errors).toContain('hook-err');
+    expect(res.errors).not.toContain('');
+
+    restore();
+  });
+
+  it('getSecret: covers L430 arm0 (secret found) and arm1 (secret missing)', async () => {
+    const { mod, mocks, restore } = await loadSubject();
+
+    const schemaObj = { type: 'object', properties: { identifier: { type: 'string' } } };
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({
+      config: {
+        requests: { product: { folderName: 'data', schema: '/gs.json', issueTemplate: 'x' } },
+      },
+      source: 'repo:cfg',
+      hooks: {
+        customValidate: (args: any) => {
+          const found = args.config.getSecret('TEST');
+          const missing = args.config.getSecret('NONE');
+          return found && !missing ? [] : ['unexpected-secret'];
+        },
+      },
+      hooksSource: null,
+    });
+
+    const getContent = jest.fn(async (args: any) => {
+      if (String(args?.path).endsWith('gs.json')) {
+        return { data: { content: Buffer.from(JSON.stringify(schemaObj)).toString('base64'), encoding: 'base64' } };
+      }
+      throw Object.assign(new Error('not found'), { status: 404 });
+    });
+
+    const ctx: any = {
+      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+    };
+
+    const template: any = {
+      body: [{ id: 'identifier', attributes: { label: 'ID' } }],
+      _meta: { requestType: 'product', schema: '/gs.json', root: 'data' },
+    };
+
+    const res = await mod.validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: 'body' },
+      {
+        template,
+        formData: { identifier: 'ns1', namespace: 'ns1' },
+      }
+    );
+
+    expect(res.errors).toEqual([]);
+
+    restore();
+  });
+
+  it('HOOK_SECRETS null: covers L411/L436 || {} fallback (secrets is null → use {})', async () => {
+    const { mod, mocks } = await loadSubjectCustomSecrets(null as any);
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({ config: {}, hooks: null, hooksSource: null, source: '' });
+
+    const ctx: any = {
+      octokit: {
+        repos: { getContent: jest.fn().mockRejectedValue(Object.assign(new Error('nf'), { status: 404 })) },
+        issues: mkIssuesStub(),
+      },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+    };
+
+    // Pass template so loadTemplate is skipped and function reaches L697-699 where secrets are processed
+    const template: any = { body: [], _meta: { requestType: 'x-no-schema', schema: '' } };
+    const res = await (mod as any).validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: '' },
+      {
+        template,
+        formData: {},
+      }
+    );
+    expect(Array.isArray(res.errors)).toBe(true);
+  });
+
+  it('HOOK_SECRETS with non-string + empty-name + whitespace: covers L412/L417/L437/L439 arm0', async () => {
+    const { mod, mocks } = await loadSubjectCustomSecrets({
+      BAD_NUM: 123 as any,
+      HOOK_SECRET_: 'y',
+      WHITESPACE_VAL: '   ',
+      VALID: 'realval',
+    } as any);
+
+    mocks.loadStaticConfig.mockResolvedValueOnce({ config: {}, hooks: null, hooksSource: null, source: '' });
+
+    const ctx: any = {
+      octokit: {
+        repos: { getContent: jest.fn().mockRejectedValue(Object.assign(new Error('nf'), { status: 404 })) },
+        issues: mkIssuesStub(),
+      },
+      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      repo: () => ({ owner: 'o', repo: 'r' }),
+    };
+
+    const template: any = { body: [], _meta: { requestType: 'x-no-schema', schema: '' } };
+    const res = await (mod as any).validateRequestIssue(
+      ctx,
+      { owner: 'o', repo: 'r' },
+      { body: '' },
+      {
+        template,
+        formData: {},
+      }
+    );
+    expect(Array.isArray(res.errors)).toBe(true);
   });
 });
