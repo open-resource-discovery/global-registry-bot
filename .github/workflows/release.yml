@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       docker:
-        description: 'Docker Image'
+        description: "Docker Image"
+        required: false
+        type: boolean
+        default: true
+      githubRelease:
+        description: "GitHub Release"
         required: false
         type: boolean
         default: true
@@ -16,16 +21,16 @@ jobs:
     environment: docker-registry
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ vars.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -33,22 +38,48 @@ jobs:
       - name: Set Docker Tags
         id: docker_tags
         run: |
-          VERSION=$(node -p -e "require('./package.json').version")
-          TAGS=""
+          LAST_COMMIT_HASH=$(git rev-parse --short HEAD)
 
+          echo "LAST_COMMIT_HASH=$LAST_COMMIT_HASH" >> $GITHUB_ENV
+          echo "LAST_COMMIT_HASH=${LAST_COMMIT_HASH}"
+
+          VERSION=$(node -p -e "require('./package.json').version")
+
+          TAGS=""
           if [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            TAGS="ghcr.io/${{ github.repository }}:latest"
+            # Standard version - include latest tag
+            TAGS="${{ vars.DOCKER_REGISTRY }}/${{ github.repository }}:latest"
           fi
 
-          TAGS="$TAGS,ghcr.io/${{ github.repository }}:$VERSION"
+          TAGS="$TAGS,${{ vars.DOCKER_REGISTRY }}/${{ github.repository }}:$VERSION"
+
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "$TAGS"
+          echo $TAGS
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           file: Dockerfile
+          tags: ${{ steps.docker_tags.outputs.tags }}
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.docker_tags.outputs.tags }}
+          build-args: |
+            GIT_COMMIT_HASH=${{ steps.docker_tags.outputs.LAST_COMMIT_HASH }}
+
+  githubRelease:
+    needs: [npm, docker]
+    if: |
+      always() &&
+      !contains(needs.*.result, 'cancelled') &&
+      !contains(needs.*.result, 'failure') &&
+      inputs.githubRelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: open-resource-discovery/github-release@1394005a81f4065a076e4071983bb9802a9e5e10 # main
