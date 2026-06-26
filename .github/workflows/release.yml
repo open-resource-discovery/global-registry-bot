@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       docker:
-        description: "Docker Image"
+        description: 'Docker Image'
         required: false
         type: boolean
         default: true
       githubRelease:
-        description: "GitHub Release"
+        description: 'GitHub Release'
         required: false
         type: boolean
         default: true
