@@ -68,7 +68,7 @@ jobs:
             GIT_COMMIT_HASH=${{ steps.docker_tags.outputs.LAST_COMMIT_HASH }}
 
   githubRelease:
-    needs: [npm, docker]
+    needs: [docker]
     if: |
       always() &&
       !contains(needs.*.result, 'cancelled') &&
