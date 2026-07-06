@@ -83,6 +83,12 @@
       "matchUpdateTypes": ["minor", "patch"]
     },
     {
+      "description": "Babel v8 is blocked by ts-jest's peerDependency (@babel/core must be <8); re-enable once ts-jest supports Babel 8",
+      "matchPackageNames": ["@babel/core", "@babel/preset-env", "@babel/preset-typescript"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "Major updates: keep manual",
       "matchUpdateTypes": ["major"],
       "automerge": false
