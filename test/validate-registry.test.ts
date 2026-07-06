@@ -38,7 +38,7 @@ function mkBotValidationContext(repoInfo: RepoInfo): BotValidationContext {
       },
     },
     log: console,
-    resourceBotConfig: { requests: {} } as unknown as BotValidationContext['resourceBotConfig'],
+    resourceBotConfig: { requests: {} },
     resourceBotHooks: null,
     resourceBotHooksSource: null,
     repo: () => repoInfo,
@@ -765,16 +765,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn2 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg2 = Parameters<ValidateOneFileFn2>[0];
-    type AjvArg2 = Parameters<ValidateOneFileFn2>[1];
     type CacheArg2 = Parameters<ValidateOneFileFn2>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'systemNamespace', schemaPath }],
-    } as unknown as TargetArg2;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg2;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg2;
 
     const repoInfo = mkRepoInfo();
@@ -826,8 +824,6 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn = typeof TEST_UTILS.validateOneFile;
-    type TargetArg = Parameters<ValidateOneFileFn>[0];
-    type AjvArg = Parameters<ValidateOneFileFn>[1];
     type CacheArg = Parameters<ValidateOneFileFn>[2];
 
     const target = {
@@ -836,9 +832,9 @@ describe('validate-registry', () => {
         { requestType: 'authorityNamespace', schemaPath: authoritySchemaPath },
         { requestType: 'systemNamespace', schemaPath: systemSchemaPath },
       ],
-    } as unknown as TargetArg;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg;
 
     const repoInfo = mkRepoInfo();
@@ -875,16 +871,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn3 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg3 = Parameters<ValidateOneFileFn3>[0];
-    type AjvArg3 = Parameters<ValidateOneFileFn3>[1];
     type CacheArg3 = Parameters<ValidateOneFileFn3>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'systemNamespace', schemaPath }],
-    } as unknown as TargetArg3;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg3;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg3;
 
     const repoInfo = mkRepoInfo();
@@ -892,11 +886,13 @@ describe('validate-registry', () => {
     botCtx.resourceBotConfig = {
       requests: {},
       hooks: { allowedHosts: ['api.sap.com'] },
-    } as unknown as BotValidationContext['resourceBotConfig'];
+    };
 
     botCtx.resourceBotHooks = {
-      onValidate: () => [{ field: 'identifier', message: 'hook rejected candidate' }],
-    } as unknown as BotValidationContext['resourceBotHooks'];
+      onValidate: (): { field: string; message: string }[] => [
+        { field: 'identifier', message: 'hook rejected candidate' },
+      ],
+    };
 
     const res = await TEST_UTILS.validateOneFile(target, ajv, schemaCache, botCtx, repoInfo, 'pr');
 
@@ -928,16 +924,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn4 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg4 = Parameters<ValidateOneFileFn4>[0];
-    type AjvArg4 = Parameters<ValidateOneFileFn4>[1];
     type CacheArg4 = Parameters<ValidateOneFileFn4>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'systemNamespace', schemaPath }],
-    } as unknown as TargetArg4;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg4;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg4;
 
     const repoInfo = mkRepoInfo();
@@ -977,16 +971,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn5 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg5 = Parameters<ValidateOneFileFn5>[0];
-    type AjvArg5 = Parameters<ValidateOneFileFn5>[1];
     type CacheArg5 = Parameters<ValidateOneFileFn5>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'product', schemaPath }],
-    } as unknown as TargetArg5;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg5;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg5;
 
     const repoInfo = mkRepoInfo();
@@ -1026,16 +1018,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn6 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg6 = Parameters<ValidateOneFileFn6>[0];
-    type AjvArg6 = Parameters<ValidateOneFileFn6>[1];
     type CacheArg6 = Parameters<ValidateOneFileFn6>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'product', schemaPath }],
-    } as unknown as TargetArg6;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg6;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg6;
 
     const repoInfo = mkRepoInfo();
@@ -1148,7 +1138,7 @@ describe('validate-registry', () => {
     await expect(TEST_UTILS.resolveMergeBase('')).rejects.toThrow('Missing base ref for merge-base calculation');
     expect(await TEST_UTILS.resolveMergeBase(baseSha, undefined as unknown as string)).toBe(baseSha);
 
-    const changedWithDefaultHead = await TEST_UTILS.getChangedFiles(baseSha, undefined as unknown as string);
+    const changedWithDefaultHead = await TEST_UTILS.getChangedFiles(baseSha, undefined);
     expect(changedWithDefaultHead).toContain('README.md');
     expect(changedWithDefaultHead).toContain('data/namespaces/new-file.yaml');
     expect(changedWithDefaultHead).not.toContain('data/namespaces/delete-me.yaml');
@@ -1269,10 +1259,10 @@ describe('validate-registry', () => {
     const repoInfo = mkRepoInfo();
     const botCtx = mkBotValidationContext(repoInfo);
     botCtx.resourceBotHooks = {
-      onValidate: () => {
+      onValidate: (): never => {
         throw new Error('hook blew up');
       },
-    } as unknown as BotValidationContext['resourceBotHooks'];
+    };
 
     const bestScoreRes = await TEST_UTILS.validateOneFile(
       {

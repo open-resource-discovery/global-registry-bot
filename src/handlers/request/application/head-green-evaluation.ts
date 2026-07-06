@@ -83,7 +83,7 @@ export async function evaluateHeadGreenForApprovalReevaluation<ContextType exten
         page,
       });
 
-      const data = (res as { data?: unknown }).data;
+      const data = res.data;
       const runs =
         callbacks.isPlainObject(data) && Array.isArray(data['check_runs'])
           ? (data['check_runs'] as unknown as RefCheckRunLike[])

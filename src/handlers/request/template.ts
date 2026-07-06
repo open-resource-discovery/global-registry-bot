@@ -135,7 +135,7 @@ const toLabelStrings = (issueLabels: unknown): string[] => {
   if (!Array.isArray(issueLabels)) return [];
   return issueLabels
     .map((l: IssueLabelLike) =>
-      typeof l === 'string' ? l : l && typeof l === 'object' && 'name' in l ? (l as { name?: unknown }).name : undefined
+      typeof l === 'string' ? l : l && typeof l === 'object' && 'name' in l ? l.name : undefined
     )
     .map((x) => String(x ?? '').trim())
     .filter(Boolean);
@@ -245,7 +245,7 @@ const buildLabelIndexFromTemplates = async (
 
     const prefixed = normalizedTplLabels.filter((x) => routingPrefixes.some((p) => x.norm.startsWith(p)));
 
-    let routing: { raw: string; norm: string }[] = [];
+    let routing: { raw: string; norm: string }[];
 
     if (prefixed.length > 0) {
       routing = prefixed;
@@ -416,8 +416,8 @@ export async function loadTemplate(
     const encoding = typeof file.encoding === 'string' ? file.encoding : 'base64';
     const text = Buffer.from(file.content, encoding as BufferEncoding).toString('utf8');
 
-    let parsed: Record<string, unknown> = {};
-    let body: unknown[] = [];
+    let parsed: Record<string, unknown>;
+    let body: unknown[];
 
     if (/\.md$/i.test(path)) {
       const { fm } = parseFrontMatterMd(text);

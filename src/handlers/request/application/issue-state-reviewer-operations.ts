@@ -139,7 +139,7 @@ export async function ensureLabelsPresentOnce<
   }
 
   const pending = (async (): Promise<void> => {
-    let currentLabels: string[] = [];
+    let currentLabels: string[];
 
     try {
       currentLabels = await fetchIssueLabels(context, params, callbacks);
@@ -306,7 +306,7 @@ export async function removeReviewPendingLabelsAfterApproval<
 
   if (!approvedCfg || !pendingCfg.length) return;
 
-  let labels: string[] = [];
+  let labels: string[];
   try {
     labels = await fetchIssueLabels(context, params, callbacks);
   } catch {

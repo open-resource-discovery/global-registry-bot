@@ -30,7 +30,7 @@ export async function closeLinkedIssuePrs<
   issueNumber: number,
   options: CloseLinkedIssuePrsOptions<ContextType, RepoInfoType, PullRequestType>
 ): Promise<number[]> {
-  let prs: PullRequestType[] = [];
+  let prs: PullRequestType[];
 
   try {
     prs = (await findOpenIssuePrs(context, repoInfo, issueNumber)) as unknown as PullRequestType[];

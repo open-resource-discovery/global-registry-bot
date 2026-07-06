@@ -428,7 +428,7 @@ function buildHookRuntimeConfig(secrets: HookSecrets): HookRuntimeConfig {
   return Object.freeze({
     ...values,
     getSecret: (key: string): string => values[normalizeHookSecretName(key)] || '',
-  }) as HookRuntimeConfig;
+  });
 }
 
 function pickHookSecretsForWorker(secrets: HookSecrets): Record<string, string> {
@@ -619,8 +619,8 @@ async function ensureStaticConfigLoaded(context: ValidationContext): Promise<voi
       }
     );
 
-    context.resourceBotConfig = (config || {}) as unknown as ResourceBotConfig;
-    context.resourceBotHooks = (hooks || null) as unknown as ResourceBotHooks | null;
+    context.resourceBotConfig = config || {};
+    context.resourceBotHooks = hooks || null;
     context.resourceBotHooksSource = hooksSource || null;
   } catch (err: unknown) {
     context.log?.warn?.({ err: err instanceof Error ? err.message : String(err) }, 'static-config:load-failed');

@@ -159,12 +159,7 @@ export function resolvePrimaryIdFromCandidate(candidate: Record<string, unknown>
 }
 
 function readDirectPrimaryIdFromForm(formData: FormData): string {
-  return readFirstPrimaryValue(formData as Record<string, unknown>, [
-    'identifier',
-    'namespace',
-    'product-id',
-    'productId',
-  ]);
+  return readFirstPrimaryValue(formData, ['identifier', 'namespace', 'product-id', 'productId']);
 }
 
 function readIdentifierMappedSchemaValue(formData: FormData, schemaObj: unknown): string {
@@ -173,7 +168,7 @@ function readIdentifierMappedSchemaValue(formData: FormData, schemaObj: unknown)
 
   for (const [propName, propDef] of Object.entries(schemaProps)) {
     if (!isPlainObject(propDef) || propDef['x-form-field'] !== 'identifier') continue;
-    return readFirstPrimaryValue(formData as Record<string, unknown>, ['identifier', propName]);
+    return readFirstPrimaryValue(formData, ['identifier', propName]);
   }
 
   return '';
@@ -185,7 +180,7 @@ export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: F
   return (
     readDirectPrimaryIdFromForm(formData) ||
     readIdentifierMappedSchemaValue(formData, schemaObj) ||
-    resolvePrimaryIdFromRecord(schemaObj, formData as Record<string, unknown>) ||
+    resolvePrimaryIdFromRecord(schemaObj, formData) ||
     pickIdentifierFromFields(template, formData)
   );
 }
@@ -193,7 +188,7 @@ export function resolvePrimaryIdFromTemplate(template: TemplateLike, formData: F
 function resolvePrimaryIdFromSchemaAndForm(formData: FormData, schemaObj: unknown): string {
   const asTrimmed = (v: unknown): string => toStringSafe(v).replaceAll('\u00a0', ' ').trim();
 
-  const viaGeneric = resolvePrimaryIdFromRecord(schemaObj, formData as Record<string, unknown>);
+  const viaGeneric = resolvePrimaryIdFromRecord(schemaObj, formData);
   if (viaGeneric) return viaGeneric;
 
   return asTrimmed(formData.title || '');

@@ -162,13 +162,13 @@ async function loadModule(task: Task): Promise<Record<string, unknown>> {
 }
 
 function disableProcessExitAndKill(): void {
-  process.exit = ((..._args: Parameters<NodeJS.Process['exit']>): never => {
+  process.exit = (..._args: Parameters<NodeJS.Process['exit']>): never => {
     throw new Error('process.exit is disabled in hook worker');
-  }) as NodeJS.Process['exit'];
+  };
 
-  process.kill = ((..._args: Parameters<NodeJS.Process['kill']>): never => {
+  process.kill = (..._args: Parameters<NodeJS.Process['kill']>): never => {
     throw new Error('process.kill is disabled in hook worker');
-  }) as NodeJS.Process['kill'];
+  };
 }
 
 export default async function hookWorker(task: Task): Promise<HookWorkerResult> {
