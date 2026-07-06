@@ -313,7 +313,7 @@ async function postCheckSuiteRegistryValidationCommentsIfPresent<
     callbacks.log(context, 'debug', { suiteId, prNumbers }, 'dbg:checks:failure suite');
   }
 
-  let runsForSuite: CheckRunType[] = [];
+  let runsForSuite: CheckRunType[];
   try {
     runsForSuite = await callbacks.listAllCheckRunsForSuite(context, repoInfo.owner, repoInfo.repo, suiteId);
 

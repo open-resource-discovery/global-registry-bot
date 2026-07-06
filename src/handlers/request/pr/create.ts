@@ -226,7 +226,7 @@ function sanitizeForYaml(value: unknown): unknown {
 
   const t = typeof value;
   if (t === 'string' || t === 'boolean') return value;
-  if (t === 'number') return Number.isFinite(value as number) ? value : String(value);
+  if (t === 'number') return Number.isFinite(value) ? value : String(value);
   if (t === 'bigint') return (value as bigint).toString();
 
   if (value instanceof Date) return value.toISOString();
@@ -586,7 +586,7 @@ function mapPartnerNamespaceRequestTypeToConfigKey(v: unknown): string {
 }
 
 function getRequestEntryFromConfig(context: ContextLike, requestType: string): Record<string, unknown> | null {
-  const cfg = context.resourceBotConfig as unknown as Record<string, unknown> | undefined;
+  const cfg = context.resourceBotConfig;
   const reqs = cfg && isPlainObject(cfg['requests']) ? cfg['requests'] : null;
   if (!reqs) return null;
 

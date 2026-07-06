@@ -510,8 +510,7 @@ export function createRequestLifecycleRuntime<
             options: ReturnType<typeof dependencies.buildReviewHandoverOptions>
           ) => Promise<void>
         )(context, params, issue, nsType, namespace, labels, options),
-      buildReviewHandoverOptions: (): Record<string, unknown> =>
-        dependencies.buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+      buildReviewHandoverOptions: (): Record<string, unknown> => dependencies.buildReviewHandoverOptions(),
       appLog: app.log || console,
     });
   }
@@ -605,8 +604,7 @@ export function createRequestLifecycleRuntime<
             options: ReturnType<typeof dependencies.buildReviewHandoverOptions>
           ) => Promise<void>
         )(context, params, issue, nsType, namespace, labels, options),
-      buildReviewHandoverOptions: (): Record<string, unknown> =>
-        dependencies.buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+      buildReviewHandoverOptions: (): Record<string, unknown> => dependencies.buildReviewHandoverOptions(),
       appLog: app.log || console,
     });
   }

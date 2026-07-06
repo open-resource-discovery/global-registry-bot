@@ -230,7 +230,7 @@ export function createIssueCommentEventHandler<
           'debug',
           {
             issue: issue.number,
-            parsedKeys: Object.keys((parsedFormData || {}) as Record<string, unknown>),
+            parsedKeys: Object.keys(parsedFormData || {}),
           },
           'requestHandler:issue-comment-event skipped (not a request issue)'
         );

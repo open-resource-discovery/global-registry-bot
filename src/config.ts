@@ -233,7 +233,7 @@ const CONFIG_VALIDATOR: ValidateFunction<unknown> = ((): ValidateFunction<unknow
   } catch {
     // ignore optional errors plugin failures
   }
-  return ajv.compile(STATIC_CONFIG_SCHEMA as unknown);
+  return ajv.compile(STATIC_CONFIG_SCHEMA);
 })();
 
 function validateStaticConfigShape(config: unknown, context: RegistryBotContextLike, source: string | null): void {
@@ -308,9 +308,9 @@ function buildRequests(top: Record<string, unknown>): Record<string, NormalizedR
   for (const [k, rc0] of Object.entries(requestsObj)) {
     const rc = isPlainObject(rc0) ? { ...rc0 } : {};
 
-    coerceOptionalString(rc as Record<string, unknown>, 'folderName');
-    coerceOptionalString(rc as Record<string, unknown>, 'schema');
-    coerceOptionalString(rc as Record<string, unknown>, 'issueTemplate');
+    coerceOptionalString(rc, 'folderName');
+    coerceOptionalString(rc, 'schema');
+    coerceOptionalString(rc, 'issueTemplate');
 
     const approversRaw = (rc as Record<string, unknown>)['approvers'];
     if (approversRaw === null) {
@@ -318,7 +318,7 @@ function buildRequests(top: Record<string, unknown>): Record<string, NormalizedR
     } else if (approversRaw !== undefined) {
       (rc as Record<string, unknown>)['approvers'] = normalizeStringArray(approversRaw);
     }
-    requests[k] = rc as NormalizedRequestConfig;
+    requests[k] = rc;
   }
 
   return requests;
@@ -328,8 +328,8 @@ function buildPr(top: Record<string, unknown>): PrConfig {
   const prRaw = top['pr'];
   const prObj = isPlainObject(prRaw) ? { ...prRaw } : {};
 
-  coerceOptionalString(prObj as Record<string, unknown>, 'branchNameTemplate');
-  coerceOptionalString(prObj as Record<string, unknown>, 'titleTemplate');
+  coerceOptionalString(prObj, 'branchNameTemplate');
+  coerceOptionalString(prObj, 'titleTemplate');
 
   const amRaw = prObj['autoMerge'];
   const amObj = isPlainObject(amRaw) ? { ...amRaw } : {};
@@ -361,7 +361,7 @@ function buildWorkflow(top: Record<string, unknown>): WorkflowConfig {
   }
 
   for (const k of ['authorAction', 'approverAction', 'autoMergeCandidate'] as const) {
-    coerceOptionalString(labelsObj as Record<string, unknown>, k);
+    coerceOptionalString(labelsObj, k);
   }
 
   for (const k of ['approvalRequested', 'approvalSuccessful'] as const) {
@@ -378,7 +378,7 @@ function buildWorkflow(top: Record<string, unknown>): WorkflowConfig {
 
   const workflow: WorkflowConfig = {
     ...(wfObj as Record<string, unknown>),
-    labels: labelsObj as WorkflowLabelsConfig,
+    labels: labelsObj,
     approvers,
   };
   return workflow;
@@ -815,8 +815,6 @@ export async function loadStaticConfig(
   const init = await getInitialConfig(context, owner, repo);
   let config = init.config;
   let source = init.source;
-  let hooks: RegistryBotHooks | null = null;
-  let hooksSource: string | null = null;
 
   if (DBG && context.log?.debug) {
     let origin = 'default';
@@ -840,8 +838,8 @@ export async function loadStaticConfig(
   await reportMissingIfNeeded(context, source, { validate, updateIssue });
 
   const hooksRes = await loadHooks(context, owner, repo, source);
-  hooks = hooksRes.hooks;
-  hooksSource = hooksRes.hooksSource;
+  const hooks = hooksRes.hooks;
+  const hooksSource = hooksRes.hooksSource;
 
   const result: LoadStaticConfigResult = { config: normalized, source, hooks, hooksSource };
 

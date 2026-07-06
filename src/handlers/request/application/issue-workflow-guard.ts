@@ -306,7 +306,7 @@ export async function enforceRoutingLabelLock<
   const expectedKey = callbacks.normalizeKey(expected);
   if (!expectedKey) return false;
 
-  let labels: string[] = [];
+  let labels: string[];
   try {
     labels = await callbacks.fetchIssueLabels(context, params);
   } catch {
@@ -383,7 +383,7 @@ export async function handleClosedIssueWorkflowGuard<
   const effectiveConstants = callbacks.resolveEffectiveConstants(context);
   const approvedLabel = toStringTrim(effectiveConstants.labelOnApproved) || 'Approved';
 
-  let labels: string[] = [];
+  let labels: string[];
   try {
     labels = await callbacks.fetchIssueLabels(context, params);
   } catch {

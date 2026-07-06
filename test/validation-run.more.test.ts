@@ -44,7 +44,7 @@ async function loadSubject(opts: { dbg?: '0' | '1'; mockYaml?: boolean } = {}) {
 
   const loadSecrets = jest.fn(() => ({ HOOK_SECRETS: { TEST: '1' } })) as unknown as jest.Mock;
 
-  const parseForm = jest.fn() as unknown as jest.Mock;
+  const parseForm = jest.fn();
   const loadTemplate = jest.fn() as unknown as MockedAsync<[unknown], unknown>;
 
   const createHookApi = jest.fn(() => ({ mocked: true })) as unknown as jest.Mock;
@@ -1019,7 +1019,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const ctx: any = {
       octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
@@ -1056,7 +1056,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const ctx: any = {
       octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
@@ -1092,7 +1092,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const ctx: any = {
       octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
@@ -1137,7 +1137,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const schemaObj = {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -1231,7 +1231,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const schemaObj = {
       type: 'object',
@@ -1279,7 +1279,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const schemaObj = {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -1370,7 +1370,7 @@ describe('validation/run.ts extra coverage', () => {
       found: true,
       value: [{ field: 'meta', message: 'bad' }],
       logs: [],
-    } as any);
+    });
 
     const ctx: any = {
       octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
@@ -1638,7 +1638,7 @@ describe('validation/run.ts extra coverage', () => {
       },
       hooks: null,
       hooksSource: null,
-    } as any);
+    });
 
     const schemaObj = {
       $schema: 'https://json-schema.org/draft/2020-12/schema',

@@ -659,7 +659,7 @@ test('issues.opened: onApproval boolean true auto-approves like an explicit appr
     config: cfg,
   });
 
-  runApprovalHook.mockResolvedValueOnce(true as any);
+  runApprovalHook.mockResolvedValueOnce(true);
 
   await handler(ctx);
 

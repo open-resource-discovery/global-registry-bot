@@ -1098,9 +1098,9 @@ test('check_suite.success treats matching default-branch head as default branch 
     withCachedConfig: true,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.payload.action = 'completed';
   ctx.payload.repository.default_branch = 'main';
@@ -4737,7 +4737,7 @@ public
       nsType: 'subContextNamespace',
       template: tpl,
       formData: { identifier: target, description: 'x' },
-    } as any);
+    });
 
     const openCtx = mkIssuesContext({ issue, action: 'opened' });
     const topYaml = `contacts:\n  - "@topOwner"\n`;
@@ -5582,10 +5582,10 @@ public
       config: cfg,
     });
 
-    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
       if (typeof callback === 'function') callback();
       return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-    }) as unknown as typeof setTimeout);
+    });
 
     ctx.octokit.pulls.list
       .mockResolvedValueOnce({
@@ -5698,7 +5698,7 @@ public
       data: [{ committer: { login: 'no-approval-user' } }],
     });
 
-    runApprovalHook.mockResolvedValueOnce(false as never);
+    runApprovalHook.mockResolvedValueOnce(false);
 
     await handler(ctx);
 
@@ -11732,9 +11732,9 @@ test('push: default branch push updates approved green registry PR branches', as
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -11839,10 +11839,10 @@ test('push: default branch delayed retry logs when approved branch update retry 
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-delayed-retry', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -11886,9 +11886,9 @@ test('push: direct PR reevaluation skips missing head sha', async () => {
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.octokit.pulls.list
     .mockResolvedValueOnce({
@@ -11926,9 +11926,9 @@ test('push: direct PR reevaluation skips different base branch', async () => {
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   extractHashFromPrBody.mockReturnValueOnce('');
   ctx.octokit.pulls.list
@@ -11973,9 +11973,9 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12052,9 +12052,9 @@ test('push: direct PR reevaluation requests update when current base comparison 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12132,9 +12132,9 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12192,10 +12192,10 @@ test('push: direct PR reevaluation does not run approval when approved head chec
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12277,10 +12277,10 @@ test('push: direct PR reevaluation waits when latest approved head check runs ar
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12361,10 +12361,10 @@ test('push: direct PR reevaluation waits when completed head check runs have no 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12445,10 +12445,10 @@ test('push: direct PR reevaluation falls back to combined status when head check
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12536,10 +12536,10 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12626,10 +12626,10 @@ test('push: direct PR reevaluation stops when the current head sha is missing', 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12708,10 +12708,10 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12813,10 +12813,10 @@ test('push: stale direct registry PR retries updateBranch without expected head 
   });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12917,10 +12917,10 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13027,10 +13027,10 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13125,10 +13125,10 @@ test('push: direct registry PR creates an approval review when prior review look
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13228,9 +13228,9 @@ test('push: approved review remains eligible for branch update after later comme
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13334,9 +13334,9 @@ test('push: paginated review history uses later review id as tie-breaker for sam
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13429,9 +13429,9 @@ test('push: review fetch and approved-label fallback fetch failures skip branch 
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13569,9 +13569,9 @@ test('push: plain approved review without bot marker is enough for branch update
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13665,9 +13665,9 @@ test('push: changes requested review blocks approved-label based branch update',
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -15414,7 +15414,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       errorsFormatted: '',
       errorsFormattedSingle: '',
       validationIssues: [{ path: '', message: 'missing structured details' }],
-    } as any);
+    });
 
     const issue = {
       number: 910,

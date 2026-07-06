@@ -64,7 +64,7 @@ test('logs and returns if handlers directory cannot be read', async () => {
   const app = mkApp() as {
     log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
   };
-  await appEntry(app, {} as unknown);
+  await appEntry(app, {});
 
   expect(app.log.info).toHaveBeenCalledWith('Request Bot booting...');
   expect(app.log.error).toHaveBeenCalledWith(
@@ -119,7 +119,7 @@ test('scans handlers folder and handles: good handler, missing index, bad defaul
     const app = mkApp() as {
       log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
     };
-    await appEntry(app, {} as unknown);
+    await appEntry(app, {});
 
     expect(app.log.info).toHaveBeenCalledWith('Request Bot booting...');
     expect(app.log.info).toHaveBeenCalledWith(expect.stringContaining('Found handler directories:'));
@@ -164,7 +164,7 @@ test('wraps non-Error directory read failures before logging', async () => {
   const app = mkApp() as {
     log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
   };
-  await appEntry(app, {} as unknown);
+  await appEntry(app, {});
 
   expect(app.log.error).toHaveBeenCalledWith(
     expect.objectContaining({ err: expect.objectContaining({ message: 'boom-string' }) }),
@@ -199,7 +199,7 @@ test('logs handler import fallback message when thrown error has no stack', asyn
     const app = mkApp() as {
       log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
     };
-    await appEntry(app, {} as unknown);
+    await appEntry(app, {});
 
     expect(app.log.error).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.objectContaining({ message: 'nostack', stack: undefined }) }),
