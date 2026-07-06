@@ -23,7 +23,7 @@ function mkContext(args: { files: Record<string, FileEntry>; resourceBotConfig?:
 
   return {
     context: {
-      octokit: { repos: { getContent } },
+      octokit: { rest: { repos: { getContent } } },
       resourceBotConfig: args.resourceBotConfig ?? {},
       log: { debug: jest.fn() },
     },

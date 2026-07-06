@@ -26,9 +26,11 @@ type WarnFn = (obj: unknown, msg?: string) => void;
 
 type Ctx = {
   octokit: {
-    issues: {
-      listComments: jest.MockedFunction<ListCommentsFn>;
-      createComment: jest.MockedFunction<CreateCommentFn>;
+    rest: {
+      issues: {
+        listComments: jest.MockedFunction<ListCommentsFn>;
+        createComment: jest.MockedFunction<CreateCommentFn>;
+      };
     };
     graphql: jest.MockedFunction<GraphqlFn>;
   };
@@ -66,7 +68,7 @@ function mkCtx(payload?: unknown): CtxBundle {
   const warn = jest.fn<WarnFn>(() => undefined).mockName('warn');
 
   const ctx: Ctx = {
-    octokit: { issues: { listComments, createComment }, graphql },
+    octokit: { rest: { issues: { listComments, createComment } }, graphql },
     log: { warn },
     payload,
   };

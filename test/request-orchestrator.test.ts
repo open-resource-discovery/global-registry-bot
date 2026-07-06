@@ -100,21 +100,23 @@ function mkIssueContext(args: {
     repo: () => ({ owner, repo }),
     issue: () => ({ owner, repo, issue_number: issue.number }),
     octokit: {
-      issues: {
-        get: jest.fn(async () => ({ data: issue })),
-        update: jest.fn(async () => ({})),
-        addLabels: jest.fn(async () => ({})),
-        removeLabel: jest.fn(async () => ({})),
-      },
-      pulls: {
-        update: jest.fn(async () => ({})),
-        list: jest.fn(async () => ({ data: [] })),
-      },
-      git: {
-        deleteRef: jest.fn(async () => ({})),
-      },
-      repos: {
-        getContent: jest.fn(async () => ({})),
+      rest: {
+        issues: {
+          get: jest.fn(async () => ({ data: issue })),
+          update: jest.fn(async () => ({})),
+          addLabels: jest.fn(async () => ({})),
+          removeLabel: jest.fn(async () => ({})),
+        },
+        pulls: {
+          update: jest.fn(async () => ({})),
+          list: jest.fn(async () => ({ data: [] })),
+        },
+        git: {
+          deleteRef: jest.fn(async () => ({})),
+        },
+        repos: {
+          getContent: jest.fn(async () => ({})),
+        },
       },
     },
   };
@@ -297,14 +299,14 @@ test('issues.opened: adds routing lock marker when exactly one routing label is 
 
   await handlers['issues.opened'][0](ctx);
 
-  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({
       issue_number: 1,
       body: expect.stringContaining('nsreq:routing-lock'),
     })
   );
 
-  const bodyArg = ctx.octokit.issues.update.mock.calls[0][0].body;
+  const bodyArg = ctx.octokit.rest.issues.update.mock.calls[0][0].body;
   expect(bodyArg).toContain('"expected":"route-1"');
 });
 
@@ -346,7 +348,7 @@ test('issues.opened: strips routing-lock marker before parsing and does not rewr
   await handlers['issues.opened'][0](ctx);
 
   // marker already correct => no rewrite
-  expect(ctx.octokit.issues.update).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.issues.update).not.toHaveBeenCalled();
 });
 
 test('issues.opened: rewrites malformed routing-lock markers with a valid expected label', async () => {
@@ -380,7 +382,7 @@ test('issues.opened: rewrites malformed routing-lock markers with a valid expect
 
   await handlers['issues.opened'][0](ctx);
 
-  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({
       issue_number: 2,
       body: expect.stringContaining('"expected":"route-1"'),
@@ -416,7 +418,7 @@ test('issues.opened: tolerates routing-lock marker update failures', async () =>
       user: { login: 'alice' },
     },
   });
-  ctx.octokit.issues.update.mockRejectedValueOnce(new Error('boom'));
+  ctx.octokit.rest.issues.update.mockRejectedValueOnce(new Error('boom'));
 
   await expect(handlers['issues.opened'][0](ctx)).resolves.toBeUndefined();
 });
@@ -487,7 +489,7 @@ test('issues.opened: routing error triggers label refresh and retries loadTempla
     withCachedConfig: true,
   });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: { ...ctx.payload.issue, labels: [{ name: 'registry-bot:product' }] },
   });
 
@@ -495,7 +497,7 @@ test('issues.opened: routing error triggers label refresh and retries loadTempla
   await handler(ctx);
 
   expect(loadTemplate).toHaveBeenCalledTimes(2);
-  expect(ctx.octokit.issues.get).toHaveBeenCalled();
+  expect(ctx.octokit.rest.issues.get).toHaveBeenCalled();
 });
 
 test('issues.opened: validation errors -> posts and sets author state', async () => {
@@ -568,17 +570,19 @@ test('issues.opened: success -> normalizes title and hands over with labels and 
 
   await handler(ctx);
 
-  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'Product Request: ABC' }));
+  expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
+    expect.objectContaining({ title: 'Product Request: ABC' })
+  );
 
   expect(setStateLabel).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), 'review');
 
   expect(ensureAssigneesOnce).toHaveBeenCalledWith(ctx, expect.anything(), expect.anything(), ['alice', 'bob']);
 
-  expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
     expect.objectContaining({ labels: ['registry-bot', 'needs-review'] })
   );
 
-  expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(expect.objectContaining({ name: 'approved-label' }));
+  expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(expect.objectContaining({ name: 'approved-label' }));
 
   expect(postOnce).toHaveBeenCalled();
   const body = postOnce.mock.calls[0][2];
@@ -752,7 +756,7 @@ test('issues.opened: onApproval rejected posts feedback and closes request', asy
 
   expect(createRequestPr).not.toHaveBeenCalled();
   expect(ensureAssigneesOnce).not.toHaveBeenCalled();
-  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({ issue_number: 18, state: 'closed' })
   );
 

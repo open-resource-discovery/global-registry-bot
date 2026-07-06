@@ -149,15 +149,17 @@ function mkContext(args: {
 
   const context: any = {
     octokit: {
-      repos: { getContent },
-      issues: {
-        get: jest.fn(),
-        listForRepo: jest.fn(),
-        update: jest.fn(),
-        create: jest.fn(),
-        createComment: jest.fn(),
-        addLabels: jest.fn(),
-        removeLabel: jest.fn(),
+      rest: {
+        repos: { getContent },
+        issues: {
+          get: jest.fn(),
+          listForRepo: jest.fn(),
+          update: jest.fn(),
+          create: jest.fn(),
+          createComment: jest.fn(),
+          addLabels: jest.fn(),
+          removeLabel: jest.fn(),
+        },
       },
     },
     log: {

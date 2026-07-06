@@ -5,8 +5,10 @@ type RequestConfigEntry = {
 
 type ValidationContext = {
   octokit: {
-    repos: {
-      getContent: (args: { owner: string; repo: string; path: string }) => Promise<unknown>;
+    rest: {
+      repos: {
+        getContent: (args: { owner: string; repo: string; path: string }) => Promise<unknown>;
+      };
     };
   };
 };
@@ -77,7 +79,7 @@ async function repoPathExists(args: {
   getHttpStatus: (error: unknown) => number | undefined;
 }): Promise<boolean> {
   try {
-    await args.context.octokit.repos.getContent({ owner: args.owner, repo: args.repo, path: args.repoPath });
+    await args.context.octokit.rest.repos.getContent({ owner: args.owner, repo: args.repo, path: args.repoPath });
     return true;
   } catch (error: unknown) {
     if (args.getHttpStatus(error) === 404) return false;

@@ -243,7 +243,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
@@ -378,7 +378,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
@@ -463,7 +463,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
@@ -504,7 +504,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
@@ -635,7 +635,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -722,7 +722,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -783,7 +783,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -866,7 +866,7 @@ describe('validation/run.ts extra coverage', () => {
       .mockResolvedValue(localSchema);
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -893,8 +893,10 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: {
-        repos: { getContent: jest.fn(async () => ({ data: [] })) },
-        issues: mkIssuesStub(),
+        rest: {
+          repos: { getContent: jest.fn(async () => ({ data: [] })) },
+          issues: mkIssuesStub(),
+        },
       },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
@@ -932,7 +934,7 @@ describe('validation/run.ts extra coverage', () => {
     mocks.loadTemplate.mockRejectedValueOnce(new Error('template missing'));
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
@@ -1022,7 +1024,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1059,7 +1061,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1095,7 +1097,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1178,7 +1180,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1246,7 +1248,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { warn: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1305,7 +1307,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1341,7 +1343,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
@@ -1373,7 +1375,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: {
@@ -1432,7 +1434,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
@@ -1490,7 +1492,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
@@ -1541,7 +1543,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: {
@@ -1605,7 +1607,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
@@ -1657,7 +1659,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1700,7 +1702,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
@@ -1744,7 +1746,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
@@ -1777,7 +1779,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: {
@@ -1842,7 +1844,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1888,7 +1890,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -1963,7 +1965,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -2009,7 +2011,7 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -2062,7 +2064,7 @@ describe('validation/run.ts extra coverage', () => {
       } as any);
 
     const mkCtx = () => ({
-      octokit: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -2138,7 +2140,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -2207,7 +2209,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -2282,7 +2284,7 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { repos: { getContent }, issues: mkIssuesStub() },
+      octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
       log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
@@ -2375,15 +2377,17 @@ describe('vendor governance', () => {
 
     return {
       octokit: {
-        repos: { getContent },
-        issues: {
-          get: jest.fn(),
-          listForRepo: jest.fn(),
-          update: jest.fn(),
-          create: jest.fn(),
-          createComment: jest.fn(),
-          addLabels: jest.fn(),
-          removeLabel: jest.fn(),
+        rest: {
+          repos: { getContent },
+          issues: {
+            get: jest.fn(),
+            listForRepo: jest.fn(),
+            update: jest.fn(),
+            create: jest.fn(),
+            createComment: jest.fn(),
+            addLabels: jest.fn(),
+            removeLabel: jest.fn(),
+          },
         },
       },
       log: {

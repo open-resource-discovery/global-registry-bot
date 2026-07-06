@@ -203,43 +203,55 @@ export type GitHubGateway = {
 
 export type GitHubGatewayContext = {
   readonly octokit: {
-    readonly issues: IssuesLabelOctokitApi & IssuesUpdateOctokitApi & IssuesAssigneesOctokitApi;
-    readonly pulls: PullRequestsOctokitApi;
-    readonly repos: ReposOctokitApi;
-    readonly checks: ChecksOctokitApi;
+    rest: {
+      readonly issues: IssuesLabelOctokitApi & IssuesUpdateOctokitApi & IssuesAssigneesOctokitApi;
+      readonly pulls: PullRequestsOctokitApi;
+      readonly repos: ReposOctokitApi;
+      readonly checks: ChecksOctokitApi;
+    };
   };
 };
 
 export type GitHubIssueLabelsGatewayContext = {
   readonly octokit: {
-    readonly issues: IssuesLabelOctokitApi;
+    rest: {
+      readonly issues: IssuesLabelOctokitApi;
+    };
   };
 };
 
 export type GitHubIssueUpdateGatewayContext = {
   readonly octokit: {
-    readonly issues: IssuesUpdateOctokitApi;
+    rest: {
+      readonly issues: IssuesUpdateOctokitApi;
+    };
   };
 };
 
 export type GitHubIssueAssigneesGatewayContext = {
   readonly octokit: {
-    readonly issues: IssuesAssigneesOctokitApi;
+    rest: {
+      readonly issues: IssuesAssigneesOctokitApi;
+    };
   };
 };
 
 export type GitHubRepoContentGatewayContext = {
   readonly octokit: {
-    readonly repos: {
-      getContent: (args: RepoContentArgs) => Promise<RepoContentResult>;
+    rest: {
+      readonly repos: {
+        getContent: (args: RepoContentArgs) => Promise<RepoContentResult>;
+      };
     };
   };
 };
 
 export type GitHubRepoBranchGatewayContext = {
   readonly octokit: {
-    readonly repos: {
-      getBranch: (args: RepoBranchArgs) => Promise<RepoBranchResult>;
+    rest: {
+      readonly repos: {
+        getBranch: (args: RepoBranchArgs) => Promise<RepoBranchResult>;
+      };
     };
   };
 };
@@ -249,7 +261,7 @@ export function createGitHubRepoContentGateway(
 ): Pick<GitHubGatewayRepos, 'getRepoContent'> {
   return {
     getRepoContent: async (args: RepoContentArgs): Promise<RepoContentResult> =>
-      await context.octokit.repos.getContent(args),
+      await context.octokit.rest.repos.getContent(args),
   };
 }
 
@@ -257,7 +269,8 @@ export function createGitHubRepoBranchGateway(
   context: GitHubRepoBranchGatewayContext
 ): Pick<GitHubGatewayRepos, 'getBranch'> {
   return {
-    getBranch: async (args: RepoBranchArgs): Promise<RepoBranchResult> => await context.octokit.repos.getBranch(args),
+    getBranch: async (args: RepoBranchArgs): Promise<RepoBranchResult> =>
+      await context.octokit.rest.repos.getBranch(args),
   };
 }
 
@@ -266,9 +279,9 @@ export function createGitHubIssueLabelsGateway(
 ): Pick<GitHubGatewayIssues, 'addIssueLabels' | 'removeIssueLabel'> {
   return {
     addIssueLabels: async (args: IssueAddLabelsArgs): Promise<IssueMutationResult> =>
-      await context.octokit.issues.addLabels(args),
+      await context.octokit.rest.issues.addLabels(args),
     removeIssueLabel: async (args: IssueRemoveLabelArgs): Promise<IssueMutationResult> =>
-      await context.octokit.issues.removeLabel(args),
+      await context.octokit.rest.issues.removeLabel(args),
   };
 }
 
@@ -277,7 +290,7 @@ export function createGitHubIssueUpdateGateway(
 ): Pick<GitHubGatewayIssues, 'updateIssue'> {
   return {
     updateIssue: async (args: IssueUpdateArgs): Promise<IssueMutationResult> =>
-      await context.octokit.issues.update(args),
+      await context.octokit.rest.issues.update(args),
   };
 }
 
@@ -286,7 +299,7 @@ export function createGitHubIssueAssigneesGateway(
 ): Pick<GitHubGatewayIssues, 'addIssueAssignees'> {
   return {
     addIssueAssignees: async (args: IssueAddAssigneesArgs): Promise<IssueMutationResult> =>
-      await context.octokit.issues.addAssignees(args),
+      await context.octokit.rest.issues.addAssignees(args),
   };
 }
 
@@ -299,29 +312,29 @@ export function createGitHubGateway(context: GitHubGatewayContext): GitHubGatewa
     },
     pullRequests: {
       getPullRequest: async (args: PullRequestNumberArgs): Promise<PullRequestGetResult> =>
-        await context.octokit.pulls.get(args),
+        await context.octokit.rest.pulls.get(args),
       listPullRequests: async (args: ListPullRequestsArgs): Promise<PullRequestListResult> =>
-        await context.octokit.pulls.list(args),
+        await context.octokit.rest.pulls.list(args),
       listPullRequestFiles: async (args: PullRequestFilesArgs): Promise<PullRequestListResult> =>
-        await context.octokit.pulls.listFiles(args),
+        await context.octokit.rest.pulls.listFiles(args),
       listPullRequestCommits: async (args: PullRequestCommitsArgs): Promise<PullRequestListResult> =>
-        await context.octokit.pulls.listCommits(args),
+        await context.octokit.rest.pulls.listCommits(args),
       listPullRequestReviews: async (args: PullRequestReviewsArgs): Promise<PullRequestListResult> =>
-        await context.octokit.pulls.listReviews(args),
+        await context.octokit.rest.pulls.listReviews(args),
     },
     repos: {
       ...createGitHubRepoContentGateway(context),
       ...createGitHubRepoBranchGateway(context),
       getCombinedStatusForRef: async (args: CombinedStatusForRefArgs): Promise<CombinedStatusForRefResult> =>
-        await context.octokit.repos.getCombinedStatusForRef(args),
+        await context.octokit.rest.repos.getCombinedStatusForRef(args),
     },
     checks: {
       listCheckRunsForRef: async (args: CheckRunsForRefArgs): Promise<CheckRunsResult> =>
-        await context.octokit.checks.listForRef(args),
+        await context.octokit.rest.checks.listForRef(args),
       listCheckRunsForSuite: async (args: CheckRunsForSuiteArgs): Promise<CheckRunsResult> =>
-        await context.octokit.checks.listForSuite(args),
+        await context.octokit.rest.checks.listForSuite(args),
       listCheckRunAnnotations: async (args: CheckRunAnnotationsArgs): Promise<CheckRunAnnotationsResult> =>
-        await context.octokit.checks.listAnnotations(args),
+        await context.octokit.rest.checks.listAnnotations(args),
     },
     git: {},
     actions: {},

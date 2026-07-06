@@ -23,14 +23,16 @@ type PullRequestLike = {
 };
 
 type OctokitLike = {
-  pulls: {
-    list: (args: {
-      owner: string;
-      repo: string;
-      state: 'open' | 'closed' | 'all';
-      per_page?: number;
-      page?: number;
-    }) => Promise<{ data: PullRequestLike[] }>;
+  rest: {
+    pulls: {
+      list: (args: {
+        owner: string;
+        repo: string;
+        state: 'open' | 'closed' | 'all';
+        per_page?: number;
+        page?: number;
+      }) => Promise<{ data: PullRequestLike[] }>;
+    };
   };
 };
 
@@ -194,7 +196,7 @@ export async function findOpenIssuePrs(
 
     for (;;) {
       // GitHub REST endpoints are paginated
-      const { data } = await context.octokit.pulls.list({
+      const { data } = await context.octokit.rest.pulls.list({
         owner,
         repo,
         state: 'open',

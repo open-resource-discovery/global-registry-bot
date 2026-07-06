@@ -143,26 +143,28 @@ type DirectPrRuntimeContextBase<PullRequestType extends PullRequestLikeBase> = C
   EnsureAssigneesOnceContextBase & {
     state?: Record<string, unknown>;
     octokit: {
-      pulls: {
-        createReview: (args: {
-          owner: string;
-          repo: string;
-          pull_number: number;
-          event: 'APPROVE';
-          body: string;
-        }) => Promise<unknown>;
-        update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
-        list: (args: {
-          owner: string;
-          repo: string;
-          state: 'open' | 'closed' | 'all';
-          per_page?: number;
-          page?: number;
-        }) => Promise<{ data: PullRequestType[] }>;
-      };
-      issues: {
-        update: (args: IssueParamsBase & { state: 'closed' }) => Promise<unknown>;
-        removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+      rest: {
+        pulls: {
+          createReview: (args: {
+            owner: string;
+            repo: string;
+            pull_number: number;
+            event: 'APPROVE';
+            body: string;
+          }) => Promise<unknown>;
+          update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+          list: (args: {
+            owner: string;
+            repo: string;
+            state: 'open' | 'closed' | 'all';
+            per_page?: number;
+            page?: number;
+          }) => Promise<{ data: PullRequestType[] }>;
+        };
+        issues: {
+          update: (args: IssueParamsBase & { state: 'closed' }) => Promise<unknown>;
+          removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+        };
       };
     };
   };

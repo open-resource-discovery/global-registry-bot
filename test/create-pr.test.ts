@@ -22,21 +22,23 @@ const schemaFileResponse = (schemaObj: unknown) => ({
 const mkContext = () => {
   const ctx: AnyObj = {
     octokit: {
-      repos: {
-        get: jest.fn(),
-        getBranch: jest.fn(),
-        getContent: jest.fn(),
-        createOrUpdateFileContents: jest.fn(),
-      },
-      git: {
-        createRef: jest.fn(),
-      },
-      pulls: {
-        list: jest.fn(),
-        create: jest.fn(),
-      },
-      issues: {
-        addLabels: jest.fn(),
+      rest: {
+        repos: {
+          get: jest.fn(),
+          getBranch: jest.fn(),
+          getContent: jest.fn(),
+          createOrUpdateFileContents: jest.fn(),
+        },
+        git: {
+          createRef: jest.fn(),
+        },
+        pulls: {
+          list: jest.fn(),
+          create: jest.fn(),
+        },
+        issues: {
+          addLabels: jest.fn(),
+        },
       },
     },
     log: {
@@ -260,14 +262,14 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     });
 
     // Repo info
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     // Branch create => 422 should be ignored
-    ctx.octokit.git.createRef.mockRejectedValueOnce(httpErr(422));
+    ctx.octokit.rest.git.createRef.mockRejectedValueOnce(httpErr(422));
 
     // Schema load: first candidate 404, second resolves
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref) {
         if (path === 'ns.schema.json') throw httpErr(404);
         if (path === 'schema/ns.schema.json') return schemaFileResponse(schemaObj);
@@ -278,7 +280,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     });
 
     // write ok
-    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
 
     // existing PR found => skip pulls.create
     const existingPr = {
@@ -289,9 +291,9 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       draft: false,
       state: 'open',
     };
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [existingPr] });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [existingPr] });
 
-    ctx.octokit.issues.addLabels.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.issues.addLabels.mockResolvedValueOnce({ ok: true });
 
     const pr = await createRequestPr(
       ctx,
@@ -321,14 +323,14 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     expect(loadTemplateArgs.issueLabels).toEqual(['l1', 'l2']);
 
     // base branch from config
-    expect(ctx.octokit.repos.getBranch).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.repos.getBranch).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       branch: 'develop',
     });
 
     // createRef used slugified resource (lowercase + unsafe -> '-')
-    expect(ctx.octokit.git.createRef).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.git.createRef).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       ref: 'refs/heads/req/acme.system-1-7',
@@ -336,8 +338,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     });
 
     // wrote YAML at resource path
-    expect(ctx.octokit.repos.createOrUpdateFileContents).toHaveBeenCalled();
-    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
+    const writeParams = ctx.octokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
     expect(writeParams.path).toBe('data/Acme.System@1.yaml');
     expect(writeParams.branch).toBe('req/acme.system-1-7');
     expect(writeParams.message).toBe('chore(data): register Acme.System@1 #7');
@@ -365,7 +367,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     // autoMerge disabled => no tryEnableAutoMerge, but label added
     expect(mocks.tryEnableAutoMerge).not.toHaveBeenCalled();
     expect(mocks.tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 99,
@@ -415,11 +417,11 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       contacts: ['only-one'],
     });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref) {
         if (path === 'min.schema.json') throw httpErr(404);
         if (path === 'schema/min.schema.json') return schemaFileResponse(schemaObj);
@@ -432,7 +434,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: 't', labels: [], body: '' }, {}, { template })
     ).rejects.toThrow(/requires at least 2 entries/i);
 
-    expect(ctx.octokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
   it('product: creates file + PR, adds parent when allowed, strips defaults, auto-merge enable fails => label + deferred merge', async () => {
@@ -482,25 +484,25 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       });
 
       // Repo info
-      ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-      ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+      ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+      ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
       // schema load: direct hit on raw path
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
         if (!ref && path === 'product.schema.json') return schemaFileResponse(schemaObj);
         if (String(path).endsWith('.yaml')) throw httpErr(404);
         throw httpErr(404);
       });
 
       // branch create ok
-      ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+      ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
       // write ok
-      ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+      ctx.octokit.rest.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
 
       // no existing PR => create one
-      ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
-      ctx.octokit.pulls.create.mockResolvedValueOnce({
+      ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] });
+      ctx.octokit.rest.pulls.create.mockResolvedValueOnce({
         data: {
           number: 5,
           node_id: 'PRNODE',
@@ -510,7 +512,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
 
       // auto merge: fail => label + merge
       mocks.tryEnableAutoMerge.mockResolvedValueOnce(false);
-      ctx.octokit.issues.addLabels.mockResolvedValueOnce({ ok: true });
+      ctx.octokit.rest.issues.addLabels.mockResolvedValueOnce({ ok: true });
       mocks.tryMergeIfGreen.mockResolvedValueOnce(true);
 
       const formData = {
@@ -531,8 +533,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       expect(pr.number).toBe(5);
 
       // YAML content written
-      expect(ctx.octokit.repos.createOrUpdateFileContents).toHaveBeenCalled();
-      const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+      expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
+      const writeParams = ctx.octokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
       const yamlText = Buffer.from(String(writeParams.content), 'base64').toString('utf8');
 
       const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -547,8 +549,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       expect(yamlText).not.toMatch(/^\s*visibility\s*:/m); // default stripped
 
       // PR creation body includes snapshot marker & issue marker
-      expect(ctx.octokit.pulls.create).toHaveBeenCalled();
-      const createArgs = ctx.octokit.pulls.create.mock.calls[0][0] as AnyObj;
+      expect(ctx.octokit.rest.pulls.create).toHaveBeenCalled();
+      const createArgs = ctx.octokit.rest.pulls.create.mock.calls[0][0] as AnyObj;
       expect(createArgs.maintainer_can_modify).toBe(true);
       expect(String(createArgs.body)).toContain('fix: #12');
       expect(String(createArgs.body)).toContain('Type: Product');
@@ -562,7 +564,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       expect((amArgs[2] as { mergeMethod?: 'MERGE' | 'SQUASH' | 'REBASE' }).mergeMethod).toBe('SQUASH');
 
       // label applied because enable returned false
-      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         issue_number: 5,
@@ -623,25 +625,25 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       // no parent, should stay absent because forbidden
     });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref && path === 'product2.schema.json') return schemaFileResponse(schemaObj);
       if (String(path).endsWith('.yaml')) throw httpErr(404);
       throw httpErr(404);
     });
 
-    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
 
     const existingPr = {
       number: 55,
       node_id: 'PRNODE55',
       head: { ref: 'feat/resource-acme.prod2-issue-9', sha: 'PRSHA' },
     };
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [existingPr] });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [existingPr] });
 
     mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
     mocks.tryMergeIfGreen.mockResolvedValueOnce(true);
@@ -656,8 +658,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
 
     expect(pr.number).toBe(55);
 
-    expect(ctx.octokit.repos.createOrUpdateFileContents).toHaveBeenCalled();
-    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
+    const writeParams = ctx.octokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
     const yamlText = Buffer.from(String(writeParams.content), 'base64').toString('utf8');
 
     // parent must not be emitted
@@ -665,7 +667,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     expect(yamlText).toMatch(/^\s*parentId\s*:\s*'?PARENTX'?\s*$/m);
 
     // enable succeeded => no labels
-    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
 
     // Auto-merge can still be enabled at PR creation time, but direct REST merge is deferred to CI webhooks.
     expect(mocks.tryEnableAutoMerge).toHaveBeenCalled();
@@ -717,12 +719,12 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       visibility: 'public',
     });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
     // schema load: 404 raw, then resolve via default searchPath "schema/..."
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref) {
         if (path === 'sys.schema.json') throw httpErr(404);
         if (path === 'schema/sys.schema.json') return schemaFileResponse(schemaObj);
@@ -731,12 +733,12 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       throw httpErr(404);
     });
 
-    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
 
     // pulls.list errors should be ignored (catch) => PR created
-    ctx.octokit.pulls.list.mockRejectedValueOnce(new Error('list failed'));
+    ctx.octokit.rest.pulls.list.mockRejectedValueOnce(new Error('list failed'));
 
-    ctx.octokit.pulls.create.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.create.mockResolvedValueOnce({
       data: {
         number: 77,
         node_id: 'PR77',
@@ -782,13 +784,13 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     expect(normalized.correlationIdTypes[0]).toEqual({ kind: 'a', value: 'b' });
 
     // PR body includes hash marker
-    expect(ctx.octokit.pulls.create).toHaveBeenCalled();
-    const body = String(ctx.octokit.pulls.create.mock.calls[0][0].body);
+    expect(ctx.octokit.rest.pulls.create).toHaveBeenCalled();
+    const body = String(ctx.octokit.rest.pulls.create.mock.calls[0][0].body);
     expect(body).toContain('fix: #3');
     expect(body).toContain('<!-- snapshot-hash:HASH -->');
 
     // auto merge enable succeeded => no label
-    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(mocks.tryEnableAutoMerge).toHaveBeenCalled();
     expect(
       (
@@ -837,11 +839,11 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       expiryDate: '2099-01-01',
     });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref) {
         if (path === 'sub.schema.json') throw httpErr(404);
         if (path === 'schema/sub.schema.json') return schemaFileResponse(schemaObj);
@@ -850,9 +852,9 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       throw httpErr(404);
     });
 
-    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.create.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.create.mockResolvedValueOnce({
       data: { number: 10, node_id: 'PR10', head: { ref: 'b', sha: 's' } },
     });
     mocks.tryEnableAutoMerge.mockResolvedValueOnce(true);
@@ -866,8 +868,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       { template }
     );
 
-    expect(ctx.octokit.repos.createOrUpdateFileContents).toHaveBeenCalled();
-    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
+    const writeParams = ctx.octokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
     const yamlText = Buffer.from(String(writeParams.content), 'base64').toString('utf8');
 
     expect(yamlText).toMatch(/^type:\s*SubContext\s*$/m);
@@ -894,11 +896,11 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
     mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.x' });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockRejectedValueOnce(httpErr(500));
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockRejectedValueOnce(httpErr(500));
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -918,9 +920,9 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     const schemaObj = { type: 'object', properties: { type: { const: 'System' } } };
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: '' } } });
-    ctx.octokit.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: '' } } });
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -937,8 +939,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       body: [],
     };
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -956,8 +958,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     };
 
     // schema load must still succeed up to the point where folderName is checked?
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
 
@@ -978,8 +980,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
 
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -1000,10 +1002,10 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
 
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('');
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -1025,10 +1027,10 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
     mocks.projectForSchema.mockResolvedValueOnce(null);
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -1050,17 +1052,17 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
     mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.x' });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     // schema loads ok, but yaml exists => getContent succeeds with ref => existsAt true
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref && path === 'x.schema.json') return schemaFileResponse(schemaObj);
       if (ref && String(path).endsWith('.yaml')) return { data: { any: 'file' } };
       throw httpErr(404);
     });
 
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -1082,8 +1084,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       body: [],
     };
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     await expect(
       createRequestPr(
@@ -1115,8 +1117,8 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       body: [],
     };
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
 
     await expect(
       createRequestPr(
@@ -1144,10 +1146,10 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.prod');
     mocks.projectForSchema.mockResolvedValueOnce(null);
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
-    ctx.octokit.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce(schemaFileResponse(schemaObj));
 
     await expect(
       createRequestPr(ctx, { owner: 'o', repo: 'r' }, { number: 1, title: '', labels: [], body: '' }, {}, { template })
@@ -1203,20 +1205,20 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       ignored: () => 'x',
     });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref && path === 'sys-required.schema.json') throw httpErr(404);
       if (!ref && path === 'schema/sys-required.schema.json') return schemaFileResponse(schemaObj);
       if (ref && String(path).endsWith('.yaml')) throw httpErr(404);
       throw httpErr(404);
     });
 
-    ctx.octokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.create.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.create.mockResolvedValueOnce({
       data: { number: 12, node_id: 'PR12', head: { ref: 'branch', sha: 'sha' } },
     });
     mocks.tryEnableAutoMerge.mockResolvedValueOnce(false);
@@ -1230,7 +1232,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       { template }
     );
 
-    const writeParams = ctx.octokit.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
+    const writeParams = ctx.octokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0] as AnyObj;
     const serialized = JSON.parse(Buffer.from(String(writeParams.content), 'base64').toString('utf8')) as AnyObj;
 
     expect(serialized.correlationIds).toBeUndefined();
@@ -1255,10 +1257,10 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     mocks.resolvePrimaryIdFromTemplate.mockReturnValueOnce('acme.x');
     mocks.projectForSchema.mockResolvedValueOnce({ type: 'System', name: 'acme.x' });
 
-    ctx.octokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    ctx.octokit.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
-    ctx.octokit.git.createRef.mockResolvedValueOnce({ ok: true });
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
+    ctx.octokit.rest.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    ctx.octokit.rest.repos.getBranch.mockResolvedValueOnce({ data: { commit: { sha: 'BASESHA' } } });
+    ctx.octokit.rest.git.createRef.mockResolvedValueOnce({ ok: true });
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path, ref }: AnyObj) => {
       if (!ref && path === 'x.schema.json') return schemaFileResponse(schemaObj);
       if (ref && String(path).endsWith('.yaml')) throw boom;
       throw httpErr(404);

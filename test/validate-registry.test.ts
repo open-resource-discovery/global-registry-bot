@@ -20,21 +20,23 @@ function mkBotValidationContext(repoInfo: RepoInfo): BotValidationContext {
   return {
     // Octokit shape only needs to satisfy types; hooks are null so it's not used in the happy path.
     octokit: {
-      repos: {
-        getContent(): Promise<never> {
-          const e = new Error('Not Found') as Error & { status: number };
-          e.status = 404;
-          return Promise.reject(e);
+      rest: {
+        repos: {
+          getContent(): Promise<never> {
+            const e = new Error('Not Found') as Error & { status: number };
+            e.status = 404;
+            return Promise.reject(e);
+          },
         },
-      },
-      issues: {
-        get: () => Promise.resolve({ data: {} }),
-        listForRepo: () => Promise.resolve({ data: [] }),
-        update: () => Promise.resolve({}),
-        create: () => Promise.resolve({}),
-        createComment: () => Promise.resolve({}),
-        addLabels: () => Promise.resolve({}),
-        removeLabel: () => Promise.resolve({}),
+        issues: {
+          get: () => Promise.resolve({ data: {} }),
+          listForRepo: () => Promise.resolve({ data: [] }),
+          update: () => Promise.resolve({}),
+          create: () => Promise.resolve({}),
+          createComment: () => Promise.resolve({}),
+          addLabels: () => Promise.resolve({}),
+          removeLabel: () => Promise.resolve({}),
+        },
       },
     },
     log: console,
@@ -1165,13 +1167,13 @@ describe('validate-registry', () => {
     await mkdirp(path.join(tmpDir, 'docs/subdir'));
 
     const octokit = TEST_UTILS.createLocalOctokit();
-    const fileData = await octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'docs/readme.txt' });
+    const fileData = await octokit.rest.repos.getContent({ owner: 'o', repo: 'r', path: 'docs/readme.txt' });
     expect(Array.isArray(fileData.data)).toBe(false);
     if (!Array.isArray(fileData.data)) {
       expect(Buffer.from(fileData.data.content, 'base64').toString('utf8')).toBe('hello');
     }
 
-    const dirData = await octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'docs' });
+    const dirData = await octokit.rest.repos.getContent({ owner: 'o', repo: 'r', path: 'docs' });
     expect(Array.isArray(dirData.data)).toBe(true);
     if (Array.isArray(dirData.data)) {
       expect((dirData.data as unknown as { name: string }[]).map((entry) => entry.name)).toEqual(
@@ -1179,23 +1181,25 @@ describe('validate-registry', () => {
       );
     }
 
-    await expect(octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'missing' })).rejects.toMatchObject({
+    await expect(octokit.rest.repos.getContent({ owner: 'o', repo: 'r', path: 'missing' })).rejects.toMatchObject({
       status: 404,
     });
 
-    await expect(octokit.issues.get({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({ data: {} });
-    await expect(octokit.issues.listForRepo({ owner: 'o', repo: 'r', state: 'open' })).resolves.toEqual({ data: [] });
-    await expect(octokit.issues.update({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({});
-    await expect(octokit.issues.create({ owner: 'o', repo: 'r', title: 't', body: 'b' })).resolves.toEqual({});
+    await expect(octokit.rest.issues.get({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({ data: {} });
+    await expect(octokit.rest.issues.listForRepo({ owner: 'o', repo: 'r', state: 'open' })).resolves.toEqual({
+      data: [],
+    });
+    await expect(octokit.rest.issues.update({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({});
+    await expect(octokit.rest.issues.create({ owner: 'o', repo: 'r', title: 't', body: 'b' })).resolves.toEqual({});
     await expect(
-      octokit.issues.createComment({ owner: 'o', repo: 'r', issue_number: 1, body: 'note' })
+      octokit.rest.issues.createComment({ owner: 'o', repo: 'r', issue_number: 1, body: 'note' })
     ).resolves.toEqual({});
-    await expect(octokit.issues.addLabels({ owner: 'o', repo: 'r', issue_number: 1, labels: ['x'] })).resolves.toEqual(
-      {}
-    );
-    await expect(octokit.issues.removeLabel({ owner: 'o', repo: 'r', issue_number: 1, name: 'x' })).resolves.toEqual(
-      {}
-    );
+    await expect(
+      octokit.rest.issues.addLabels({ owner: 'o', repo: 'r', issue_number: 1, labels: ['x'] })
+    ).resolves.toEqual({});
+    await expect(
+      octokit.rest.issues.removeLabel({ owner: 'o', repo: 'r', issue_number: 1, name: 'x' })
+    ).resolves.toEqual({});
 
     TEST_UTILS.ghAnnotateError('a:b,c.yaml', 'line1\nline2');
     const errs: string = (errorSpy?.mock.calls ?? [])

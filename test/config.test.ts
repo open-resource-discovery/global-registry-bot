@@ -52,8 +52,10 @@ function mkContext(args: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const context: any = {
     octokit: {
-      repos: { getContent },
-      issues: { listForRepo, update, create, createComment },
+      rest: {
+        repos: { getContent },
+        issues: { listForRepo, update, create, createComment },
+      },
     },
     log: { debug: jest.fn(), warn: jest.fn(), info: jest.fn() },
     repo: () => ({ owner: args.owner, repo: args.repo }),
@@ -591,7 +593,7 @@ test('default config without validation logs debug and ignores hook loading fail
     },
   });
 
-  context.octokit.repos.getContent.mockImplementation(
+  context.octokit.rest.repos.getContent.mockImplementation(
     ({ owner: ownerArg, repo: repoArg, path }: { owner: string; repo: string; path: string }) => {
       if (ownerArg === owner && repoArg === repo && path === CFG_JS) {
         throw new Error('hooks boom');

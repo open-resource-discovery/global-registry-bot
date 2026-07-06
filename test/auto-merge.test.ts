@@ -58,20 +58,22 @@ function mkContext() {
     octokit: {
       graphql: jest.fn<GraphqlFn>(() => Promise.resolve({})),
 
-      pulls: {
-        get: jest.fn<PullsGetFn>(() => Promise.resolve({ data: mkOpenPr() })),
-        merge: jest.fn<PullsMergeFn>(() => Promise.resolve({})),
-        listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
-      },
+      rest: {
+        pulls: {
+          get: jest.fn<PullsGetFn>(() => Promise.resolve({ data: mkOpenPr() })),
+          merge: jest.fn<PullsMergeFn>(() => Promise.resolve({})),
+          listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
+        },
 
-      repos: {
-        getCombinedStatusForRef: jest.fn<CombinedStatusFn>(() =>
-          Promise.resolve({ data: { state: 'success', total_count: 0 } })
-        ),
-      },
+        repos: {
+          getCombinedStatusForRef: jest.fn<CombinedStatusFn>(() =>
+            Promise.resolve({ data: { state: 'success', total_count: 0 } })
+          ),
+        },
 
-      checks: {
-        listForRef: jest.fn<ChecksListForRefFn>(() => Promise.resolve({ data: { total_count: 0, check_runs: [] } })),
+        checks: {
+          listForRef: jest.fn<ChecksListForRefFn>(() => Promise.resolve({ data: { total_count: 0, check_runs: [] } })),
+        },
       },
     },
 
@@ -160,18 +162,18 @@ describe('src/lib/auto-merge.ts', () => {
       const ctx = mkContext();
       const pr = mkOpenPr();
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'success', total_count: 1 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: {
           total_count: 2,
           check_runs: [{ conclusion: 'success' }, { conclusion: 'neutral' }],
         },
       });
 
-      ctx.octokit.pulls.merge.mockResolvedValueOnce({});
+      ctx.octokit.rest.pulls.merge.mockResolvedValueOnce({});
 
       const ok = await tryMergeIfGreen(ctx, {
         owner: 'o',
@@ -182,7 +184,7 @@ describe('src/lib/auto-merge.ts', () => {
 
       expect(ok).toBe(true);
 
-      expect(ctx.octokit.pulls.merge).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.pulls.merge).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         pull_number: 5,
@@ -199,9 +201,9 @@ describe('src/lib/auto-merge.ts', () => {
       const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
 
       expect(ok).toBe(false);
-      expect(ctx.octokit.repos.getCombinedStatusForRef).not.toHaveBeenCalled();
-      expect(ctx.octokit.checks.listForRef).not.toHaveBeenCalled();
-      expect(ctx.octokit.pulls.merge).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.repos.getCombinedStatusForRef).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.checks.listForRef).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.merge).not.toHaveBeenCalled();
     });
 
     it('does not merge when PR is draft', async () => {
@@ -211,27 +213,27 @@ describe('src/lib/auto-merge.ts', () => {
       const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
 
       expect(ok).toBe(false);
-      expect(ctx.octokit.repos.getCombinedStatusForRef).not.toHaveBeenCalled();
-      expect(ctx.octokit.checks.listForRef).not.toHaveBeenCalled();
-      expect(ctx.octokit.pulls.merge).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.repos.getCombinedStatusForRef).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.checks.listForRef).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.merge).not.toHaveBeenCalled();
     });
 
     it('does not merge when combined status is pending and total_count > 0', async () => {
       const ctx = mkContext();
       const pr = mkOpenPr();
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'pending', total_count: 1 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: { total_count: 1, check_runs: [{ conclusion: 'success' }] },
       });
 
       const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
 
       expect(ok).toBe(false);
-      expect(ctx.octokit.pulls.merge).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.merge).not.toHaveBeenCalled();
 
       expect(ctx.log.info).toHaveBeenCalledWith(
         'PR #5 not merged yet (statusesOk=false, checksOk=true, approved=true)'
@@ -242,31 +244,31 @@ describe('src/lib/auto-merge.ts', () => {
       const ctx = mkContext();
       const pr = mkOpenPr();
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'pending', total_count: 0 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: { total_count: 1, check_runs: [{ conclusion: 'skipped' }] },
       });
 
-      ctx.octokit.pulls.merge.mockResolvedValueOnce({});
+      ctx.octokit.rest.pulls.merge.mockResolvedValueOnce({});
 
       const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
 
       expect(ok).toBe(true);
-      expect(ctx.octokit.pulls.merge).toHaveBeenCalledWith(expect.objectContaining({ merge_method: 'squash' }));
+      expect(ctx.octokit.rest.pulls.merge).toHaveBeenCalledWith(expect.objectContaining({ merge_method: 'squash' }));
     });
 
     it('does not merge when checks are not OK', async () => {
       const ctx = mkContext();
       const pr = mkOpenPr();
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'success', total_count: 1 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: {
           total_count: 2,
           check_runs: [{ conclusion: 'success' }, { conclusion: 'failure' }],
@@ -276,7 +278,7 @@ describe('src/lib/auto-merge.ts', () => {
       const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
 
       expect(ok).toBe(false);
-      expect(ctx.octokit.pulls.merge).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.merge).not.toHaveBeenCalled();
 
       expect(ctx.log.info).toHaveBeenCalledWith(
         'PR #5 not merged yet (statusesOk=true, checksOk=false, approved=true)'
@@ -287,15 +289,15 @@ describe('src/lib/auto-merge.ts', () => {
       const ctx = mkContext();
       const pr = mkOpenPr();
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'success', total_count: 1 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: { total_count: 1, check_runs: [{ conclusion: 'success' }] },
       });
 
-      ctx.octokit.pulls.listReviews.mockResolvedValueOnce({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValueOnce({
         data: [{ state: 'COMMENTED' }],
       });
 
@@ -308,8 +310,8 @@ describe('src/lib/auto-merge.ts', () => {
       });
 
       expect(ok).toBe(false);
-      expect(ctx.octokit.pulls.merge).not.toHaveBeenCalled();
-      expect(ctx.octokit.pulls.listReviews).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.pulls.merge).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.listReviews).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         pull_number: 5,
@@ -324,21 +326,21 @@ describe('src/lib/auto-merge.ts', () => {
       const ctx = mkContext();
       const pr = mkOpenPr({ number: 10, node_id: 'PR_NODE_10' });
 
-      ctx.octokit.pulls.get.mockResolvedValueOnce({ data: pr });
+      ctx.octokit.rest.pulls.get.mockResolvedValueOnce({ data: pr });
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'success', total_count: 1 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: { total_count: 1, check_runs: [{ conclusion: 'success' }] },
       });
 
-      ctx.octokit.pulls.listReviews.mockResolvedValueOnce({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValueOnce({
         data: [{ state: 'APPROVED' }],
       });
 
-      ctx.octokit.pulls.merge.mockResolvedValueOnce({});
+      ctx.octokit.rest.pulls.merge.mockResolvedValueOnce({});
 
       const ok = await tryMergeIfGreen(ctx, {
         owner: 'o',
@@ -350,13 +352,13 @@ describe('src/lib/auto-merge.ts', () => {
 
       expect(ok).toBe(true);
 
-      expect(ctx.octokit.pulls.get).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.pulls.get).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         pull_number: 10,
       });
 
-      expect(ctx.octokit.pulls.merge).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.pulls.merge).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         pull_number: 10,
@@ -368,16 +370,16 @@ describe('src/lib/auto-merge.ts', () => {
       const ctx = mkContext();
       const pr = mkOpenPr();
 
-      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.repos.getCombinedStatusForRef.mockResolvedValueOnce({
         data: { state: 'success', total_count: 1 },
       });
 
-      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
         data: { total_count: 1, check_runs: [{ conclusion: 'success' }] },
       });
 
       const err = new Error('merge failed');
-      ctx.octokit.pulls.merge.mockRejectedValueOnce(err);
+      ctx.octokit.rest.pulls.merge.mockRejectedValueOnce(err);
 
       const ok = await tryMergeIfGreen(ctx, {
         owner: 'o',

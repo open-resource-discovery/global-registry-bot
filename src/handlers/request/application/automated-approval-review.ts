@@ -12,14 +12,16 @@ type PullRequestLike = {
 
 type AutomatedApprovalReviewContext = Parameters<typeof postOnce>[0] & {
   octokit: {
-    pulls: {
-      createReview: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        event: 'APPROVE';
-        body: string;
-      }) => Promise<unknown>;
+    rest: {
+      pulls: {
+        createReview: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          event: 'APPROVE';
+          body: string;
+        }) => Promise<unknown>;
+      };
     };
   };
 };
@@ -76,7 +78,7 @@ async function createAutomatedApprovalReview<
   const failureText = callbacks.getVisibleApprovalText(decision) || 'The onApproval hook matched this PR.';
 
   try {
-    await context.octokit.pulls.createReview({
+    await context.octokit.rest.pulls.createReview({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       pull_number: pr.number,

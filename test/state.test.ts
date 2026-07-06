@@ -19,7 +19,9 @@ function mkCtx(config?: any) {
     resourceBotConfig: config,
     log: { warn: jest.fn() },
     octokit: {
-      issues: { removeLabel, addLabels, addAssignees },
+      rest: {
+        issues: { removeLabel, addLabels, addAssignees },
+      },
     },
   };
 }
@@ -63,8 +65,8 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.setStateLabel(ctx, { owner: 'o', repo: 'r', issue_number: 1 }, issue, 'author');
 
-      expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
-      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     });
 
     it('adds author label + missing global labels (global as array), without removal', async () => {
@@ -87,9 +89,9 @@ describe('src/handlers/request/state.ts', () => {
       await mod.setStateLabel(ctx, { owner: 'o', repo: 'r', issue_number: 2 }, issue, 'author');
 
       expect(mocks.getStateLabelsFromConfig).toHaveBeenCalled();
-      expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
 
-      const addCalls = ctx.octokit.issues.addLabels.mock.calls;
+      const addCalls = ctx.octokit.rest.issues.addLabels.mock.calls;
       expect(addCalls.length).toBe(1);
       expect(addCalls[0][0]).toEqual({
         owner: 'o',
@@ -116,8 +118,8 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.setStateLabel(ctx, { owner: 'o', repo: 'r', issue_number: 3 }, issue, 'author');
 
-      expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledTimes(1);
-      expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         issue_number: 3,
@@ -125,7 +127,7 @@ describe('src/handlers/request/state.ts', () => {
       });
 
       // nothing new to add
-      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     });
 
     it('ignores non-secondary errors on removeLabel and still adds labels', async () => {
@@ -135,7 +137,7 @@ describe('src/handlers/request/state.ts', () => {
         workflow: { labels: { global: [] } },
       });
 
-      ctx.octokit.issues.removeLabel.mockRejectedValueOnce({
+      ctx.octokit.rest.issues.removeLabel.mockRejectedValueOnce({
         status: 500,
         message: 'boom',
       });
@@ -148,9 +150,9 @@ describe('src/handlers/request/state.ts', () => {
 
       expect(ctx.log.warn).not.toHaveBeenCalled(); // non-secondary -> no warn, no early return
 
-      expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledTimes(1);
-      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledTimes(1);
-      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         issue_number: 4,
@@ -165,7 +167,7 @@ describe('src/handlers/request/state.ts', () => {
         workflow: { labels: { global: 'g1' } }, // global as string branch
       });
 
-      ctx.octokit.issues.removeLabel.mockRejectedValueOnce(errWithStatus('Secondary rate limit exceeded', 403));
+      ctx.octokit.rest.issues.removeLabel.mockRejectedValueOnce(errWithStatus('Secondary rate limit exceeded', 403));
 
       const issue = {
         labels: ['state:review'], // will be removed when setting author
@@ -174,7 +176,7 @@ describe('src/handlers/request/state.ts', () => {
       await mod.setStateLabel(ctx, { owner: 'o', repo: 'r', issue_number: 5 }, issue, 'author');
 
       expect(ctx.log.warn).toHaveBeenCalledTimes(1);
-      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     });
 
     it('secondary rate limit on addLabels logs + returns (after optional remove)', async () => {
@@ -184,7 +186,7 @@ describe('src/handlers/request/state.ts', () => {
         workflow: { labels: { global: ['g1'] } },
       });
 
-      ctx.octokit.issues.addLabels.mockRejectedValueOnce(errWithStatus('hit SECONDARY rate limit', 429));
+      ctx.octokit.rest.issues.addLabels.mockRejectedValueOnce(errWithStatus('hit SECONDARY rate limit', 429));
 
       const issue = {
         labels: [], // nothing to remove, new labels will be attempted
@@ -192,8 +194,8 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.setStateLabel(ctx, { owner: 'o', repo: 'r', issue_number: 6 }, issue, 'author');
 
-      expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
-      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledTimes(1);
       expect(ctx.log.warn).toHaveBeenCalledTimes(1);
     });
 
@@ -210,8 +212,8 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.setStateLabel(ctx, { owner: 'o', repo: 'r', issue_number: 7 }, issue, 'author');
 
-      expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
-      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     });
   });
 
@@ -229,8 +231,8 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.ensureAssigneesOnce(ctx, { owner: 'o', repo: 'r', issue_number: 10 }, issue, ['u1', 'u2']);
 
-      expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledTimes(1);
-      expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         issue_number: 10,
@@ -249,8 +251,8 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.ensureAssigneesOnce(ctx, { owner: 'o', repo: 'r', issue_number: 11 }, issue, []);
 
-      expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledTimes(1);
-      expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith({
+      expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith({
         owner: 'o',
         repo: 'r',
         issue_number: 11,
@@ -266,14 +268,14 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.ensureAssigneesOnce(ctx, { owner: 'o', repo: 'r', issue_number: 12 }, issue);
 
-      expect(ctx.octokit.issues.addAssignees).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addAssignees).not.toHaveBeenCalled();
     });
 
     it('ignores addAssignees errors (does not throw)', async () => {
       const { mod } = await loadSubject({ approvers: ['ap1'] });
 
       const ctx = mkCtx({});
-      ctx.octokit.issues.addAssignees.mockRejectedValueOnce(new Error('boom'));
+      ctx.octokit.rest.issues.addAssignees.mockRejectedValueOnce(new Error('boom'));
 
       const issue = { assignees: [] };
 
@@ -290,7 +292,7 @@ describe('src/handlers/request/state.ts', () => {
 
       await mod.ensureAssigneesOnce(ctx, { owner: 'o', repo: 'r', issue_number: 14 }, issue, []);
 
-      expect(ctx.octokit.issues.addAssignees).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.issues.addAssignees).not.toHaveBeenCalled();
     });
   });
 });
