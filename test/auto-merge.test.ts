@@ -390,5 +390,45 @@ describe('src/lib/auto-merge.ts', () => {
 
       expect(ctx.log.warn).toHaveBeenCalledWith(expect.objectContaining({ err }), 'Merge failed for PR #5');
     });
+
+    it('returns false immediately when no CI signal (statusCount=0 and checkCount=0) — L159 arm0', async () => {
+      const ctx = mkContext();
+      const pr = mkOpenPr();
+
+      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+        data: { state: 'success', total_count: 0 },
+      });
+
+      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+        data: { total_count: 0, check_runs: [] },
+      });
+
+      const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
+
+      expect(ok).toBe(false);
+      expect(ctx.octokit.pulls.merge).not.toHaveBeenCalled();
+      expect(ctx.log.info).toHaveBeenCalledWith('PR #5 not merged yet (no commit statuses or check runs visible yet)');
+    });
+
+    it('logs info (not warn) when merge throws a branch protection error — L186 arm0', async () => {
+      const ctx = mkContext();
+      const pr = mkOpenPr();
+
+      ctx.octokit.repos.getCombinedStatusForRef.mockResolvedValueOnce({
+        data: { state: 'success', total_count: 1 },
+      });
+
+      ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+        data: { total_count: 1, check_runs: [{ conclusion: 'success' }] },
+      });
+
+      ctx.octokit.pulls.merge.mockRejectedValueOnce(new Error('protected branch'));
+
+      const ok = await tryMergeIfGreen(ctx, { owner: 'o', repo: 'r', prNumber: 5, prData: pr });
+
+      expect(ok).toBe(false);
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      expect(ctx.log.info).toHaveBeenCalledWith(expect.stringContaining('branch protection not satisfied'));
+    });
   });
 });

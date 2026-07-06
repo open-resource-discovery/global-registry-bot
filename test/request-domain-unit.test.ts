@@ -484,7 +484,7 @@ describe('normalizeApprovalDecision', () => {
   test('deduplicates approvers', () => {
     const decision = { status: 'unknown' as const, approvers: ['alice', 'ALICE', 'bob'] };
     const result = normalizeApprovalDecision(decision);
-    const approvers = result.approvers!;
+    const approvers = result.approvers;
     const lc = approvers.map((a) => a.toLowerCase());
     expect(lc.filter((a) => a === 'alice').length).toBe(1);
   });
@@ -947,5 +947,281 @@ describe('buildPullRequestCompareCandidates', () => {
       baseRef: 'main',
     });
     expect(candidates).toHaveLength(1);
+  });
+});
+
+// ---- branch-update-errors -------------------------------------------------------
+import {
+  isBenignUpdateBranchFailure,
+  isManualUpdateBranchFailure,
+} from '../src/handlers/request/domain/branch-update-errors.js';
+
+const mkBranchCallbacks = (
+  status: number | undefined,
+  msg: string
+): { getHttpStatus: () => number | undefined; getErrorMessage: () => string } => ({
+  getHttpStatus: (): number | undefined => status,
+  getErrorMessage: (): string => msg,
+});
+
+describe('isBenignUpdateBranchFailure', () => {
+  test('returns false when status is not 422', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(200, 'up to date'))).toBe(false));
+  test('expected_head_sha message', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'expected_head_sha mismatch'))).toBe(true));
+  test('head sha message', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'head sha changed'))).toBe(true));
+  test('head branch was modified', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'head branch was modified'))).toBe(true));
+  test('not behind', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'not behind target'))).toBe(true));
+  test('up to date', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'branch is up to date'))).toBe(true));
+  test('up-to-date hyphen', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'already up-to-date'))).toBe(true));
+  test('already up', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'already up with main'))).toBe(true));
+  test('no matching keyword returns false', () =>
+    expect(isBenignUpdateBranchFailure({}, mkBranchCallbacks(422, 'some other error'))).toBe(false));
+});
+
+describe('isManualUpdateBranchFailure', () => {
+  test('status 403', () => expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(403, ''))).toBe(true));
+  test('status 404', () => expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(404, ''))).toBe(true));
+  test('conflict in message', () =>
+    expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(200, 'merge conflict detected'))).toBe(true));
+  test('protected branch in message', () =>
+    expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(200, 'protected branch policy'))).toBe(true));
+  test('permission in message', () =>
+    expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(200, 'permission denied'))).toBe(true));
+  test('forbidden in message', () =>
+    expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(200, 'action forbidden'))).toBe(true));
+  test('none of the above returns false', () =>
+    expect(isManualUpdateBranchFailure({}, mkBranchCallbacks(200, 'something random'))).toBe(false));
+});
+
+// ---- approval-markers -----------------------------------------------------------
+import {
+  stripContactApprovalFromBody,
+  readContactApprovalMeta,
+  buildContactApprovalBody,
+  stripParentApprovalFromBody,
+  readParentApprovalMeta,
+  buildParentApprovalBody,
+} from '../src/handlers/request/domain/approval-markers.js';
+
+describe('readContactApprovalMeta', () => {
+  test('returns null when no marker in body', () => expect(readContactApprovalMeta('plain text')).toBeNull());
+  test('returns null when JSON is not plain object', () =>
+    expect(readContactApprovalMeta('<!-- nsreq:contact-approval = [] -->')).toBeNull());
+  test('returns null when v !== 1', () =>
+    expect(
+      readContactApprovalMeta('<!-- nsreq:contact-approval = {"v":2,"target":"x","owners":["a"]} -->')
+    ).toBeNull());
+  test('returns null when target is empty', () =>
+    expect(readContactApprovalMeta('<!-- nsreq:contact-approval = {"v":1,"target":"","owners":["a"]} -->')).toBeNull());
+  test('returns null when owners is empty', () =>
+    expect(readContactApprovalMeta('<!-- nsreq:contact-approval = {"v":1,"target":"t","owners":[]} -->')).toBeNull());
+  test('returns meta without optional fields', () => {
+    const meta = readContactApprovalMeta('<!-- nsreq:contact-approval = {"v":1,"target":"t","owners":["alice"]} -->');
+    expect(meta).toEqual({ v: 1, target: 't', owners: ['alice'] });
+  });
+  test('includes approvedBy and approvedAt when present', () => {
+    const body =
+      '<!-- nsreq:contact-approval = {"v":1,"target":"t","owners":["alice"],"approvedBy":"bob","approvedAt":"2024-01-01"} -->';
+    const meta = readContactApprovalMeta(body);
+    expect(meta?.approvedBy).toBe('bob');
+    expect(meta?.approvedAt).toBe('2024-01-01');
+  });
+  test('returns null on invalid JSON', () =>
+    expect(readContactApprovalMeta('<!-- nsreq:contact-approval = {invalid} -->')).toBeNull());
+});
+
+describe('buildContactApprovalBody', () => {
+  test('null meta returns cleaned body with newline', () =>
+    expect(buildContactApprovalBody('body text', null)).toBe('body text\n'));
+  test('sets marker with approvedBy when provided', () => {
+    const result = buildContactApprovalBody('body', {
+      v: 1,
+      target: 't',
+      owners: ['alice'],
+      approvedBy: 'bob',
+      approvedAt: '2024',
+    });
+    expect(result).toContain('nsreq:contact-approval');
+    expect(result).toContain('"approvedBy":"bob"');
+    expect(result).toContain('"approvedAt":"2024"');
+  });
+  test('omits approvedBy/approvedAt when absent', () => {
+    const result = buildContactApprovalBody('body', { v: 1, target: 't', owners: ['alice'] });
+    expect(result).not.toContain('approvedBy');
+  });
+});
+
+describe('stripContactApprovalFromBody', () => {
+  test('strips marker from body', () => {
+    const stripped = stripContactApprovalFromBody(
+      'text <!-- nsreq:contact-approval = {"v":1,"target":"t","owners":["a"]} --> more'
+    );
+    expect(stripped).not.toContain('nsreq:contact-approval');
+  });
+  test('returns unchanged when no marker', () => expect(stripContactApprovalFromBody('plain text')).toBe('plain text'));
+});
+
+describe('readParentApprovalMeta', () => {
+  test('returns null when no marker', () => expect(readParentApprovalMeta('plain')).toBeNull());
+  test('returns null when v !== 1', () =>
+    expect(
+      readParentApprovalMeta('<!-- nsreq:parent-approval = {"v":2,"parent":"p","target":"t","owners":[]} -->')
+    ).toBeNull());
+  test('returns null when parent is empty', () =>
+    expect(
+      readParentApprovalMeta('<!-- nsreq:parent-approval = {"v":1,"parent":"","target":"t","owners":[]} -->')
+    ).toBeNull());
+  test('returns null when target is empty', () =>
+    expect(
+      readParentApprovalMeta('<!-- nsreq:parent-approval = {"v":1,"parent":"p","target":"","owners":[]} -->')
+    ).toBeNull());
+  test('returns meta with optional fields', () => {
+    const body =
+      '<!-- nsreq:parent-approval = {"v":1,"parent":"p","target":"t","owners":["x"],"approvedBy":"y","approvedAt":"z"} -->';
+    const meta = readParentApprovalMeta(body);
+    expect(meta?.parent).toBe('p');
+    expect(meta?.approvedBy).toBe('y');
+  });
+  test('returns null on invalid JSON', () =>
+    expect(readParentApprovalMeta('<!-- nsreq:parent-approval = {bad} -->')).toBeNull());
+});
+
+describe('buildParentApprovalBody', () => {
+  test('null meta returns cleaned body with newline', () =>
+    expect(buildParentApprovalBody('text', null)).toBe('text\n'));
+  test('sets approvedBy/approvedAt when provided', () => {
+    const result = buildParentApprovalBody('body', {
+      v: 1,
+      parent: 'p',
+      target: 't',
+      owners: ['a'],
+      approvedBy: 'me',
+      approvedAt: 'now',
+    });
+    expect(result).toContain('"approvedBy":"me"');
+    expect(result).toContain('"approvedAt":"now"');
+  });
+  test('omits approvedBy/approvedAt when absent', () => {
+    const result = buildParentApprovalBody('body', { v: 1, parent: 'p', target: 't', owners: [] });
+    expect(result).not.toContain('approvedBy');
+  });
+});
+
+describe('stripParentApprovalFromBody', () => {
+  test('strips marker from body', () => {
+    const stripped = stripParentApprovalFromBody(
+      'text <!-- nsreq:parent-approval = {"v":1,"parent":"p","target":"t","owners":[]} --> more'
+    );
+    expect(stripped).not.toContain('nsreq:parent-approval');
+  });
+});
+
+// ---- approval-authorization -----------------------------------------------------
+import { isAuthorizedApprover } from '../src/handlers/request/domain/approval-authorization.js';
+
+describe('isAuthorizedApprover', () => {
+  test('commenter in allowedApprovers (case-insensitive)', () =>
+    expect(isAuthorizedApprover('Alice', 'author', ['alice', 'bob'])).toBe(true));
+  test('commenter NOT in allowedApprovers', () =>
+    expect(isAuthorizedApprover('charlie', 'author', ['alice', 'bob'])).toBe(false));
+  test('empty allowedApprovers + non-author commenter returns true', () =>
+    expect(isAuthorizedApprover('reviewer', 'author', [])).toBe(true));
+  test('empty allowedApprovers + author commenter returns false', () =>
+    expect(isAuthorizedApprover('author', 'author', [])).toBe(false));
+  test('empty commenter returns false', () => expect(isAuthorizedApprover('', 'author', [])).toBe(false));
+  test('null issueAuthor with non-empty commenter returns true', () =>
+    expect(isAuthorizedApprover('reviewer', null, [])).toBe(true));
+});
+
+// ---- pull-request-repo-info -----------------------------------------------------
+import {
+  sameRepoInfo,
+  resolvePullRequestHeadRepoInfo,
+  isCrossRepositoryPullRequest,
+} from '../src/handlers/request/domain/pull-request-repo-info.js';
+
+describe('sameRepoInfo', () => {
+  test('same owner+repo (case-insensitive)', () =>
+    expect(sameRepoInfo({ owner: 'Org', repo: 'Repo' }, { owner: 'org', repo: 'repo' })).toBe(true));
+  test('different repo', () =>
+    expect(sameRepoInfo({ owner: 'org', repo: 'a' }, { owner: 'org', repo: 'b' })).toBe(false));
+});
+
+describe('resolvePullRequestHeadRepoInfo', () => {
+  test('uses full_name when present', () =>
+    expect(
+      resolvePullRequestHeadRepoInfo({ head: { repo: { full_name: 'fork/repo' } } }, { owner: 'base', repo: 'repo' })
+    ).toEqual({ owner: 'fork', repo: 'repo' }));
+  test('uses owner.login + name when full_name absent', () =>
+    expect(
+      resolvePullRequestHeadRepoInfo(
+        { head: { repo: { name: 'myrepo', owner: { login: 'myorg' } } } },
+        { owner: 'base', repo: 'repo' }
+      )
+    ).toEqual({ owner: 'myorg', repo: 'myrepo' }));
+  test('falls back to fallbackRepoInfo when head.repo is null', () => {
+    const fallback = { owner: 'base', repo: 'repo' };
+    expect(resolvePullRequestHeadRepoInfo({ head: { repo: null } }, fallback)).toEqual(fallback);
+  });
+  test('full_name with non-2-part path falls back to owner/name resolution', () =>
+    expect(
+      resolvePullRequestHeadRepoInfo(
+        { head: { repo: { full_name: 'just-one-part', name: 'myrepo', owner: { login: 'myorg' } } } },
+        { owner: 'base', repo: 'repo' }
+      )
+    ).toEqual({ owner: 'myorg', repo: 'myrepo' }));
+});
+
+describe('isCrossRepositoryPullRequest', () => {
+  test('same repo is not cross-repo', () =>
+    expect(
+      isCrossRepositoryPullRequest({ head: { repo: { full_name: 'org/repo' } } }, { owner: 'org', repo: 'repo' })
+    ).toBe(false));
+  test('different owner is cross-repo', () =>
+    expect(
+      isCrossRepositoryPullRequest({ head: { repo: { full_name: 'fork/repo' } } }, { owner: 'org', repo: 'repo' })
+    ).toBe(true));
+});
+
+// ---- machine-readable extra branches --------------------------------------------
+describe('normalizeMachineReadableIssues — non-object items skipped', () => {
+  test('string item is skipped', () => expect(normalizeMachineReadableIssues(['string-item', null, 42])).toEqual([]));
+  test('toStringTrim number field', () => {
+    const result = normalizeMachineReadableIssues([{ field: 42, message: 'msg' }]);
+    expect(result[0]?.field).toBe('42');
+  });
+  test('toStringTrim boolean field', () => {
+    const result = normalizeMachineReadableIssues([{ field: true, message: 'msg' }]);
+    expect(result[0]?.field).toBe('true');
+  });
+});
+
+describe('singleMachineReadableIssue — filePath branch', () => {
+  test('empty filePath omits the property', () => {
+    const result = singleMachineReadableIssue('field', 'msg');
+    expect(result[0]).not.toHaveProperty('filePath');
+  });
+});
+
+// ---- routing-lock-marker extra branches -----------------------------------------
+describe('readRoutingLockExpected — extra branches', () => {
+  test('null input returns empty string', () => expect(readRoutingLockExpected(null)).toBe(''));
+  test('numeric expected uses toStringTrim number branch', () => {
+    const body = '<!-- nsreq:routing-lock = {"v":1,"expected":42} -->';
+    expect(readRoutingLockExpected(body)).toBe('42');
+  });
+});
+
+describe('buildRoutingLockBody — boolean expectedLabel', () => {
+  test('boolean expectedLabel stringified via toStringTrim', () => {
+    const body = buildRoutingLockBody('base', true as unknown as string);
+    expect(body).toContain('"expected":"true"');
   });
 });

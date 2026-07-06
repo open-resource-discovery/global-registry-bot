@@ -569,6 +569,15 @@ async function loadJsConfigFromRepo(
   context: RegistryBotContextLike,
   ref: RepoRef
 ): Promise<{ hooks: RegistryBotHooks | null; source: string | null }> {
+  if (process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] !== 'true') {
+    context.log?.debug?.(
+      {},
+      'registry-bot: JS hooks (config.js) are disabled by default. ' +
+        'Set REGISTRY_BOT_ENABLE_JS_HOOKS=true only in trusted self-hosted environments.'
+    );
+    return { hooks: null, source: null };
+  }
+
   for (const filePath of JS_CONFIG_LOCATIONS) {
     const raw = await readRepoFileIfExists(context.octokit, ref, filePath);
     if (!raw) continue;

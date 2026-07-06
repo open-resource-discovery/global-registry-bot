@@ -325,4 +325,70 @@ contacts: "valid-user trailing-dash-"
     // 'trailing-dash-' ends with '-' → fails regex → not added
     expect(result.parentOwners).not.toContain('trailing-dash-');
   });
+
+  test('L223 arm0: getContent returns array (directory listing) → continue in readRepoYamlObject', async () => {
+    // Array data → Array.isArray(data) = true → continue (skip to next ext)
+    const ctx = {
+      ...mkContext(),
+      octokit: {
+        repos: {
+          getContent: jest.fn(({ path }: { owner: string; repo: string; path: string }) => {
+            if (path.endsWith('.yaml')) {
+              return Promise.resolve({ data: [{ type: 'dir', name: 'subdir' }] });
+            }
+            return Promise.reject(mk404());
+          }),
+        },
+      },
+    };
+    const result = await buildCustomValidateContextArgs(mkArgs({ context: ctx as any, resourceName: 'a.b.c' }));
+    expect(result.parentCandidate).toBeNull();
+  });
+
+  test('L282 arm0: empty-string contact item → if (!raw) return early in addNormalizedOwnerReference', async () => {
+    // YAML array with an empty string → collectNormalizedOwnerReferences recurses
+    // addNormalizedOwnerReference('') → toStringSafe('') = '' → if (!raw) return
+    const parentYaml = `
+contacts:
+  - alice
+  - ""
+`;
+    const ctx = mkContext({ 'data/ns/a.b.yaml': parentYaml });
+    const result = await buildCustomValidateContextArgs(mkArgs({ context: ctx as any, resourceName: 'a.b.c' }));
+    expect(result.parentOwners).toContain('alice');
+  });
+
+  test('L294 arm0: "@" only contact entry → cleaned="" → if (!cleaned) continue', async () => {
+    // raw="@" → split by whitespace → part="@" → cleaned = ''.toLowerCase() = '' → continue
+    const parentYaml = `
+contacts: "alice @"
+`;
+    const ctx = mkContext({ 'data/ns/a.b.yaml': parentYaml });
+    const result = await buildCustomValidateContextArgs(mkArgs({ context: ctx as any, resourceName: 'a.b.c' }));
+    // '@' entry skipped; 'alice' kept
+    expect(result.parentOwners).toContain('alice');
+    expect(result.parentOwners).not.toContain('@');
+  });
+
+  test('L313 arm0: null item in contacts array → if (value === null) return early', async () => {
+    // YAML array with null (tilde) → collectNormalizedOwnerReferences(null) → L313 arm0
+    const parentYaml = `
+contacts:
+  - bob
+  - ~
+`;
+    const ctx = mkContext({ 'data/ns/a.b.yaml': parentYaml });
+    const result = await buildCustomValidateContextArgs(mkArgs({ context: ctx as any, resourceName: 'a.b.c' }));
+    expect(result.parentOwners).toContain('bob');
+  });
+
+  test('L339 arm3: only "owner" key present (contacts/contact/owners all absent) → ?? chain arm3', async () => {
+    // parentCandidate has only "owner" key → contacts??contact??owners→undefined, finally owner="alice"
+    const parentYaml = `
+owner: alice
+`;
+    const ctx = mkContext({ 'data/ns/a.b.yaml': parentYaml });
+    const result = await buildCustomValidateContextArgs(mkArgs({ context: ctx as any, resourceName: 'a.b.c' }));
+    expect(result.parentOwners).toContain('alice');
+  });
 });

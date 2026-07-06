@@ -213,6 +213,103 @@ describe('src/handlers/request/state.ts', () => {
       expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
       expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
     });
+
+    it('ignores string error thrown by removeLabel (L51 arm=0 – non-plain-object)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      ctx.octokit.issues.removeLabel.mockRejectedValueOnce('string-error');
+      const issue = { labels: ['state:review'] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 20 }, issue as any, 'author');
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores removeLabel error where status is a non-numeric string (L53 arm=1)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      ctx.octokit.issues.removeLabel.mockRejectedValueOnce({ status: '403', message: 'boom' });
+      const issue = { labels: ['state:review'] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 21 }, issue as any, 'author');
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats plain-object 403 with secondary-rate-limit message as secondary (L57 arm=1, L58 arm=0)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      ctx.octokit.issues.removeLabel.mockRejectedValueOnce({
+        status: 403,
+        message: 'Secondary rate limit exceeded',
+      });
+      const issue = { labels: ['state:review'] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 22 }, issue as any, 'author');
+      expect(ctx.log.warn).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+    });
+
+    it('ignores 403 plain-object error where message is non-string (L58 arm=1)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      ctx.octokit.issues.removeLabel.mockRejectedValueOnce({ status: 403, message: null });
+      const issue = { labels: ['state:review'] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 23 }, issue as any, 'author');
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles issue with no labels property (L111 arm=1 – undefined labels)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      const issue = {};
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 24 }, issue as any, 'author');
+      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 24,
+        labels: ['state:author'],
+      });
+    });
+
+    it('handles label object with null name (L70 arm=1 – name ?? "")', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      const issue = { labels: [{ name: null }, 'state:author'] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 25 }, issue as any, 'author');
+      expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
+      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+    });
+
+    it('handles undefined resourceBotConfig (L76 arm=1 – cfg not plain object)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx();
+      const issue = { labels: ['state:author'] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 26 }, issue as any, 'author');
+      expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
+      expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+    });
+
+    it('handles global label array containing null (L83 arm=1 – null ?? "")', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [null, 'g1'] } } });
+      const issue = { labels: [] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 27 }, issue as any, 'author');
+      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 27,
+        labels: ['state:author', 'g1'],
+      });
+    });
+
+    it('ignores non-secondary errors thrown by addLabels (L139 arm=1)', async () => {
+      const { mod } = await loadSubject();
+      const ctx = mkCtx({ workflow: { labels: { global: [] } } });
+      ctx.octokit.issues.addLabels.mockRejectedValueOnce({ status: 500, message: 'server error' });
+      const issue = { labels: [] };
+      await mod.setStateLabel(ctx as any, { owner: 'o', repo: 'r', issue_number: 28 }, issue as any, 'author');
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      expect(ctx.octokit.issues.addLabels).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('ensureAssigneesOnce', () => {
@@ -294,6 +391,22 @@ describe('src/handlers/request/state.ts', () => {
       await mod.ensureAssigneesOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 14 }, issue as any, []);
 
       expect(ctx.octokit.issues.addAssignees).not.toHaveBeenCalled();
+    });
+
+    it('handles issue with no assignees property (L160 arm=1 – assignees || [])', async () => {
+      const { mod } = await loadSubject({ approvers: ['ap1'] });
+
+      const ctx = mkCtx({});
+      const issue = {};
+
+      await mod.ensureAssigneesOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 15 }, issue as any);
+
+      expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith({
+        owner: 'o',
+        repo: 'r',
+        issue_number: 15,
+        assignees: ['ap1'],
+      });
     });
   });
 });

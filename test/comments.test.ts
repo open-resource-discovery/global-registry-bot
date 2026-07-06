@@ -546,4 +546,228 @@ describe('src/handlers/request/comments.ts', () => {
     expect(out?.id).toBe(6);
     expect(mocks.createComment).toHaveBeenCalledTimes(1);
   });
+
+  // ---------------------------------------------------------------------------
+  // Branch-coverage additions
+  // ---------------------------------------------------------------------------
+
+  it('toStringTrim: number value (L88 false arm, L89 arm 0 number)', async () => {
+    // isBotUser({ type: 42, login: false }) exercises toStringTrim with number + boolean
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments.mockResolvedValueOnce({
+      data: [{ id: 1, body: 'old msg', user: { type: 42 as any, login: false as any }, node_id: 'N1' }],
+    });
+    mocks.createComment.mockResolvedValueOnce({
+      data: { id: 2, body: 'new msg', user: { type: 'Bot', login: 'bot' }, node_id: 'N2' },
+    });
+
+    const out = await mod.postOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, 'new msg');
+    expect(out?.id).toBe(2);
+  });
+
+  it('toStringTrim: boolean value (L89 arm 1 boolean)', async () => {
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments.mockResolvedValueOnce({
+      data: [{ id: 1, body: 'x', user: { type: true as any, login: true as any }, node_id: 'N1' }],
+    });
+    mocks.createComment.mockResolvedValueOnce({
+      data: { id: 2, body: 'hello', user: { type: 'Bot', login: 'bot' }, node_id: 'N2' },
+    });
+
+    const out = await mod.postOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, 'hello');
+    expect(out?.id).toBe(2);
+  });
+
+  it('getHttpStatus: non-plain-object error → undefined (L94 true arm)', async () => {
+    // Throwing a string causes getHttpStatus('string-error') → !isPlainObject → return undefined
+    // isSecondaryRateLimit: status undefined ≠ 403/429 → returns false → error is rethrown
+    const mod = await loadSubject();
+    const { ctx } = mkCtx(undefined);
+
+    ctx.octokit.issues.listComments.mockRejectedValueOnce('string-error' as any);
+
+    await expect(mod.postOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, 'msg')).rejects.toBe(
+      'string-error'
+    );
+  });
+
+  it('getErrorMessage: plain-object error (not Error instance) → L101 false arm', async () => {
+    // {status:403, message:'secondary rate limit...'} exercises non-Error + plain-obj paths
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    ctx.octokit.issues.listComments.mockRejectedValueOnce({
+      status: 403,
+      message: 'You have exceeded a secondary rate limit',
+    } as any);
+
+    const out = await mod.postOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, 'msg');
+    expect(out).toBeNull();
+    expect(mocks.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('extractCommentMarkers: falsy body (L131 binary-expr arm 1)', async () => {
+    // Comment with body:null — String(null || '') = '' — no markers extracted
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments.mockResolvedValueOnce({
+      data: [{ id: 1, body: null, user: { type: 'Bot', login: 'bot' }, node_id: 'N1' }],
+    });
+    mocks.createComment.mockResolvedValueOnce({
+      data: { id: 2, body: 'validated', user: { type: 'Bot', login: 'bot' }, node_id: 'N2' },
+    });
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r', issue_number: 1 },
+      { tagPrefix: 'nsreq:' }
+    );
+    expect(mocks.createComment).not.toHaveBeenCalled();
+  });
+
+  it('extractCommentMarkers: empty HTML comment tag (L137 if !tag → skip)', async () => {
+    // <!-- --> has empty inner text → toStringTrim('') = '' → if (tag) is false
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments.mockResolvedValueOnce({
+      data: [{ id: 1, body: '<!-- -->', user: { type: 'Bot', login: 'bot' }, node_id: 'N1' }],
+    });
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r', issue_number: 1 },
+      { tagPrefix: 'nsreq:' }
+    );
+    expect(mocks.createComment).not.toHaveBeenCalled();
+  });
+
+  it('resolveCommentTarget: no issue_number or pull_number → null (L151 binary-expr arm 1)', async () => {
+    // collapseBotCommentsByPrefix with missing issueNumber → warns and returns early
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r' }, // no issue_number or pull_number
+      { tagPrefix: 'nsreq:' }
+    );
+    expect(mocks.listComments).not.toHaveBeenCalled();
+    expect(mocks.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapseBotCommentsByPrefix: numeric perPage (L174 cond-expr arm 0)', async () => {
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments.mockResolvedValueOnce({ data: [] });
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r', issue_number: 1 },
+      { tagPrefix: 'nsreq:', perPage: 5 }
+    );
+    expect(mocks.listComments).toHaveBeenCalledWith(expect.objectContaining({ per_page: 5 }));
+  });
+
+  it('collapseBotCommentsByPrefix: listComments returns non-array data (L200 cond-expr arm 1)', async () => {
+    const mod = await loadSubject();
+    const { ctx } = mkCtx(undefined);
+
+    ctx.octokit.issues.listComments.mockResolvedValueOnce({ data: null as any });
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r', issue_number: 1 },
+      { tagPrefix: 'nsreq:' }
+    );
+    // no crash expected
+  });
+
+  it('collapseBotCommentsByPrefix: listComments throws a regular error (L202 arm 1 rethrow)', async () => {
+    const mod = await loadSubject();
+    const { ctx } = mkCtx(undefined);
+
+    ctx.octokit.issues.listComments.mockRejectedValueOnce(new Error('generic failure'));
+
+    await expect(
+      mod.collapseBotCommentsByPrefix(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, { tagPrefix: 'nsreq:' })
+    ).rejects.toThrow('generic failure');
+  });
+
+  it('collapseBotCommentsByPrefix: comment marker not starting with tagPrefix (L218 if → continue)', async () => {
+    // Comment has marker 'other:tag' that does not start with 'nsreq:' → skipped
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments.mockResolvedValueOnce({
+      data: [{ id: 1, body: '<!-- other:tag -->', user: { type: 'Bot', login: 'bot' }, node_id: 'N1' }],
+    });
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r', issue_number: 1 },
+      { tagPrefix: 'nsreq:' }
+    );
+    expect(mocks.createComment).not.toHaveBeenCalled();
+  });
+
+  it('collapseBotCommentsByPrefix: collapsed comment has empty node_id (L232 if !nodeId skip)', async () => {
+    // postOnce returns a comment with no node_id → minimizeCommentByNodeId is not called
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    mocks.listComments
+      .mockResolvedValueOnce({
+        data: [{ id: 1, body: '<!-- nsreq:open -->', user: { type: 'Bot', login: 'bot' }, node_id: 'N1' }],
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    mocks.createComment.mockResolvedValueOnce({
+      data: { id: 2, body: 'resolved', user: { type: 'Bot', login: 'bot' }, node_id: '' },
+    });
+
+    await mod.collapseBotCommentsByPrefix(
+      ctx as any,
+      { owner: 'o', repo: 'r', issue_number: 1 },
+      { tagPrefix: 'nsreq:', collapseBody: 'resolved' }
+    );
+    expect(mocks.graphql).not.toHaveBeenCalled();
+  });
+
+  it('postOnce: listComments returns non-array data (L280 cond-expr arm 1)', async () => {
+    const mod = await loadSubject();
+    const { ctx, mocks } = mkCtx(undefined);
+
+    ctx.octokit.issues.listComments.mockResolvedValueOnce({ data: null as any });
+    mocks.createComment.mockResolvedValueOnce({
+      data: { id: 3, body: 'hello', user: { type: 'Bot', login: 'bot' }, node_id: 'N3' },
+    });
+
+    const out = await mod.postOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, 'hello');
+    expect(out?.id).toBe(3);
+  });
+
+  it('postOnce: comment body is non-string in minimize loop (L329 cond-expr arm 1)', async () => {
+    // Previous comment has body=null → typeof body !== 'string' → bodyStr = ''
+    const mod = await loadSubject();
+    const { ctx } = mkCtx(undefined);
+
+    ctx.octokit.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 1, body: null, user: { type: 'Bot', login: 'bot' }, node_id: 'N1' }],
+    });
+    ctx.octokit.issues.createComment.mockResolvedValueOnce({
+      data: { id: 2, body: 'new', user: { type: 'Bot', login: 'bot' }, node_id: 'N2' },
+    });
+
+    const out = await mod.postOnce(ctx as any, { owner: 'o', repo: 'r', issue_number: 1 }, 'new', {
+      minimizeTag: 'nsreq:v',
+    });
+    expect(out?.id).toBe(2);
+  });
 });
