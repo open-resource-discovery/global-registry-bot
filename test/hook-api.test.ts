@@ -78,8 +78,8 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  fetchMock = jest.fn() as MockedFunction<FetchFn>;
-  globalFetchRef.fetch = fetchMock as unknown as typeof fetch;
+  fetchMock = jest.fn();
+  globalFetchRef.fetch = fetchMock;
 });
 
 afterEach(() => {

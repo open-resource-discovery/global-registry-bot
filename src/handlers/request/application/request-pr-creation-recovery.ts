@@ -229,7 +229,7 @@ async function handleNoCommitsCreatePrFailure<
       callbacks
     );
   } catch (retryError: unknown) {
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
+    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName), { cause: retryError });
   }
 }
 
@@ -282,7 +282,7 @@ async function handleAlreadyExistsCreatePrFailure<
       throw retryError;
     }
 
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
+    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName), { cause: retryError });
   }
 }
 
@@ -339,6 +339,6 @@ export async function createRequestPrWithRecovery<
       );
     }
 
-    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName));
+    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName), { cause: error });
   }
 }

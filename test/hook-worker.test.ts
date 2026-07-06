@@ -55,7 +55,7 @@ function mkTask(args: { code: string; fn: string; args?: unknown; allowedHosts?:
 
 beforeAll(async (): Promise<void> => {
   const mod = await import('../src/handlers/request/validation/hook-worker.js');
-  hookWorker = mod.default as unknown as (task: Task) => Promise<HookWorkerResult>;
+  hookWorker = mod.default;
 });
 
 beforeEach((): void => {

@@ -665,10 +665,10 @@ test('push: approval config change uses dedicated direct PR reevaluation reason'
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-config-change', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -857,9 +857,9 @@ test('push: approved registry PR posts manual update notice after protected bran
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-branch-manual', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -976,10 +976,10 @@ test('push: approved registry PR logs retry failure after benign expected head m
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-branch-retry-failed', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {

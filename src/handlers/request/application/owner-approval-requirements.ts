@@ -260,7 +260,7 @@ export async function setParentOwnerActionState<
   );
   const approvedLabel = toStringTrim(eff.labelOnApproved) || 'Approved';
 
-  let labels: string[] = [];
+  let labels: string[];
   try {
     labels = await callbacks.fetchIssueLabels(context, params);
   } catch {

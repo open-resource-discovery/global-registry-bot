@@ -189,7 +189,7 @@ export async function collapseBotCommentsByPrefix(
 
   clearPostOnceCacheForIssue(owner, repo, issueNumber);
 
-  let comments: IssueCommentLike[] = [];
+  let comments: IssueCommentLike[];
   try {
     const res = await context.octokit.issues.listComments({
       owner,

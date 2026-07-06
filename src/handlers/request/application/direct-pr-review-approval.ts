@@ -73,7 +73,7 @@ export async function hasAllowedStandaloneDirectPrApprovalForCurrentHead<
   const headSha = toStringTrim(pr.head?.sha);
   if (!headSha) return false;
 
-  let reviews: ReviewType[] = [];
+  let reviews: ReviewType[];
 
   try {
     reviews = await listPullRequestReviews(context, repoInfo, pr.number);
@@ -164,7 +164,7 @@ export async function hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr<
     // keep PR author fallback
   }
 
-  let reviews: ReviewType[] = [];
+  let reviews: ReviewType[];
   try {
     reviews = await listPullRequestReviews(context, repoInfo, pr.number);
   } catch {

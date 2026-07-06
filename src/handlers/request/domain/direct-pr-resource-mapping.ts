@@ -43,7 +43,7 @@ function mapRegistryDocTypeToRequestType(value: unknown): string {
 function getRequestConfigEntries(
   config: Pick<NormalizedStaticConfig, 'requests'> | null | undefined
 ): RequestConfigMap {
-  return isPlainObject(config?.requests) ? (config.requests as RequestConfigMap) : {};
+  return isPlainObject(config?.requests) ? config.requests : {};
 }
 
 function stringifyRegistryDocFormValue(value: unknown): string {

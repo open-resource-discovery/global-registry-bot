@@ -363,7 +363,7 @@ function mkCtx(args: {
 
 beforeAll(async () => {
   const mod = await import('../src/handlers/request/index.js');
-  requestHandler = mod.default as unknown as (app: Probot) => void;
+  requestHandler = mod.default;
 });
 
 beforeEach(() => {

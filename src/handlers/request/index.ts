@@ -1664,7 +1664,7 @@ async function listOpenPullRequests(
       page,
     })) as { data?: PullRequestLike[] };
 
-    const prs = (data || []) as unknown as PullRequestLike[];
+    const prs = data || [];
     if (!prs.length) break;
 
     out.push(...prs);
@@ -2598,8 +2598,7 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
         labels,
         options as ReturnType<typeof buildReviewHandoverOptions>
       ),
-    buildReviewHandoverOptions: (): Record<string, unknown> =>
-      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+    buildReviewHandoverOptions: (): Record<string, unknown> => buildReviewHandoverOptions(),
     setParentOwnerActionState,
     assignParentOwnersForApproval,
     clearParentOwnerActionState,
@@ -2921,7 +2920,7 @@ export default function requestHandler(app: Probot): void {
     }),
     readLinkedIssue: async (context: BotContext<RequestEvents>, params: IssueParams): Promise<IssueLike> => {
       const res = await context.octokit.issues.get(params);
-      return res.data as unknown as IssueLike;
+      return res.data;
     },
     log,
     getErrorMessage,
