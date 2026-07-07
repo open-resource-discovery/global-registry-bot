@@ -46,7 +46,7 @@
     "@types/js-yaml": "4.0.9",
     "@types/node": "25.9.4",
     "babel-jest": "30.4.1",
-    "eslint": "9.39.4",
+    "eslint": "10.6.0",
     "globals": "17.7.0",
     "husky": "9.1.7",
     "jest": "30.4.2",
