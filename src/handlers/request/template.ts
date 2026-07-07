@@ -32,8 +32,10 @@ type LogLike = {
 };
 
 type OctokitLike = {
-  repos: {
-    getContent: (params: { owner: string; repo: string; path: string }) => Promise<{ data: unknown }>;
+  rest: {
+    repos: {
+      getContent: (params: { owner: string; repo: string; path: string }) => Promise<{ data: unknown }>;
+    };
   };
 };
 
@@ -404,7 +406,7 @@ export async function loadTemplate(
       return fh.data;
     }
 
-    const { data } = await octokit.repos.getContent({ owner, repo, path });
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
 
     type RepoFile = { content?: unknown; encoding?: unknown } & Record<string, unknown>;
     const file = data as RepoFile;

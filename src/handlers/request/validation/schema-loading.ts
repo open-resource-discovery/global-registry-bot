@@ -6,8 +6,10 @@ type RepoContentResponse = RepoContentFile | RepoContentFile[];
 
 type SchemaLoaderContext = {
   octokit?: {
-    repos: {
-      getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data: RepoContentResponse }>;
+    rest: {
+      repos: {
+        getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data: RepoContentResponse }>;
+      };
     };
   };
 };
@@ -105,7 +107,7 @@ export async function loadSchemaFromRepoOrLocal(args: {
       if (cacheKey && REPO_SCHEMA_CACHE.has(cacheKey)) return REPO_SCHEMA_CACHE.get(cacheKey);
 
       try {
-        const res = await octokit.repos.getContent({ owner: args.owner, repo: args.repo, path: p });
+        const res = await octokit.rest.repos.getContent({ owner: args.owner, repo: args.repo, path: p });
         const data = res.data;
 
         if (!Array.isArray(data) && args.isRepoContentFile(data)) {

@@ -37,11 +37,13 @@ type EffectiveConstantsBase = {
 
 type ContextWithOctokit = {
   octokit: {
-    issues: {
-      get: (args: IssueParamsBase) => Promise<{ data?: unknown }>;
-      addLabels: (args: IssueParamsBase & { labels: string[] }) => Promise<unknown>;
-      removeLabel: (args: IssueParamsBase & { name: string }) => Promise<unknown>;
-      addAssignees: (args: IssueParamsBase & { assignees: string[] }) => Promise<unknown>;
+    rest: {
+      issues: {
+        get: (args: IssueParamsBase) => Promise<{ data?: unknown }>;
+        addLabels: (args: IssueParamsBase & { labels: string[] }) => Promise<unknown>;
+        removeLabel: (args: IssueParamsBase & { name: string }) => Promise<unknown>;
+        addAssignees: (args: IssueParamsBase & { assignees: string[] }) => Promise<unknown>;
+      };
     };
   };
 };
@@ -103,7 +105,7 @@ export async function fetchIssueLabels<
     'toLabelNames'
   >
 ): Promise<string[]> {
-  const { data } = await context.octokit.issues.get(params);
+  const { data } = await context.octokit.rest.issues.get(params);
   const issue = data as IssueType;
   return callbacks.toLabelNames(issue.labels);
 }
@@ -156,7 +158,7 @@ export async function ensureLabelsPresentOnce<
     if (!missing.length) return;
 
     try {
-      await context.octokit.issues.addLabels({
+      await context.octokit.rest.issues.addLabels({
         ...params,
         labels: missing,
       });
@@ -206,7 +208,7 @@ export async function ensureAssigneesPresent<
   if (!targetAssignees.length) return;
 
   try {
-    const { data } = await context.octokit.issues.get(params);
+    const { data } = await context.octokit.rest.issues.get(params);
     const currentAssignees = uniqLogins(
       (((data as Record<string, unknown>)['assignees'] as (Record<string, unknown> | null | undefined)[]) || [])
         .map((item) => normalizeLogin(toStringTrim(item?.login)))
@@ -222,7 +224,7 @@ export async function ensureAssigneesPresent<
 
     if (!missing.length) return;
 
-    await context.octokit.issues.addAssignees({
+    await context.octokit.rest.issues.addAssignees({
       ...params,
       assignees: missing,
     });
@@ -332,7 +334,7 @@ export async function removeReviewPendingLabelsAfterApproval<
 
   for (const label of toRemove) {
     try {
-      await context.octokit.issues.removeLabel({ ...params, name: label });
+      await context.octokit.rest.issues.removeLabel({ ...params, name: label });
     } catch (error: unknown) {
       if (callbacks.getHttpStatus(error) !== 404) {
         callbacks.log(
@@ -370,7 +372,7 @@ export async function removeExactLabelsFromIssue<
     if (!name) continue;
 
     try {
-      await context.octokit.issues.removeLabel({ ...params, name });
+      await context.octokit.rest.issues.removeLabel({ ...params, name });
     } catch (error: unknown) {
       if (callbacks.getHttpStatus(error) !== 404) {
         callbacks.log(
@@ -482,7 +484,7 @@ export async function applyApprovedRequestState<
 ): Promise<void> {
   try {
     if (eff.labelOnApproved) {
-      await context.octokit.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
+      await context.octokit.rest.issues.addLabels({ ...params, labels: [eff.labelOnApproved] });
     }
   } catch {
     // ignore
@@ -540,7 +542,7 @@ export async function addApprovedLabelToPr<
   };
 
   try {
-    await context.octokit.issues.addLabels({
+    await context.octokit.rest.issues.addLabels({
       ...params,
       labels: [approvedLabel],
     });

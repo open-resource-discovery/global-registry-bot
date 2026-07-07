@@ -5,8 +5,10 @@ type HandoverContext = Parameters<typeof postOnce>[0] &
   Parameters<typeof setStateLabel>[0] &
   Parameters<typeof ensureAssigneesOnce>[0] & {
     octokit: {
-      issues: {
-        removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+      rest: {
+        issues: {
+          removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+        };
       };
     };
   };
@@ -92,7 +94,7 @@ export async function handoverToCpa<
 
   if (eff.labelOnApproved) {
     try {
-      await context.octokit.issues.removeLabel({
+      await context.octokit.rest.issues.removeLabel({
         ...params,
         name: eff.labelOnApproved,
       });

@@ -106,31 +106,33 @@ type RepoRef = { owner: string; repo: string };
 type IssueLike = { number: number; title: string };
 
 type OctokitLike = {
-  repos: {
-    getContent: (params: { owner: string; repo: string; path: string }) => Promise<{ data: unknown }>;
-  };
-  issues: {
-    listForRepo: (params: {
-      owner: string;
-      repo: string;
-      state: 'open' | 'closed' | 'all';
-      per_page?: number;
-    }) => Promise<{ data: IssueLike[] }>;
-    update: (params: {
-      owner: string;
-      repo: string;
-      issue_number: number;
-      body?: string;
-      state?: 'open' | 'closed';
-    }) => Promise<unknown>;
-    create: (params: {
-      owner: string;
-      repo: string;
-      title: string;
-      body?: string;
-      labels?: string[];
-    }) => Promise<unknown>;
-    createComment: (params: { owner: string; repo: string; issue_number: number; body: string }) => Promise<unknown>;
+  rest: {
+    repos: {
+      getContent: (params: { owner: string; repo: string; path: string }) => Promise<{ data: unknown }>;
+    };
+    issues: {
+      listForRepo: (params: {
+        owner: string;
+        repo: string;
+        state: 'open' | 'closed' | 'all';
+        per_page?: number;
+      }) => Promise<{ data: IssueLike[] }>;
+      update: (params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        body?: string;
+        state?: 'open' | 'closed';
+      }) => Promise<unknown>;
+      create: (params: {
+        owner: string;
+        repo: string;
+        title: string;
+        body?: string;
+        labels?: string[];
+      }) => Promise<unknown>;
+      createComment: (params: { owner: string; repo: string; issue_number: number; body: string }) => Promise<unknown>;
+    };
   };
 };
 
@@ -256,7 +258,7 @@ function isRepoContentFile(data: unknown): data is RepoContentFile {
 
 async function readRepoFileIfExists(octokit: OctokitLike, ref: RepoRef, filePath: string): Promise<string | null> {
   try {
-    const res = await octokit.repos.getContent({
+    const res = await octokit.rest.repos.getContent({
       owner: ref.owner,
       repo: ref.repo,
       path: filePath,
@@ -431,7 +433,7 @@ async function createOrUpdateStaticConfigIssue(
   let existing: IssueLike | null = null;
 
   try {
-    const { data: issues } = await context.octokit.issues.listForRepo({
+    const { data: issues } = await context.octokit.rest.issues.listForRepo({
       owner,
       repo,
       state: 'open',
@@ -481,7 +483,7 @@ async function createOrUpdateStaticConfigIssue(
       );
     }
     try {
-      await context.octokit.issues.update({
+      await context.octokit.rest.issues.update({
         owner,
         repo,
         issue_number: existing.number,
@@ -495,7 +497,7 @@ async function createOrUpdateStaticConfigIssue(
     }
   } else {
     try {
-      await context.octokit.issues.create({
+      await context.octokit.rest.issues.create({
         owner,
         repo,
         title,
@@ -516,7 +518,7 @@ async function closeStaticConfigIssueIfResolved(
   const title = 'registry-bot: invalid static config.yaml';
 
   try {
-    const { data: issues } = await context.octokit.issues.listForRepo({
+    const { data: issues } = await context.octokit.rest.issues.listForRepo({
       owner,
       repo,
       state: 'open',
@@ -544,14 +546,14 @@ async function closeStaticConfigIssueIfResolved(
       `The file \`${sourceDisplay}\` currently passes schema validation.\n\n` +
       `_Checked at ${new Date().toISOString()}_`;
 
-    await context.octokit.issues.createComment({
+    await context.octokit.rest.issues.createComment({
       owner,
       repo,
       issue_number: existing.number,
       body,
     });
 
-    await context.octokit.issues.update({
+    await context.octokit.rest.issues.update({
       owner,
       repo,
       issue_number: existing.number,

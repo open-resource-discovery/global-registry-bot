@@ -31,9 +31,10 @@
     "ajv": "8.20.0",
     "ajv-errors": "3.0.0",
     "ajv-formats": "3.0.1",
+    "dotenv": "17.4.2",
     "js-yaml": "4.3.0",
     "piscina": "5.2.0",
-    "probot": "13.4.7",
+    "probot": "14.3.2",
     "yaml": "2.9.0"
   },
   "devDependencies": {

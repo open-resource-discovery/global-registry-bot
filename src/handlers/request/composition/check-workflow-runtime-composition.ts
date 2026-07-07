@@ -33,17 +33,19 @@ type RuntimeLogLevel = 'debug' | 'info' | 'warn' | 'error';
 type ResourceBotContextBase = {
   resourceBotHooksSource?: string | null;
   octokit: {
-    repos: {
-      getBranch: (args: { owner: string; repo: string; branch: string }) => Promise<{
-        data?: {
-          commit?: {
-            sha?: string | null;
+    rest: {
+      repos: {
+        getBranch: (args: { owner: string; repo: string; branch: string }) => Promise<{
+          data?: {
+            commit?: {
+              sha?: string | null;
+            };
           };
-        };
-      }>;
-    };
-    pulls: {
-      get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{ data: unknown }>;
+        }>;
+      };
+      pulls: {
+        get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{ data: unknown }>;
+      };
     };
   };
 };

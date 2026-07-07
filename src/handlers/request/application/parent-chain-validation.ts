@@ -30,12 +30,14 @@ export async function repoYamlExistsApplication<ContextType>(
       await (
         context as unknown as {
           octokit: {
-            repos: {
-              getContent: (args: { owner: string; repo: string; path: string }) => Promise<unknown>;
+            rest: {
+              repos: {
+                getContent: (args: { owner: string; repo: string; path: string }) => Promise<unknown>;
+              };
             };
           };
         }
-      ).octokit.repos.getContent({
+      ).octokit.rest.repos.getContent({
         owner: repo.owner,
         repo: repo.repo,
         path: `${basePath}.${ext}`,

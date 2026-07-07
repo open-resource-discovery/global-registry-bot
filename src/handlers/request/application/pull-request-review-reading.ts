@@ -11,14 +11,16 @@ type PullRequestReviewLike = {
 
 export type PullRequestReviewReadingContext = {
   octokit: {
-    pulls: {
-      listReviews: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data?: PullRequestReviewLike[] }>;
+    rest: {
+      pulls: {
+        listReviews: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data?: PullRequestReviewLike[] }>;
+      };
     };
   };
 };
@@ -31,7 +33,7 @@ export async function listPullRequestReviews<
   let page = 1;
 
   while (true) {
-    const res = await context.octokit.pulls.listReviews({
+    const res = await context.octokit.rest.pulls.listReviews({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       pull_number: prNumber,

@@ -72,24 +72,26 @@ type GitDeleteRef = (args: { owner: string; repo: string; ref: string }) => Prom
 type ReposGetContent = (args: { owner: string; repo: string; path: string }) => Promise<{ data: unknown }>;
 
 type Octokit = {
-  issues: {
-    get: jest.MockedFunction<IssuesGet>;
-    update: jest.MockedFunction<IssuesUpdate>;
-    addLabels: jest.MockedFunction<IssuesAddLabels>;
-    removeLabel: jest.MockedFunction<IssuesRemoveLabel>;
-  };
-  pulls: {
-    list: jest.MockedFunction<PullsList>;
-    update: jest.MockedFunction<PullsUpdate>;
-  };
-  checks: {
-    listForRef: jest.MockedFunction<ChecksListForRef>;
-  };
-  git: {
-    deleteRef: jest.MockedFunction<GitDeleteRef>;
-  };
-  repos: {
-    getContent: jest.MockedFunction<ReposGetContent>;
+  rest: {
+    issues: {
+      get: jest.MockedFunction<IssuesGet>;
+      update: jest.MockedFunction<IssuesUpdate>;
+      addLabels: jest.MockedFunction<IssuesAddLabels>;
+      removeLabel: jest.MockedFunction<IssuesRemoveLabel>;
+    };
+    pulls: {
+      list: jest.MockedFunction<PullsList>;
+      update: jest.MockedFunction<PullsUpdate>;
+    };
+    checks: {
+      listForRef: jest.MockedFunction<ChecksListForRef>;
+    };
+    git: {
+      deleteRef: jest.MockedFunction<GitDeleteRef>;
+    };
+    repos: {
+      getContent: jest.MockedFunction<ReposGetContent>;
+    };
   };
 };
 
@@ -244,28 +246,30 @@ function mkLogger(): Logger {
 
 function mkOctokit(): Octokit {
   return {
-    issues: {
-      get: jest.fn<IssuesGet>(),
-      update: jest.fn<IssuesUpdate>(),
-      addLabels: jest.fn<IssuesAddLabels>(),
-      removeLabel: jest.fn<IssuesRemoveLabel>(),
-    },
-    pulls: {
-      list: jest.fn<PullsList>(),
-      update: jest.fn<PullsUpdate>(),
-    },
-    checks: {
-      listForRef: jest.fn<ChecksListForRef>().mockResolvedValue({
-        data: {
-          check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
-        },
-      }),
-    },
-    git: {
-      deleteRef: jest.fn<GitDeleteRef>(),
-    },
-    repos: {
-      getContent: jest.fn<ReposGetContent>(),
+    rest: {
+      issues: {
+        get: jest.fn<IssuesGet>(),
+        update: jest.fn<IssuesUpdate>(),
+        addLabels: jest.fn<IssuesAddLabels>(),
+        removeLabel: jest.fn<IssuesRemoveLabel>(),
+      },
+      pulls: {
+        list: jest.fn<PullsList>(),
+        update: jest.fn<PullsUpdate>(),
+      },
+      checks: {
+        listForRef: jest.fn<ChecksListForRef>().mockResolvedValue({
+          data: {
+            check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
+          },
+        }),
+      },
+      git: {
+        deleteRef: jest.fn<GitDeleteRef>(),
+      },
+      repos: {
+        getContent: jest.fn<ReposGetContent>(),
+      },
     },
   };
 }
@@ -464,7 +468,7 @@ describe('request-orchestrator additional coverage', () => {
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockRejectedValue(httpError(500, 'boom'));
+    octokit.rest.issues.get.mockRejectedValue(httpError(500, 'boom'));
 
     const ctx = mkCtx({
       name: 'issues.opened',
@@ -475,7 +479,7 @@ describe('request-orchestrator additional coverage', () => {
     });
 
     await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
-    expect(octokit.issues.get).toHaveBeenCalled();
+    expect(octokit.rest.issues.get).toHaveBeenCalled();
   });
 
   test('issues.opened: closeOutdatedRequestPRs exception is caught and logged', async () => {
@@ -528,7 +532,7 @@ describe('request-orchestrator additional coverage', () => {
     loadTemplate.mockResolvedValueOnce(tpl);
 
     const octokit = mkOctokit();
-    octokit.repos.getContent.mockRejectedValue(httpError(404, 'not found'));
+    octokit.rest.repos.getContent.mockRejectedValue(httpError(404, 'not found'));
 
     const issue: Issue = {
       number: 4,
@@ -575,7 +579,7 @@ describe('request-orchestrator additional coverage', () => {
     loadTemplate.mockResolvedValueOnce(tpl);
 
     const octokit = mkOctokit();
-    octokit.repos.getContent.mockRejectedValue(httpError(500, 'server error'));
+    octokit.rest.repos.getContent.mockRejectedValue(httpError(500, 'server error'));
 
     const issue: Issue = {
       number: 5,
@@ -627,7 +631,7 @@ describe('request-orchestrator additional coverage', () => {
     const sender: Sender = { type: 'User', login: 'approver' };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({ data: { ...issue, labels: [] } });
+    octokit.rest.issues.get.mockResolvedValueOnce({ data: { ...issue, labels: [] } });
 
     const ctx = mkCtx({
       name: 'issue_comment.created',
@@ -639,7 +643,7 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['issue_comment.created']?.(ctx)).resolves.toBeUndefined();
 
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
 
     const warnMsgs = ctx.log.warn.mock.calls.map((c) => String(c[1] ?? '')).join('\n');
     expect(warnMsgs).not.toContain('failed to auto-add review labels on approval');
@@ -677,14 +681,14 @@ describe('request-orchestrator additional coverage', () => {
 
     const octokit = mkOctokit();
 
-    octokit.issues.get
+    octokit.rest.issues.get
       .mockResolvedValueOnce({ data: { ...issue, labels: ['needs-review'] } }) // review state check
       .mockResolvedValueOnce({ data: { ...issue, labels: ['Approved', 'needs-review'] } }) // pending label cleanup
       .mockResolvedValueOnce({
         data: { ...issue, labels: ['Approved', 'Requester Action', 'Review Pending', 'Rejected'] },
       }); // progress/rejected cleanup
 
-    octokit.issues.removeLabel.mockImplementation(async ({ name }) => {
+    octokit.rest.issues.removeLabel.mockImplementation(async ({ name }) => {
       // Add a dummy await to satisfy lint rule
       await Promise.resolve();
       if (name === 'needs-review') throw httpError(500, 'remove pending failed');
@@ -704,7 +708,7 @@ describe('request-orchestrator additional coverage', () => {
     const warnMsgs = ctx.log.warn.mock.calls.map((c) => String(c[1] ?? '')).join('\n');
     expect(warnMsgs).toContain('failed to remove label');
 
-    const removed = octokit.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
+    const removed = octokit.rest.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
     expect(removed).toEqual(expect.arrayContaining(['Rejected', 'Requester Action', 'Review Pending', 'needs-review']));
   });
 
@@ -776,7 +780,7 @@ describe('request-orchestrator additional coverage', () => {
     findOpenIssuePrs.mockRejectedValueOnce(new Error('close prs failed'));
 
     const octokit = mkOctokit();
-    octokit.repos.getContent.mockRejectedValue(httpError(500, 'server error'));
+    octokit.rest.repos.getContent.mockRejectedValue(httpError(500, 'server error'));
 
     const issue: Issue = {
       number: 9,
@@ -844,7 +848,7 @@ describe('request-orchestrator additional coverage', () => {
     requestHandler(app as unknown as Probot);
 
     const octokit = mkOctokit();
-    octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
+    octokit.rest.issues.update.mockRejectedValueOnce(new Error('update failed'));
 
     const tpl: Template = {
       title: 'Add System Namespace',
@@ -920,7 +924,7 @@ describe('request-orchestrator additional coverage', () => {
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 13,
         labels: ['Approved', 'Rejected', 'Requester Action'],
@@ -946,7 +950,7 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['issues.closed']?.(ctx)).resolves.toBeUndefined();
 
-    const removed = octokit.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
+    const removed = octokit.rest.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
     expect(removed).toEqual(expect.arrayContaining(['Rejected', 'Requester Action']));
   });
 
@@ -966,7 +970,7 @@ describe('request-orchestrator additional coverage', () => {
 
     const octokit = mkOctokit();
 
-    octokit.issues.get
+    octokit.rest.issues.get
       .mockResolvedValueOnce({
         data: {
           number: 14,
@@ -980,7 +984,7 @@ describe('request-orchestrator additional coverage', () => {
         },
       });
 
-    octokit.issues.addLabels.mockRejectedValueOnce(httpError(500, 'add rejected failed'));
+    octokit.rest.issues.addLabels.mockRejectedValueOnce(httpError(500, 'add rejected failed'));
 
     const issue: Issue = {
       number: 14,
@@ -1004,7 +1008,7 @@ describe('request-orchestrator additional coverage', () => {
     const warnMsgs = ctx.log.warn.mock.calls.map((c) => String(c[1] ?? '')).join('\n');
     expect(warnMsgs).toContain('failed to add rejected status label');
 
-    const removed = octokit.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
+    const removed = octokit.rest.issues.removeLabel.mock.calls.map((c) => String(c[0]?.name ?? '')).sort();
     expect(removed).toEqual(expect.arrayContaining(['Approved', 'Requester Action', 'Review Pending']));
   });
 
@@ -1023,7 +1027,7 @@ describe('request-orchestrator additional coverage', () => {
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockRejectedValue(httpError(500, 'labels fetch failed'));
+    octokit.rest.issues.get.mockRejectedValue(httpError(500, 'labels fetch failed'));
 
     const issue: Issue = {
       number: 15,
@@ -1059,7 +1063,7 @@ describe('request-orchestrator additional coverage', () => {
 
     const page1 = Array.from({ length: 100 }, (_, i) => makePr(i + 1));
 
-    octokit.pulls.list.mockResolvedValueOnce({ data: page1 }).mockResolvedValueOnce({ data: [] });
+    octokit.rest.pulls.list.mockResolvedValueOnce({ data: page1 }).mockResolvedValueOnce({ data: [] });
 
     const repository: Repository = { name: 'r', owner: { login: 'o' } };
 
@@ -1072,9 +1076,9 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['status']?.(ctx)).resolves.toBeUndefined();
 
-    expect(octokit.pulls.list).toHaveBeenCalledTimes(2);
-    expect(octokit.pulls.list.mock.calls[0]?.[0]?.page).toBe(1);
-    expect(octokit.pulls.list.mock.calls[1]?.[0]?.page).toBe(2);
+    expect(octokit.rest.pulls.list).toHaveBeenCalledTimes(2);
+    expect(octokit.rest.pulls.list.mock.calls[0]?.[0]?.page).toBe(1);
+    expect(octokit.rest.pulls.list.mock.calls[1]?.[0]?.page).toBe(2);
   });
 
   test('status: tryAutoMerge skips when issue cannot be loaded', async () => {
@@ -1083,11 +1087,11 @@ describe('request-orchestrator additional coverage', () => {
 
     const octokit = mkOctokit();
 
-    octokit.pulls.list.mockResolvedValueOnce({
+    octokit.rest.pulls.list.mockResolvedValueOnce({
       data: [{ number: 1, body: 'source: #123', head: { sha: 'head-sha', ref: 'ref-1' } }],
     });
 
-    octokit.issues.get.mockRejectedValueOnce(httpError(500, 'issue load failed'));
+    octokit.rest.issues.get.mockRejectedValueOnce(httpError(500, 'issue load failed'));
 
     const repository: Repository = { name: 'r', owner: { login: 'o' } };
 
@@ -1108,7 +1112,7 @@ describe('request-orchestrator additional coverage', () => {
 
     const octokit = mkOctokit();
 
-    octokit.pulls.list.mockResolvedValueOnce({
+    octokit.rest.pulls.list.mockResolvedValueOnce({
       data: [{ number: 1, body: 'source: #123', head: { sha: 'head-sha', ref: 'ref-1' } }],
     });
 
@@ -1120,7 +1124,7 @@ describe('request-orchestrator additional coverage', () => {
       labels: [],
       user: { login: 'a' },
     };
-    octokit.issues.get.mockResolvedValueOnce({ data: issue });
+    octokit.rest.issues.get.mockResolvedValueOnce({ data: issue });
 
     loadTemplate.mockRejectedValueOnce(new Error('template load failed'));
 
@@ -1153,7 +1157,7 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['status']?.(ctx)).resolves.toBeUndefined();
 
-    expect(octokit.pulls.list).not.toHaveBeenCalled();
+    expect(octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -1173,7 +1177,7 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['status']?.(ctx)).resolves.toBeUndefined();
 
-    expect(octokit.pulls.list).not.toHaveBeenCalled();
+    expect(octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -1197,7 +1201,7 @@ describe('request-orchestrator additional coverage', () => {
       payload: { action: 'opened', issue, sender: { type: 'User', login: 'u1' } },
     });
 
-    ctx.octokit.issues.get.mockResolvedValueOnce({
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({
       data: { number: 1, labels: [] },
     });
 
@@ -1232,7 +1236,7 @@ describe('request-orchestrator additional coverage', () => {
     });
 
     // ensure the label-refresh retry path doesn't crash
-    ctx.octokit.issues.get.mockResolvedValueOnce({ data: { number: 2, labels: [] } });
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({ data: { number: 2, labels: [] } });
 
     // loadTemplate is called twice: initial + retry after label refresh
     loadTemplate
@@ -1265,7 +1269,7 @@ describe('request-orchestrator additional coverage', () => {
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValueOnce({ data: { number: 3, labels: [] } });
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({ data: { number: 3, labels: [] } });
 
     loadTemplate
       .mockRejectedValueOnce(new Error('no routing label found'))
@@ -1358,8 +1362,8 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
 
-    expect(octokit.pulls.update).not.toHaveBeenCalled();
-    expect(octokit.git.deleteRef).not.toHaveBeenCalled();
+    expect(octokit.rest.pulls.update).not.toHaveBeenCalled();
+    expect(octokit.rest.git.deleteRef).not.toHaveBeenCalled();
     expect(createRequestPr).not.toHaveBeenCalled();
 
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
@@ -1402,7 +1406,7 @@ describe('request-orchestrator additional coverage', () => {
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValue({ data: issue });
+    octokit.rest.issues.get.mockResolvedValue({ data: issue });
 
     const ctx = mkCtx({
       name: 'issues.opened',
@@ -1414,7 +1418,7 @@ describe('request-orchestrator additional coverage', () => {
 
     await expect(handlers['issues.opened']?.(ctx)).resolves.toBeUndefined();
 
-    const bodyUpdateArgs = octokit.issues.update.mock.calls
+    const bodyUpdateArgs = octokit.rest.issues.update.mock.calls
       .map(([args]) => args as { body?: string })
       .find((args) => typeof args.body === 'string');
 
@@ -1449,10 +1453,10 @@ describe('request-orchestrator additional coverage', () => {
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValue({ data: issue });
-    octokit.pulls.update.mockResolvedValueOnce();
-    octokit.git.deleteRef.mockRejectedValueOnce(httpError(500, 'delete failed'));
-    octokit.issues.removeLabel.mockRejectedValueOnce(httpError(500, 'remove approved failed'));
+    octokit.rest.issues.get.mockResolvedValue({ data: issue });
+    octokit.rest.pulls.update.mockResolvedValueOnce();
+    octokit.rest.git.deleteRef.mockRejectedValueOnce(httpError(500, 'delete failed'));
+    octokit.rest.issues.removeLabel.mockRejectedValueOnce(httpError(500, 'remove approved failed'));
 
     findOpenIssuePrs.mockResolvedValueOnce([
       {
@@ -1477,7 +1481,7 @@ describe('request-orchestrator additional coverage', () => {
 
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
 
-    expect(octokit.pulls.update).toHaveBeenCalledWith(
+    expect(octokit.rest.pulls.update).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o', repo: 'r', pull_number: 89, state: 'closed' })
     );
     expect(bodies).toContain('Form updated → closing outdated PR(s): #89');

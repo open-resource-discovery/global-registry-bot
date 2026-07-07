@@ -1190,8 +1190,10 @@ const maintenanceRepoInfo = { owner: 'org', repo: 'repo' };
 function mkMaintenanceCtx(reviews: { state?: string; body?: string; user?: { login: string } }[] = []) {
   return {
     octokit: {
-      pulls: {
-        listReviews: jest.fn(() => Promise.resolve({ data: reviews })),
+      rest: {
+        pulls: {
+          listReviews: jest.fn(() => Promise.resolve({ data: reviews })),
+        },
       },
     },
   } as any;
@@ -1279,8 +1281,10 @@ describe('isPullRequestApprovedForBranchMaintenance', () => {
   test('catches listPullRequestReviews errors and treats as empty reviews', async () => {
     const ctx = {
       octokit: {
-        pulls: {
-          listReviews: jest.fn((): Promise<never> => Promise.reject(new Error('api error'))),
+        rest: {
+          pulls: {
+            listReviews: jest.fn((): Promise<never> => Promise.reject(new Error('api error'))),
+          },
         },
       },
     } as any;

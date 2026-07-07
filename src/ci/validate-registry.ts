@@ -795,7 +795,7 @@ function createLocalOctokit(): OctokitLike {
     },
   };
 
-  return { repos, issues };
+  return { rest: { repos, issues } };
 }
 
 type HooksDescriptor = {

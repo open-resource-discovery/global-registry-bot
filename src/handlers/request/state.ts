@@ -22,8 +22,10 @@ type IssueParams = {
 };
 
 type OctokitLike = {
-  issues: GitHubIssueLabelsGatewayContext['octokit']['issues'] &
-    GitHubIssueAssigneesGatewayContext['octokit']['issues'];
+  rest: {
+    issues: GitHubIssueLabelsGatewayContext['octokit']['rest']['issues'] &
+      GitHubIssueAssigneesGatewayContext['octokit']['rest']['issues'];
+  };
 };
 
 type LoggerLike = {

@@ -14,14 +14,16 @@ type PullRequestCommitLike = {
 
 export type PullRequestAuthorResolutionContext = {
   octokit: {
-    pulls: {
-      listCommits: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data?: PullRequestCommitLike[] }>;
+    rest: {
+      pulls: {
+        listCommits: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data?: PullRequestCommitLike[] }>;
+      };
     };
   };
 };
@@ -69,7 +71,7 @@ export async function resolvePullRequestRequestAuthorId<
 
   try {
     while (true) {
-      const res = await context.octokit.pulls.listCommits({
+      const res = await context.octokit.rest.pulls.listCommits({
         owner: repoInfo.owner,
         repo: repoInfo.repo,
         pull_number: pr.number,
