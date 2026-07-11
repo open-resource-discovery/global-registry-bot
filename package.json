@@ -44,7 +44,7 @@
     "@sap/eslint-config": "0.5.2",
     "@types/jest": "30.0.0",
     "@types/js-yaml": "4.0.9",
-    "@types/node": "25.9.4",
+    "@types/node": "25.9.5",
     "babel-jest": "30.4.1",
     "eslint": "10.6.0",
     "globals": "17.7.0",
