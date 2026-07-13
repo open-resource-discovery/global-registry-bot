@@ -1,4 +1,4 @@
-import jsYamlModule from 'js-yaml';
+import * as jsYamlModule from 'js-yaml';
 import { calcSnapshotHash as calcSnapshotHashRaw, SNAPSHOT_HASH_MARKER_KEY } from './snapshot.js';
 import { tryEnableAutoMerge as tryEnableAutoMergeRaw } from '../../../lib/auto-merge.js';
 import { loadTemplate as loadTemplateRaw } from '../template.js';
@@ -220,7 +220,9 @@ type JsYamlApi = {
   JSON_SCHEMA?: unknown;
 };
 
-const jsYaml = jsYamlModule as unknown as JsYamlApi;
+// js-yaml v5 is ESM-only with no default export; Jest's CJS-style module mocks
+// in test/create-pr.test.ts still supply one, so accept either shape.
+const jsYaml = ((jsYamlModule as { default?: unknown }).default ?? jsYamlModule) as JsYamlApi;
 
 function sanitizeForYaml(value: unknown): unknown {
   if (value === undefined) return undefined;
