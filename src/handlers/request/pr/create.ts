@@ -12,6 +12,7 @@ import {
   compareFileOnBranch,
   writeFileWithReconciliation,
   createPrWithReconciliation,
+  type ContextForReconciliation,
   type DelayFn,
 } from './reconciliation.js';
 
@@ -759,7 +760,7 @@ export async function createRequestPr(
 
   // Reconstruct context with compareCommitsWithBasehead forwarded to repos (if present).
   // reconciliation.ts expects repos.compareCommitsWithBasehead.
-  const reconciliationContext = {
+  const reconciliationContext: ContextForReconciliation = {
     octokit: {
       rest: {
         repos: {
@@ -789,12 +790,12 @@ export async function createRequestPr(
     if (getHttpStatus(e) !== 422) {
       throw new Error(
         `[request-pr:branch-create] Failed to create request branch '${branch}': ${e instanceof Error ? e.message : String(e)}`,
-        { cause: e instanceof Error ? e : undefined }
+        { cause: e }
       );
     }
     // 422: confirm the branch actually exists before resuming.
     const safetyResult = await inspectExistingBranch(
-      reconciliationContext as Parameters<typeof inspectExistingBranch>[0],
+      reconciliationContext,
       localRepoRef,
       branch,
       baseSha,
@@ -802,7 +803,7 @@ export async function createRequestPr(
     );
     if (!safetyResult.safe) {
       throw new Error(`[request-pr:branch-existing] ${safetyResult.reason}`, {
-        cause: e instanceof Error ? e : undefined,
+        cause: e,
       });
     }
     branchExisted = true;
@@ -894,7 +895,7 @@ export async function createRequestPr(
     } catch (e: unknown) {
       if (getHttpStatus(e) !== 404)
         throw new Error('[request-pr:default-file-read] ' + (e instanceof Error ? e.message : String(e)), {
-          cause: e instanceof Error ? e : undefined,
+          cause: e,
         });
       // 404 = not on default branch, continue.
     }
@@ -909,7 +910,7 @@ export async function createRequestPr(
       } catch (e: unknown) {
         if (getHttpStatus(e) !== 404)
           throw new Error('[request-pr:base-file-read] ' + (e instanceof Error ? e.message : String(e)), {
-            cause: e instanceof Error ? e : undefined,
+            cause: e,
           });
         // 404 = not on base branch, continue.
       }
@@ -920,20 +921,14 @@ export async function createRequestPr(
     const commitMessage = buildCommitMessage(prOpts.commitMessageTemplate, STRUCT_ROOT, resourceName, issue.number);
 
     if (branchExisted) {
-      const fileState = await compareFileOnBranch(
-        reconciliationContext as Parameters<typeof compareFileOnBranch>[0],
-        localRepoRef,
-        productFile,
-        branch,
-        yamlText
-      );
+      const fileState = await compareFileOnBranch(reconciliationContext, localRepoRef, productFile, branch, yamlText);
       if (fileState.status === 'conflict' || fileState.status === 'unreadable') {
         throw new Error(`[request-pr:file-conflict] ${fileState.reason}`);
       }
       if (fileState.status === 'absent') {
         // File not yet written — fall through to write below.
         const writeResult = await writeFileWithReconciliation(
-          reconciliationContext as Parameters<typeof writeFileWithReconciliation>[0],
+          reconciliationContext,
           localRepoRef,
           productFile,
           branch,
@@ -954,7 +949,7 @@ export async function createRequestPr(
       // status === 'equivalent': skip write, proceed to PR.
     } else {
       const writeResult = await writeFileWithReconciliation(
-        reconciliationContext as Parameters<typeof writeFileWithReconciliation>[0],
+        reconciliationContext,
         localRepoRef,
         productFile,
         branch,
@@ -992,7 +987,7 @@ export async function createRequestPr(
   ${hashComment}`;
 
     const pr = await createPrWithReconciliation(
-      reconciliationContext as Parameters<typeof createPrWithReconciliation>[0],
+      reconciliationContext,
       { owner, repo, title: prTitle, head: branch, base: baseBranch, body: prBody, maintainer_can_modify: true },
       branch
     );
@@ -1159,7 +1154,7 @@ export async function createRequestPr(
   } catch (e: unknown) {
     if (getHttpStatus(e) !== 404)
       throw new Error('[request-pr:default-file-read] ' + (e instanceof Error ? e.message : String(e)), {
-        cause: e instanceof Error ? e : undefined,
+        cause: e,
       });
     // 404 = not on default branch, continue.
   }
@@ -1174,7 +1169,7 @@ export async function createRequestPr(
     } catch (e: unknown) {
       if (getHttpStatus(e) !== 404)
         throw new Error('[request-pr:base-file-read] ' + (e instanceof Error ? e.message : String(e)), {
-          cause: e instanceof Error ? e : undefined,
+          cause: e,
         });
       // 404 = not on base branch, continue.
     }
@@ -1185,19 +1180,13 @@ export async function createRequestPr(
   const nsCommitMessage = buildCommitMessage(prOpts.commitMessageTemplate, STRUCT_ROOT, resourceName, issue.number);
 
   if (branchExisted) {
-    const fileState = await compareFileOnBranch(
-      reconciliationContext as Parameters<typeof compareFileOnBranch>[0],
-      localRepoRef,
-      resourceFile,
-      branch,
-      nsYamlText
-    );
+    const fileState = await compareFileOnBranch(reconciliationContext, localRepoRef, resourceFile, branch, nsYamlText);
     if (fileState.status === 'conflict' || fileState.status === 'unreadable') {
       throw new Error(`[request-pr:file-conflict] ${fileState.reason}`);
     }
     if (fileState.status === 'absent') {
       const writeResult = await writeFileWithReconciliation(
-        reconciliationContext as Parameters<typeof writeFileWithReconciliation>[0],
+        reconciliationContext,
         localRepoRef,
         resourceFile,
         branch,
@@ -1218,7 +1207,7 @@ export async function createRequestPr(
     // status === 'equivalent': skip write, proceed to PR.
   } else {
     const writeResult = await writeFileWithReconciliation(
-      reconciliationContext as Parameters<typeof writeFileWithReconciliation>[0],
+      reconciliationContext,
       localRepoRef,
       resourceFile,
       branch,
@@ -1249,7 +1238,7 @@ export async function createRequestPr(
   )}\n${prOpts.bodyFooter}\n\n${nsHashComment}`;
 
   const pr = await createPrWithReconciliation(
-    reconciliationContext as Parameters<typeof createPrWithReconciliation>[0],
+    reconciliationContext,
     { owner, repo, title: prTitle, head: branch, base: baseBranch, body: prBody },
     branch
   );

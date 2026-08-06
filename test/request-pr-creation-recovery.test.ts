@@ -248,7 +248,7 @@ describe('approved-request-finalization – findOpenIssuePrs failure handling', 
   it('findOpenIssuePrs rejects: posts one error comment, createRequestPrWithRecovery not called, applyApprovedRequestState not called', async () => {
     jest.resetModules();
     const mod = await import('../src/handlers/request/application/approved-request-finalization.js');
-    const { finalizeApprovedRequest } = mod as any;
+    const { finalizeApprovedRequest } = mod;
 
     const postOnce = jest.fn(async () => {});
     const createRequestPrWithRecovery = jest.fn(async () => ({ number: 1 }));
@@ -290,7 +290,7 @@ describe('approved-request-finalization – no double prefix when createRequestP
   it('error already starting with "Failed to create Pull Request:" is not double-prefixed', async () => {
     jest.resetModules();
     const mod = await import('../src/handlers/request/application/approved-request-finalization.js');
-    const { finalizeApprovedRequest } = mod as any;
+    const { finalizeApprovedRequest } = mod;
 
     const postOnce = jest.fn(async () => {});
 
@@ -325,7 +325,7 @@ describe('approved-request-finalization – no double prefix when createRequestP
   it('raw error without prefix gets exactly one prefix added', async () => {
     jest.resetModules();
     const mod = await import('../src/handlers/request/application/approved-request-finalization.js');
-    const { finalizeApprovedRequest } = mod as any;
+    const { finalizeApprovedRequest } = mod;
 
     const postOnce = jest.fn(async () => {});
     const createRequestPrWithRecovery = jest.fn<() => Promise<never>>().mockRejectedValueOnce(new Error('raw error'));

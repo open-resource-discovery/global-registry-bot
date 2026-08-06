@@ -304,7 +304,7 @@ describe('inspectExistingBranch – previous_filename and renamed target', () =>
       expect(result.reason).toContain('data/old/different.yaml');
     }
 
-    const warnCalls = (log.warn as jest.Mock).mock.calls as any[][];
+    const warnCalls = log.warn.mock.calls;
     const unsafeLog = warnCalls.find(
       (c) => typeof c[0] === 'object' && c[0] !== null && c[0].stage === 'request-pr:branch-unsafe'
     );
@@ -673,7 +673,7 @@ describe('inspectExistingBranch – branch status fail-closed matrix', () => {
     const r = await inspectExistingBranch(ctx, REPO, BRANCH, 'BASE_SHA', FILE_PATH);
     expect(r.safe).toBe(false);
     if (!r.safe) expect(r.reason).toMatch(/unacceptable.?status|empty|unsafe/i);
-    const warnCalls = (log.warn as jest.Mock).mock.calls as any[][];
+    const warnCalls = log.warn.mock.calls;
     const u = warnCalls.find((c) => c[0]?.stage === 'request-pr:branch-unsafe');
     expect(u).toBeDefined();
     expect(u![0].outcome).toMatch(/missing.?status|unknown.?status/i);
@@ -703,7 +703,7 @@ describe('inspectExistingBranch – branch status fail-closed matrix', () => {
     const r = await inspectExistingBranch(ctx, REPO, BRANCH, 'BASE_SHA', FILE_PATH);
     expect(r.safe).toBe(false);
     if (!r.safe) expect(r.reason).toMatch(/previous.?filename|unexpected/i);
-    const warnCalls = (log.warn as jest.Mock).mock.calls as any[][];
+    const warnCalls = log.warn.mock.calls;
     const u = warnCalls.find((c) => c[0]?.stage === 'request-pr:branch-unsafe');
     expect(u![0].outcome).toMatch(/previous.?filename/i);
   });

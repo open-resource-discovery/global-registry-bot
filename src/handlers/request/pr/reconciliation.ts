@@ -76,7 +76,7 @@ type LoggerLike = {
   error?: (obj: unknown, msg?: string) => void;
 };
 
-type ContextForReconciliation = {
+export type ContextForReconciliation = {
   octokit: OctokitForReconciliation;
   log?: LoggerLike;
 };
@@ -288,7 +288,7 @@ export async function compareFileOnBranch(
   } catch (e: unknown) {
     if (getHttpStatus(e) === 404) return { status: 'absent' };
     throw new Error(`[request-pr:file-read] Branch file read failed: ${getGitHubErrorMessage(e)}`, {
-      cause: e instanceof Error ? e : undefined,
+      cause: e,
     });
   }
 
@@ -328,8 +328,7 @@ export async function compareFileOnBranch(
 // ─── Branch safety ─────────────────────────────────────────────────────────────
 
 export type BranchSafetyResult =
-  | { safe: true; branchExisted: boolean; headSha: string }
-  | { safe: false; reason: string };
+  { safe: true; branchExisted: boolean; headSha: string } | { safe: false; reason: string };
 
 /**
  * After a createRef 422, verify the branch actually exists and is safe to reuse.
@@ -797,7 +796,7 @@ export async function lookupOpenPrForBranch(
     });
   } catch (e: unknown) {
     throw new Error(`[request-pr:pr-lookup] PR lookup failed: ${getGitHubErrorMessage(e)}`, {
-      cause: e instanceof Error ? e : undefined,
+      cause: e,
     });
   }
 
@@ -842,7 +841,7 @@ export async function createPrWithReconciliation(
   } catch (createError: unknown) {
     if (!isAmbiguousPrCreateError(createError)) {
       throw new Error(`[request-pr:pr-create] PR creation failed: ${getGitHubErrorMessage(createError)}`, {
-        cause: createError instanceof Error ? createError : undefined,
+        cause: createError,
       });
     }
 
@@ -852,7 +851,7 @@ export async function createPrWithReconciliation(
     );
 
     // Re-list to check if the PR was created despite the error.
-    let relistPr: PullRequestLike | null = null;
+    let relistPr: PullRequestLike | null;
     try {
       relistPr = await lookupOpenPrForBranch(context, { owner, repo }, branchName);
     } catch (listError: unknown) {
@@ -867,7 +866,7 @@ export async function createPrWithReconciliation(
       );
       throw new Error(
         `[request-pr:pr-create] PR creation failed (reconciliation list also failed): ${getGitHubErrorMessage(createError)}`,
-        { cause: createError instanceof Error ? createError : undefined }
+        { cause: listError }
       );
     }
 
@@ -882,7 +881,7 @@ export async function createPrWithReconciliation(
     // No PR found — rethrow original create error with stage context.
     throw new Error(
       `[request-pr:pr-create] PR creation failed (not found after reconciliation): ${getGitHubErrorMessage(createError)}`,
-      { cause: createError instanceof Error ? createError : undefined }
+      { cause: createError }
     );
   }
 }
