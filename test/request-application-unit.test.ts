@@ -1028,8 +1028,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
       listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      listChangedYamlFilesForPrWithFallback: jest.fn(
-        (): Promise<never> => Promise.reject(new Error('unexpected error'))
+      listChangedYamlFilesForPrWithFallback: jest.fn((): Promise<never> =>
+        Promise.reject(new Error('unexpected error'))
       ),
       getErrorMessage: jest.fn(() => 'unexpected error'),
     });
