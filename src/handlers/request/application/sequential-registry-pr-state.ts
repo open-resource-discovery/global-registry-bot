@@ -142,7 +142,8 @@ export function getSequentialRegistryPrQueueInflight<ResultType, RepoInfoType ex
   repoInfo: RepoInfoType
 ): Promise<ResultType> | undefined {
   return SEQUENTIAL_REGISTRY_PR_QUEUE_INFLIGHT.get(sequentialRegistryPrRepoKey(repoInfo)) as
-    Promise<ResultType> | undefined;
+    | Promise<ResultType>
+    | undefined;
 }
 
 export function setSequentialRegistryPrQueueInflight<ResultType, RepoInfoType extends RepoInfoBase>(
