@@ -25,21 +25,23 @@ type HeadGreenEvaluation = {
 
 export type HeadGreenEvaluationContext = {
   octokit: {
-    checks: {
-      listForRef: (args: {
-        owner: string;
-        repo: string;
-        ref: string;
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data?: unknown }>;
-    };
-    repos: {
-      getCombinedStatusForRef: (args: {
-        owner: string;
-        repo: string;
-        ref: string;
-      }) => Promise<{ data?: { state?: string | null } }>;
+    rest: {
+      checks: {
+        listForRef: (args: {
+          owner: string;
+          repo: string;
+          ref: string;
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data?: unknown }>;
+      };
+      repos: {
+        getCombinedStatusForRef: (args: {
+          owner: string;
+          repo: string;
+          ref: string;
+        }) => Promise<{ data?: { state?: string | null } }>;
+      };
     };
   };
 };
@@ -75,7 +77,7 @@ export async function evaluateHeadGreenForApprovalReevaluation<ContextType exten
     let page = 1;
 
     while (true) {
-      const res = await context.octokit.checks.listForRef({
+      const res = await context.octokit.rest.checks.listForRef({
         owner: repoInfo.owner,
         repo: repoInfo.repo,
         ref,
@@ -83,7 +85,7 @@ export async function evaluateHeadGreenForApprovalReevaluation<ContextType exten
         page,
       });
 
-      const data = (res as { data?: unknown }).data;
+      const data = res.data;
       const runs =
         callbacks.isPlainObject(data) && Array.isArray(data['check_runs'])
           ? (data['check_runs'] as unknown as RefCheckRunLike[])
@@ -157,7 +159,7 @@ export async function evaluateHeadGreenForApprovalReevaluation<ContextType exten
   }
 
   try {
-    const res = await context.octokit.repos.getCombinedStatusForRef({
+    const res = await context.octokit.rest.repos.getCombinedStatusForRef({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       ref,

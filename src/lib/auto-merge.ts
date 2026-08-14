@@ -16,28 +16,34 @@ type PullRequestMinimal = {
 
 type OctokitLike = {
   graphql: (query: string, variables: Record<string, unknown>) => Promise<unknown>;
-  pulls: {
-    get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data: PullRequestMinimal }>;
-    merge: (args: {
-      owner: string;
-      repo: string;
-      pull_number: number;
-      merge_method: MergeMethodRest;
-    }) => Promise<unknown>;
-    listReviews: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data: { state: string }[] }>;
-  };
-  repos: {
-    getCombinedStatusForRef: (args: { owner: string; repo: string; ref: string }) => Promise<{
-      data: { state: 'success' | 'pending' | 'failure' | 'error' | string; total_count: number };
-    }>;
-  };
-  checks: {
-    listForRef: (args: { owner: string; repo: string; ref: string }) => Promise<{
-      data: {
-        total_count: number;
-        check_runs: { status?: string | null; conclusion: string | null }[];
-      };
-    }>;
+  rest: {
+    pulls: {
+      get: (args: { owner: string; repo: string; pull_number: number }) => Promise<{ data: PullRequestMinimal }>;
+      merge: (args: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        merge_method: MergeMethodRest;
+      }) => Promise<unknown>;
+      listReviews: (args: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+      }) => Promise<{ data: { state: string }[] }>;
+    };
+    repos: {
+      getCombinedStatusForRef: (args: { owner: string; repo: string; ref: string }) => Promise<{
+        data: { state: 'success' | 'pending' | 'failure' | 'error' | string; total_count: number };
+      }>;
+    };
+    checks: {
+      listForRef: (args: { owner: string; repo: string; ref: string }) => Promise<{
+        data: {
+          total_count: number;
+          check_runs: { status?: string | null; conclusion: string | null }[];
+        };
+      }>;
+    };
   };
 };
 
@@ -118,7 +124,7 @@ export async function tryMergeIfGreen(
   let pr: PullRequestMinimal | undefined = args.prData;
 
   if (!pr) {
-    const { data } = await context.octokit.pulls.get({ owner, repo, pull_number: prNumber });
+    const { data } = await context.octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
     pr = data;
   }
 
@@ -126,7 +132,7 @@ export async function tryMergeIfGreen(
   if (pr.draft) return false;
 
   // Combined status (legacy commit statuses)
-  const { data: combined } = await context.octokit.repos.getCombinedStatusForRef({
+  const { data: combined } = await context.octokit.rest.repos.getCombinedStatusForRef({
     owner,
     repo,
     ref: pr.head.sha,
@@ -136,7 +142,7 @@ export async function tryMergeIfGreen(
   const allStatusesOk = statusCount === 0 || combined.state === 'success';
 
   // Checks API
-  const checks = await context.octokit.checks.listForRef({
+  const checks = await context.octokit.rest.checks.listForRef({
     owner,
     repo,
     ref: pr.head.sha,
@@ -164,7 +170,7 @@ export async function tryMergeIfGreen(
   // require at least one APPROVED review
   let approved = true;
   if (requireApproval) {
-    const { data: reviews } = await context.octokit.pulls.listReviews({
+    const { data: reviews } = await context.octokit.rest.pulls.listReviews({
       owner,
       repo,
       pull_number: prNumber,
@@ -174,7 +180,7 @@ export async function tryMergeIfGreen(
 
   if (allStatusesOk && allChecksOk && approved) {
     try {
-      await context.octokit.pulls.merge({
+      await context.octokit.rest.pulls.merge({
         owner,
         repo,
         pull_number: prNumber,

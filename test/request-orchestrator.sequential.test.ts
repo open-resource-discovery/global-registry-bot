@@ -155,47 +155,49 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
     repo: () => ({ owner, repo }),
     issue: () => ({ owner, repo, issue_number: issue.number }),
     octokit: {
-      issues: {
-        get: jest.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
-        update: jest.fn<IssuesUpdateFn>(() => Promise.resolve({})),
-        addLabels: jest.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
-        removeLabel: jest.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
-      },
-      pulls: {
-        get: jest.fn<PullsGetFn>((pullArgs: any) =>
-          Promise.resolve({
+      rest: {
+        issues: {
+          get: jest.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
+          update: jest.fn<IssuesUpdateFn>(() => Promise.resolve({})),
+          addLabels: jest.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
+          removeLabel: jest.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
+        },
+        pulls: {
+          get: jest.fn<PullsGetFn>((pullArgs: any) =>
+            Promise.resolve({
+              data: {
+                number: Number(pullArgs?.pull_number ?? 5),
+                node_id: 'PR_NODE',
+                state: 'open',
+                draft: false,
+                body: 'source: #1',
+                head: { ref: 'x', sha: 'sha1' },
+              },
+            })
+          ),
+          list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
+          listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
+          listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
+          listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
+          createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
+          update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
+          updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
+        },
+        git: {
+          deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
+        },
+        repos: {
+          getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
+        },
+        checks: {
+          listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
+          listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
+          listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
             data: {
-              number: Number(pullArgs?.pull_number ?? 5),
-              node_id: 'PR_NODE',
-              state: 'open',
-              draft: false,
-              body: 'source: #1',
-              head: { ref: 'x', sha: 'sha1' },
+              check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
             },
-          })
-        ),
-        list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
-        listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
-        listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
-        listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
-        createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
-        update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
-        updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
-      },
-      git: {
-        deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
-      },
-      repos: {
-        getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
-      },
-      checks: {
-        listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
-        listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
-        listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
-          data: {
-            check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
-          },
-        }),
+          }),
+        },
       },
       request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
     },
@@ -375,15 +377,15 @@ test('check_run.completed failure marks failed sequential registry heads and adv
     },
   };
   extractHashFromPrBody.mockReturnValue('');
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-check-run-failure.yaml', status: 'modified' }],
   });
 
   await handlers['check_run.completed'][0](ctx);
 
   expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.listFiles).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.listFiles).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 916 })
   );
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
@@ -416,7 +418,7 @@ test('check_suite.completed action_required approves waiting workflow for safe r
 
   ctx.payload.check_suite.pull_requests = [{ number: 77 }];
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 77,
       title: 'Direct registry PR',
@@ -429,7 +431,7 @@ test('check_suite.completed action_required approves waiting workflow for safe r
     },
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'data/namespaces/sap.agtwf04.yaml', status: 'added' }],
   });
 
@@ -460,7 +462,7 @@ test('check_suite.completed action_required approves waiting workflow for safe r
 
   extractHashFromPrBody.mockReturnValue('');
 
-  ctx.octokit.repos.getContent.mockResolvedValue({
+  ctx.octokit.rest.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: system\nname: sap.agtwf04\ndescription: Workflow approval test\n', 'utf8').toString(
         'base64'
@@ -524,16 +526,16 @@ test('check_run.completed success releases active sequential PR when green head 
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
   extractHashFromPrBody.mockReturnValue('');
-  pushCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] });
-  pushCtx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  pushCtx.octokit.pulls.listFiles.mockResolvedValue({
+  pushCtx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] });
+  pushCtx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  pushCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-sequential-release.yaml', status: 'modified' }],
   });
-  pushCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  pushCtx.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
 
   await handlers['push'][0](pushCtx);
-  expect(pushCtx.octokit.pulls.updateBranch).toHaveBeenCalled();
+  expect(pushCtx.octokit.rest.pulls.updateBranch).toHaveBeenCalled();
 
   const checkCtx = mkCheckSuiteContext({
     event: 'check_run.completed',
@@ -555,17 +557,17 @@ test('check_run.completed success releases active sequential PR when green head 
     },
   };
   extractHashFromPrBody.mockReturnValue('');
-  checkCtx.octokit.pulls.list
+  checkCtx.octokit.rest.pulls.list
     .mockResolvedValueOnce({ data: [{ ...pr, mergeable_state: 'clean' }] })
     .mockResolvedValueOnce({ data: [] });
-  checkCtx.octokit.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
-  checkCtx.octokit.pulls.listFiles.mockResolvedValue({
+  checkCtx.octokit.rest.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
+  checkCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-sequential-release.yaml', status: 'modified' }],
   });
-  checkCtx.octokit.repos.getContent.mockResolvedValue({
+  checkCtx.octokit.rest.repos.getContent.mockResolvedValue({
     data: { content: b64('type: product\nname: product-sequential-release\n'), encoding: 'base64' },
   });
-  checkCtx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
+  checkCtx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
   runApprovalHook.mockResolvedValue({ status: 'unknown', reason: 'manual review required' } as any);
 
   await handlers['check_run.completed'][0](checkCtx);
@@ -607,16 +609,16 @@ test('check_run.completed success handles sequential changed-file lookup failure
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
   extractHashFromPrBody.mockReturnValue('');
-  pushCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] });
-  pushCtx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  pushCtx.octokit.pulls.listFiles.mockResolvedValue({
+  pushCtx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] });
+  pushCtx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  pushCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-processing-failure.yaml', status: 'modified' }],
   });
-  pushCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  pushCtx.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
 
   await handlers['push'][0](pushCtx);
-  expect(pushCtx.octokit.pulls.updateBranch).toHaveBeenCalled();
+  expect(pushCtx.octokit.rest.pulls.updateBranch).toHaveBeenCalled();
 
   const checkCtx = mkCheckSuiteContext({
     event: 'check_run.completed',
@@ -638,11 +640,11 @@ test('check_run.completed success handles sequential changed-file lookup failure
     },
   };
   extractHashFromPrBody.mockReturnValue('');
-  checkCtx.octokit.pulls.list
+  checkCtx.octokit.rest.pulls.list
     .mockResolvedValueOnce({ data: [{ ...pr, mergeable_state: 'clean' }] })
     .mockResolvedValueOnce({ data: [] });
-  checkCtx.octokit.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
-  checkCtx.octokit.pulls.listFiles
+  checkCtx.octokit.rest.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
+  checkCtx.octokit.rest.pulls.listFiles
     .mockRejectedValueOnce(new Error('files failed before processing'))
     .mockResolvedValueOnce({ data: [{ filename: 'resources/product-processing-failure.yaml', status: 'modified' }] });
 
@@ -665,10 +667,10 @@ test('push: approval config change uses dedicated direct PR reevaluation reason'
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-config-change', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -684,7 +686,7 @@ test('push: approval config change uses dedicated direct PR reevaluation reason'
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.pulls.list.mockResolvedValue({ data: [] });
 
   await handler(ctx);
 
@@ -735,23 +737,23 @@ test('push: approved registry PR retries branch update after benign expected hea
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-retry.yaml', status: 'modified' }],
   });
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: { number: 301, labels: [{ name: 'Approved' }] },
   });
-  ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  ctx.octokit.pulls.updateBranch
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  ctx.octokit.rest.pulls.updateBranch
     .mockRejectedValueOnce(Object.assign(new Error('expected_head_sha mismatch'), { status: 422 }))
     .mockResolvedValueOnce({});
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledTimes(2);
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenNthCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(2);
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenNthCalledWith(
     1,
     expect.objectContaining({
       owner: 'o1',
@@ -760,7 +762,7 @@ test('push: approved registry PR retries branch update after benign expected hea
       expected_head_sha: 'sha-branch-retry',
     })
   );
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenNthCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenNthCalledWith(
     2,
     expect.objectContaining({
       owner: 'o1',
@@ -768,7 +770,7 @@ test('push: approved registry PR retries branch update after benign expected hea
       pull_number: 301,
     })
   );
-  expect(ctx.octokit.pulls.updateBranch.mock.calls[1]?.[0]).not.toHaveProperty('expected_head_sha');
+  expect(ctx.octokit.rest.pulls.updateBranch.mock.calls[1]?.[0]).not.toHaveProperty('expected_head_sha');
   expect(
     ctx.log.info.mock.calls.some(
       (call: any[]) => String(call[1] ?? '') === 'pull-request branch update requested after expected-head retry'
@@ -812,28 +814,28 @@ test('push: approved registry PR skips branch update when benign expected head f
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-head-changed.yaml', status: 'modified' }],
   });
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: { number: 3011, labels: [{ name: 'Approved' }] },
   });
-  ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx.octokit.pulls.get.mockResolvedValueOnce({ data: pr }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({ data: pr }).mockResolvedValueOnce({
     data: {
       ...pr,
       head: { ref: 'feature/branch-head-changed', sha: 'sha-branch-head-changed-newer' },
       mergeable_state: 'clean',
     },
   });
-  ctx.octokit.pulls.updateBranch.mockRejectedValueOnce(
+  ctx.octokit.rest.pulls.updateBranch.mockRejectedValueOnce(
     Object.assign(new Error('expected_head_sha mismatch'), { status: 422 })
   );
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
   expect(
     ctx.log.info.mock.calls.some(
       (call: any[]) => String(call[1] ?? '') === 'pull-request branch update skipped: head already changed'
@@ -857,9 +859,9 @@ test('push: approved registry PR posts manual update notice after protected bran
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-branch-manual', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -880,22 +882,22 @@ test('push: approved registry PR posts manual update notice after protected bran
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-manual.yaml', status: 'modified' }],
   });
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: { number: 302, labels: [{ name: 'Approved' }] },
   });
-  ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  ctx.octokit.pulls.updateBranch.mockRejectedValueOnce(
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  ctx.octokit.rest.pulls.updateBranch.mockRejectedValueOnce(
     Object.assign(new Error('Protected branch policy'), { status: 403 })
   );
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
   expect(postedBodies()).toContain('Could not update PR branch automatically');
   expect(postedBodies()).toContain('Protected branch policy');
   expect(postOnce).toHaveBeenCalledWith(
@@ -939,25 +941,25 @@ test('push: approved registry PR skips retry when benign expected head failure i
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-benign-clean.yaml', status: 'modified' }],
   });
-  ctx.octokit.issues.get.mockResolvedValue({ data: { number: 3041, labels: [{ name: 'Approved' }] } });
-  ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx.octokit.pulls.get.mockResolvedValueOnce({ data: pr }).mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValue({ data: { number: 3041, labels: [{ name: 'Approved' }] } });
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({ data: pr }).mockResolvedValueOnce({
     data: {
       ...pr,
       mergeable_state: 'clean',
     },
   });
-  ctx.octokit.pulls.updateBranch.mockRejectedValueOnce(
+  ctx.octokit.rest.pulls.updateBranch.mockRejectedValueOnce(
     Object.assign(new Error('expected_head_sha mismatch'), { status: 422 })
   );
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
   expect(
     ctx.log.info.mock.calls.some(
       (call: any[]) => String(call[1] ?? '') === 'pull-request branch update skipped after benign failure'
@@ -976,10 +978,10 @@ test('push: approved registry PR logs retry failure after benign expected head m
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-branch-retry-failed', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -1000,20 +1002,20 @@ test('push: approved registry PR logs retry failure after benign expected head m
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-retry-failed.yaml', status: 'modified' }],
   });
-  ctx.octokit.issues.get.mockResolvedValue({ data: { number: 305, labels: [{ name: 'Approved' }] } });
-  ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  ctx.octokit.pulls.updateBranch
+  ctx.octokit.rest.issues.get.mockResolvedValue({ data: { number: 305, labels: [{ name: 'Approved' }] } });
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  ctx.octokit.rest.pulls.updateBranch
     .mockRejectedValueOnce(Object.assign(new Error('expected_head_sha mismatch'), { status: 422 }))
     .mockRejectedValueOnce(Object.assign(new Error('retry failed'), { status: 422 }));
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledTimes(2);
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(2);
   expect(
     ctx.log.warn.mock.calls.some((call: any[]) => String(call[1] ?? '') === 'pull-request branch update retry failed')
   ).toBe(true);
@@ -1055,31 +1057,31 @@ test('push: approved registry PR skips immediate second branch update while cool
 
   const ctx1 = buildCtx();
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx1.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx1.octokit.pulls.listFiles.mockResolvedValue({
+  ctx1.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx1.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-cooldown.yaml', status: 'modified' }],
   });
-  ctx1.octokit.issues.get.mockResolvedValue({ data: { number: 306, labels: [{ name: 'Approved' }] } });
-  ctx1.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx1.octokit.pulls.get.mockResolvedValue({ data: pr });
-  ctx1.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  ctx1.octokit.rest.issues.get.mockResolvedValue({ data: { number: 306, labels: [{ name: 'Approved' }] } });
+  ctx1.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx1.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  ctx1.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
 
   await handler(ctx1);
-  expect(ctx1.octokit.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  expect(ctx1.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
 
   const ctx2 = buildCtx();
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx2.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-  ctx2.octokit.pulls.listFiles.mockResolvedValue({
+  ctx2.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+  ctx2.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-branch-cooldown.yaml', status: 'modified' }],
   });
-  ctx2.octokit.issues.get.mockResolvedValue({ data: { number: 306, labels: [{ name: 'Approved' }] } });
-  ctx2.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  ctx2.octokit.pulls.get.mockResolvedValue({ data: pr });
+  ctx2.octokit.rest.issues.get.mockResolvedValue({ data: { number: 306, labels: [{ name: 'Approved' }] } });
+  ctx2.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  ctx2.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
   await handler(ctx2);
 
-  expect(ctx2.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  expect(ctx2.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
   expect(
     ctx2.log.info.mock.calls.some(
       (call: any[]) => String(call[1] ?? '') === 'pull-request branch update skipped: cooldown active'
@@ -1114,7 +1116,7 @@ test('check_suite.completed success without repo info returns before suite proce
   await handlers['check_suite.completed'][0](ctx);
 
   expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
   expect(tryMergeIfGreen).not.toHaveBeenCalled();
 });
 
@@ -1152,18 +1154,18 @@ test('status: active sequential registry PR failure clears active slot and advan
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
   extractHashFromPrBody.mockReturnValue('');
-  pushCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] });
-  pushCtx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  pushCtx.octokit.pulls.listFiles.mockResolvedValue({
+  pushCtx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] });
+  pushCtx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  pushCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-sequential-failure-active.yaml', status: 'modified' }],
   });
-  pushCtx.octokit.issues.get.mockResolvedValue({ data: { number: 930, labels: [{ name: 'Approved' }] } });
-  pushCtx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  pushCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  pushCtx.octokit.rest.issues.get.mockResolvedValue({ data: { number: 930, labels: [{ name: 'Approved' }] } });
+  pushCtx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  pushCtx.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
 
   await handlers['push'][0](pushCtx);
-  expect(pushCtx.octokit.pulls.updateBranch).toHaveBeenCalled();
+  expect(pushCtx.octokit.rest.pulls.updateBranch).toHaveBeenCalled();
 
   const statusCtx = mkBaseContext({
     owner: 'o1',
@@ -1178,16 +1180,16 @@ test('status: active sequential registry PR failure clears active slot and advan
     repository: { name: 'r-sequential-failure-active', owner: { login: 'o1' } },
   };
   extractHashFromPrBody.mockReturnValue('');
-  statusCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-  statusCtx.octokit.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
-  statusCtx.octokit.pulls.listFiles.mockResolvedValue({
+  statusCtx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+  statusCtx.octokit.rest.pulls.get.mockResolvedValue({ data: { ...pr, mergeable_state: 'clean' } });
+  statusCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-sequential-failure-active.yaml', status: 'modified' }],
   });
-  statusCtx.octokit.repos.getContent.mockResolvedValue({
+  statusCtx.octokit.rest.repos.getContent.mockResolvedValue({
     data: { content: b64('type: product\nname: product-sequential-failure-active\n'), encoding: 'base64' },
   });
-  statusCtx.octokit.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
-  statusCtx.octokit.checks.listForRef.mockResolvedValue({
+  statusCtx.octokit.rest.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
+  statusCtx.octokit.rest.checks.listForRef.mockResolvedValue({
     data: { check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }] },
   });
   runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved before sequential failure' } as any);
@@ -1195,7 +1197,7 @@ test('status: active sequential registry PR failure clears active slot and advan
 
   await handlers['status'][0](statusCtx);
 
-  expect(statusCtx.octokit.pulls.list).toHaveBeenCalledTimes(2);
+  expect(statusCtx.octokit.rest.pulls.list).toHaveBeenCalledTimes(2);
   expect(
     statusCtx.log.warn.mock.calls.some((call: any[]) =>
       String(call[1] ?? call[0] ?? '').includes('auto-merge candidate processing failed')
@@ -1242,23 +1244,23 @@ test('status-approved head lets a later sequential push update the same direct P
   };
   extractHashFromPrBody.mockReturnValue('');
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  statusCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [cleanPr] }).mockResolvedValueOnce({ data: [] });
-  statusCtx.octokit.pulls.get.mockResolvedValue({ data: cleanPr });
-  statusCtx.octokit.pulls.listFiles.mockResolvedValue({
+  statusCtx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [cleanPr] }).mockResolvedValueOnce({ data: [] });
+  statusCtx.octokit.rest.pulls.get.mockResolvedValue({ data: cleanPr });
+  statusCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-sequential-cached-approval.yaml', status: 'modified' }],
   });
-  statusCtx.octokit.repos.getContent.mockResolvedValue({
+  statusCtx.octokit.rest.repos.getContent.mockResolvedValue({
     data: { content: b64('type: product\nname: product-sequential-cached-approval\n'), encoding: 'base64' },
   });
-  statusCtx.octokit.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
-  statusCtx.octokit.checks.listForRef.mockResolvedValue({
+  statusCtx.octokit.rest.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
+  statusCtx.octokit.rest.checks.listForRef.mockResolvedValue({
     data: { check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }] },
   });
   runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved for cached sequential head' } as any);
 
   await handlers['status'][0](statusCtx);
 
-  expect(statusCtx.octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(statusCtx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r-sequential-cached-approval', pull_number: 931, event: 'APPROVE' })
   );
 
@@ -1276,18 +1278,18 @@ test('status-approved head lets a later sequential push update the same direct P
   };
   extractHashFromPrBody.mockReturnValue('');
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  pushCtx.octokit.pulls.list.mockResolvedValueOnce({ data: [behindPr] });
-  pushCtx.octokit.pulls.get.mockResolvedValue({ data: behindPr });
-  pushCtx.octokit.pulls.listFiles.mockResolvedValue({
+  pushCtx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [behindPr] });
+  pushCtx.octokit.rest.pulls.get.mockResolvedValue({ data: behindPr });
+  pushCtx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-sequential-cached-approval.yaml', status: 'modified' }],
   });
-  pushCtx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  pushCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
-  pushCtx.octokit.issues.get.mockRejectedValueOnce(new Error('labels should not be needed'));
+  pushCtx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  pushCtx.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
+  pushCtx.octokit.rest.issues.get.mockRejectedValueOnce(new Error('labels should not be needed'));
 
   await handlers['push'][0](pushCtx);
 
-  expect(pushCtx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+  expect(pushCtx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
     expect.objectContaining({
       owner: 'o1',
       repo: 'r-sequential-cached-approval',
@@ -1295,7 +1297,7 @@ test('status-approved head lets a later sequential push update the same direct P
       expected_head_sha: 'sha-sequential-cached-approval',
     })
   );
-  expect(pushCtx.octokit.issues.get).not.toHaveBeenCalled();
+  expect(pushCtx.octokit.rest.issues.get).not.toHaveBeenCalled();
 });
 
 test('check_run.completed failure advances the next approved sequential registry PR in sorted order', async () => {
@@ -1347,28 +1349,28 @@ test('check_run.completed failure advances the next approved sequential registry
   };
   extractHashFromPrBody.mockReturnValue('');
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  checkCtx.octokit.pulls.list
+  checkCtx.octokit.rest.pulls.list
     .mockResolvedValueOnce({ data: [activePr, nextPr] })
     .mockResolvedValueOnce({ data: [activePr, nextPr] });
-  checkCtx.octokit.pulls.listFiles.mockImplementation(async ({ pull_number }: any) => {
+  checkCtx.octokit.rest.pulls.listFiles.mockImplementation(async ({ pull_number }: any) => {
     if (pull_number === 940) {
       return { data: [{ filename: 'resources/product-active-failed.yaml', status: 'modified' }] };
     }
     return { data: [{ filename: 'resources/product-next-direct.yaml', status: 'modified' }] };
   });
-  checkCtx.octokit.pulls.get.mockImplementation(async ({ pull_number }: any) => {
+  checkCtx.octokit.rest.pulls.get.mockImplementation(async ({ pull_number }: any) => {
     if (pull_number === 941) {
       return { data: nextPr };
     }
     return { data: activePr };
   });
-  checkCtx.octokit.issues.get.mockResolvedValue({ data: { number: 941, labels: [{ name: 'Approved' }] } });
-  checkCtx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  checkCtx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  checkCtx.octokit.rest.issues.get.mockResolvedValue({ data: { number: 941, labels: [{ name: 'Approved' }] } });
+  checkCtx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  checkCtx.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
 
   await handlers['check_run.completed'][0](checkCtx);
 
-  expect(checkCtx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+  expect(checkCtx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
     expect.objectContaining({
       owner: 'o1',
       repo: 'r-sequential-resolve-base',

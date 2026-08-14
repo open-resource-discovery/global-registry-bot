@@ -280,7 +280,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
 
   const token = toStringSafe(value).toLowerCase();
   if (token === 'approved' || token === 'rejected' || token === 'unknown') {
-    return { status: token as ApprovalHookStatus };
+    return { status: token };
   }
 
   if (!isPlainObject(value)) return {};
@@ -308,7 +308,7 @@ function normalizeApprovalHookResult(value: unknown): ApprovalHookDecision {
 
   if (status === 'approved' || status === 'rejected' || status === 'unknown') {
     return {
-      status: status as ApprovalHookStatus,
+      status: status,
       ...(path ? { path } : {}),
       ...(reason ? { reason } : {}),
       ...(comment ? { comment } : {}),

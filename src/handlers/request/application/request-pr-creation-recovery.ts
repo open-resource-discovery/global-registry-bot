@@ -26,11 +26,13 @@ type FormDataBase = Record<string, string>;
 
 type ContextWithOctokit = {
   octokit: {
-    repos: {
-      getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data?: unknown }>;
-    };
-    git: {
-      deleteRef: (args: { owner: string; repo: string; ref: string }) => Promise<unknown>;
+    rest: {
+      repos: {
+        getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data?: unknown }>;
+      };
+      git: {
+        deleteRef: (args: { owner: string; repo: string; ref: string }) => Promise<unknown>;
+      };
     };
   };
 };
@@ -111,7 +113,7 @@ async function registryResourceExistsOnDefaultBranch<
 
   for (const ext of ['yaml', 'yml']) {
     try {
-      await context.octokit.repos.getContent({
+      await context.octokit.rest.repos.getContent({
         owner: params.owner,
         repo: params.repo,
         path: `${structRoot}/${resourceName}.${ext}`,
@@ -139,7 +141,7 @@ async function deleteBranchRefIfPresent<ContextType extends ContextWithOctokit>(
   if (!branch) return;
 
   try {
-    await context.octokit.git.deleteRef({
+    await context.octokit.rest.git.deleteRef({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       ref: `heads/${branch}`,
@@ -229,7 +231,7 @@ async function handleNoCommitsCreatePrFailure<
       callbacks
     );
   } catch (retryError: unknown) {
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
+    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName), { cause: retryError });
   }
 }
 
@@ -282,7 +284,7 @@ async function handleAlreadyExistsCreatePrFailure<
       throw retryError;
     }
 
-    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName));
+    throw new Error(formatCreateRequestFailureForUser(retryError, branchName, resourceName), { cause: retryError });
   }
 }
 
@@ -339,6 +341,6 @@ export async function createRequestPrWithRecovery<
       );
     }
 
-    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName));
+    throw new Error(formatCreateRequestFailureForUser(error, staleNoCommitsBranch, resourceName), { cause: error });
   }
 }

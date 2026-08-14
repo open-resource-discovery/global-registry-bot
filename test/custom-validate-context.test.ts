@@ -48,7 +48,7 @@ function mkContext(files: Record<string, string> = {}) {
     throw mk404();
   });
   return {
-    octokit: { repos: { getContent } },
+    octokit: { rest: { repos: { getContent } } },
     log: undefined as any,
     repo: (): { owner: string; repo: string } => ({ owner: 'org', repo: 'repo' }),
     issue: (): { owner: string; repo: string; issue_number: number } => ({
@@ -280,8 +280,10 @@ contacts: "@alice @bob"
     const ctx = {
       ...mkContext(),
       octokit: {
-        repos: {
-          getContent: jest.fn((): Promise<never> => Promise.reject(serverErr)),
+        rest: {
+          repos: {
+            getContent: jest.fn((): Promise<never> => Promise.reject(serverErr)),
+          },
         },
       },
     };

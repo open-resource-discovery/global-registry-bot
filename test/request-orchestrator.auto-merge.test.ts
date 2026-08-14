@@ -69,44 +69,46 @@ function mkApp() {
 
 function mkOctokit() {
   return {
-    issues: {
-      get: jest.fn(async () => ({ data: { number: 1, labels: [] } })),
-      update: jest.fn(async () => ({})),
-      addLabels: jest.fn(async () => ({})),
-      removeLabel: jest.fn(async () => ({})),
-    },
-    pulls: {
-      list: jest.fn(async () => ({ data: [] })),
-      get: jest.fn(async (args: any) => ({
-        data: {
-          number: Number(args?.pull_number ?? 1),
-          state: 'open',
-          title: 'Direct',
-          body: 'manual direct pr',
-          head: { ref: 'feature/direct', sha: 'head-sha' },
-          base: { ref: 'main', sha: 'base-sha' },
-          mergeable: true,
-          mergeable_state: 'clean',
-        },
-      })),
-      listFiles: jest.fn(async () => ({ data: [] })),
-      listCommits: jest.fn(async () => ({ data: [] })),
-      listReviews: jest.fn(async () => ({ data: [] })),
-      createReview: jest.fn(async () => ({})),
-      updateBranch: jest.fn(async () => ({})),
-    },
-    checks: {
-      listForRef: jest.fn(async () => ({
-        data: {
-          check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
-        },
-      })),
-    },
-    git: {
-      deleteRef: jest.fn(async () => ({})),
-    },
-    repos: {
-      getContent: jest.fn(async () => ({})),
+    rest: {
+      issues: {
+        get: jest.fn(async () => ({ data: { number: 1, labels: [] } })),
+        update: jest.fn(async () => ({})),
+        addLabels: jest.fn(async () => ({})),
+        removeLabel: jest.fn(async () => ({})),
+      },
+      pulls: {
+        list: jest.fn(async () => ({ data: [] })),
+        get: jest.fn(async (args: any) => ({
+          data: {
+            number: Number(args?.pull_number ?? 1),
+            state: 'open',
+            title: 'Direct',
+            body: 'manual direct pr',
+            head: { ref: 'feature/direct', sha: 'head-sha' },
+            base: { ref: 'main', sha: 'base-sha' },
+            mergeable: true,
+            mergeable_state: 'clean',
+          },
+        })),
+        listFiles: jest.fn(async () => ({ data: [] })),
+        listCommits: jest.fn(async () => ({ data: [] })),
+        listReviews: jest.fn(async () => ({ data: [] })),
+        createReview: jest.fn(async () => ({})),
+        updateBranch: jest.fn(async () => ({})),
+      },
+      checks: {
+        listForRef: jest.fn(async () => ({
+          data: {
+            check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
+          },
+        })),
+      },
+      git: {
+        deleteRef: jest.fn(async () => ({})),
+      },
+      repos: {
+        getContent: jest.fn(async () => ({})),
+      },
     },
   };
 }
@@ -137,7 +139,7 @@ function mkStatusContext(args: { octokit?: any; sha?: string; config?: any }) {
 }
 
 function wireStandaloneApprovedRegistryPr(octokit: any, pr: any): void {
-  octokit.pulls.get.mockResolvedValue({
+  octokit.rest.pulls.get.mockResolvedValue({
     data: {
       ...pr,
       state: 'open',
@@ -146,17 +148,17 @@ function wireStandaloneApprovedRegistryPr(octokit: any, pr: any): void {
       mergeable_state: 'clean',
     },
   });
-  octokit.pulls.listFiles.mockResolvedValue({
+  octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [
       { filename: 'resources/product-one.yaml', status: 'modified' },
       { filename: '.github/workflows/review.yaml', status: 'modified' },
     ],
   });
-  octokit.pulls.listCommits.mockResolvedValue({
+  octokit.rest.pulls.listCommits.mockResolvedValue({
     data: [{ author: { login: 'direct-author' }, committer: { login: 'direct-last-committer' } }],
   });
-  octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-  octokit.repos.getContent.mockResolvedValue({
+  octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+  octokit.rest.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from(
         'type: product\nname: product-one\ndescription: Example\ncontact: owner@example.com\n',
@@ -268,8 +270,8 @@ test('status: body-linked PR falls back to standalone approval when linked issue
     base: { ref: 'main', sha: 'base-sha' },
   };
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [pr] });
-  (octokit.issues.get as any).mockImplementation(async ({ issue_number }: any) => {
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [pr] });
+  (octokit.rest.issues.get as any).mockImplementation(async ({ issue_number }: any) => {
     if (issue_number === 123) throw httpErr(500, 'issue load failed');
     return { data: { number: issue_number, labels: [] } };
   });
@@ -300,7 +302,7 @@ test('status: missing sha skips auto-merge evaluation immediately', async () => 
 
   await handlers['status'][0](ctx);
 
-  expect(octokit.pulls.list).not.toHaveBeenCalled();
+  expect(octokit.rest.pulls.list).not.toHaveBeenCalled();
 });
 
 test('status: title-linked PR falls back to standalone approval when template load fails', async () => {
@@ -323,8 +325,8 @@ test('status: title-linked PR falls back to standalone approval when template lo
     user: { login: 'requester' },
   };
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [pr] });
-  (octokit.issues.get as any).mockResolvedValue({ data: issue });
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [pr] });
+  (octokit.rest.issues.get as any).mockResolvedValue({ data: issue });
   wireStandaloneApprovedRegistryPr(octokit, pr);
   loadTemplate.mockRejectedValueOnce(new Error('template load failed'));
   runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved from fallback title' } as any);
@@ -333,7 +335,7 @@ test('status: title-linked PR falls back to standalone approval when template lo
 
   await handlers['status'][0](ctx);
 
-  expect(octokit.issues.get as any).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 124 }));
+  expect(octokit.rest.issues.get as any).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 124 }));
   expect(tryMergeIfGreen as any).toHaveBeenCalledWith(
     ctx,
     expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 62, mergeMethod: 'squash' })
@@ -360,8 +362,8 @@ test('status: head-ref linked PR falls back to standalone approval when linked i
     user: { login: 'requester' },
   };
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [pr] });
-  (octokit.issues.get as any).mockResolvedValue({ data: issue });
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [pr] });
+  (octokit.rest.issues.get as any).mockResolvedValue({ data: issue });
   wireStandaloneApprovedRegistryPr(octokit, pr);
   parseForm.mockReturnValueOnce({});
   runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved from fallback head-ref' } as any);
@@ -370,7 +372,7 @@ test('status: head-ref linked PR falls back to standalone approval when linked i
 
   await handlers['status'][0](ctx);
 
-  expect(octokit.issues.get as any).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 125 }));
+  expect(octokit.rest.issues.get as any).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 125 }));
   expect(tryMergeIfGreen as any).toHaveBeenCalledWith(
     ctx,
     expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 63, mergeMethod: 'squash' })
@@ -383,7 +385,7 @@ test('status: auto-merge evaluation dedupes concurrent requests for the same sha
 
   let releaseList: (() => void) | null = null;
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockImplementation(
+  (octokit.rest.pulls.list as any).mockImplementation(
     () =>
       new Promise((resolve) => {
         releaseList = () => resolve({ data: [] });
@@ -403,7 +405,7 @@ test('status: auto-merge evaluation dedupes concurrent requests for the same sha
 
   await Promise.all([first, second]);
 
-  expect(octokit.pulls.list).toHaveBeenCalledTimes(1);
+  expect(octokit.rest.pulls.list).toHaveBeenCalledTimes(1);
   expect(
     ctx2.log.info.mock.calls.some((call: any[]) =>
       String(call[1] ?? call[0] ?? '').includes('auto-merge:evaluation deduped')
@@ -416,7 +418,7 @@ test('status: auto-merge evaluation skips a repeated sha immediately after compl
   requestHandler(app);
 
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [] });
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [] });
 
   const ctx1 = mkStatusContext({ octokit, sha: 'head-sha-recent' });
   const ctx2 = mkStatusContext({ octokit, sha: 'head-sha-recent' });
@@ -424,7 +426,7 @@ test('status: auto-merge evaluation skips a repeated sha immediately after compl
   await handlers['status'][0](ctx1);
   await handlers['status'][0](ctx2);
 
-  expect(octokit.pulls.list).toHaveBeenCalledTimes(1);
+  expect(octokit.rest.pulls.list).toHaveBeenCalledTimes(1);
   expect(
     ctx2.log.info.mock.calls.some((call: any[]) =>
       String(call[1] ?? call[0] ?? '').includes('auto-merge:evaluation skipped: recently completed')
@@ -444,8 +446,8 @@ test('status: unexpected auto-merge candidate processing failure is logged and s
     base: { ref: 'main', sha: 'base-sha' },
   };
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [pr] });
-  (octokit.issues.get as any).mockImplementation(async ({ issue_number }: any) => {
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [pr] });
+  (octokit.rest.issues.get as any).mockImplementation(async ({ issue_number }: any) => {
     if (issue_number === 127) throw httpErr(500, 'issue load failed');
     return { data: { number: issue_number, labels: [] } };
   });
@@ -480,13 +482,13 @@ test('status: processing failure continues without sequential recovery when refr
     base: { ref: 'main', sha: 'base-sha' },
   };
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [pr] });
-  (octokit.issues.get as any).mockImplementation(async ({ issue_number }: any) => {
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [pr] });
+  (octokit.rest.issues.get as any).mockImplementation(async ({ issue_number }: any) => {
     if (issue_number === 128) throw httpErr(500, 'issue load failed');
     return { data: { number: issue_number, labels: [] } };
   });
   wireStandaloneApprovedRegistryPr(octokit, pr);
-  (octokit.pulls.listFiles as any)
+  (octokit.rest.pulls.listFiles as any)
     .mockResolvedValueOnce({
       data: [
         { filename: 'resources/product-one.yaml', status: 'modified' },
@@ -538,7 +540,7 @@ test('status: snapshot-managed PR failure skips sequential recovery handling', a
     base: { ref: 'main', sha: 'base-sha' },
   };
   const octokit = mkOctokit();
-  (octokit.pulls.list as any).mockResolvedValue({ data: [pr] });
+  (octokit.rest.pulls.list as any).mockResolvedValue({ data: [pr] });
   wireStandaloneApprovedRegistryPr(octokit, pr);
   extractHashFromPrBody.mockReturnValueOnce('h1');
   runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved before snapshot failure' } as any);
@@ -548,7 +550,7 @@ test('status: snapshot-managed PR failure skips sequential recovery handling', a
 
   await handlers['status'][0](ctx);
 
-  expect(octokit.pulls.list).toHaveBeenCalledTimes(1);
+  expect(octokit.rest.pulls.list).toHaveBeenCalledTimes(1);
   expect(
     ctx.log.warn.mock.calls.some((call: any[]) =>
       String(call[1] ?? call[0] ?? '').includes('auto-merge candidate processing failed')

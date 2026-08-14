@@ -58,7 +58,9 @@ type OctokitIssuesApi = {
 };
 
 type OctokitLike = {
-  issues: OctokitIssuesApi;
+  rest: {
+    issues: OctokitIssuesApi;
+  };
   graphql: (query: string, variables: { subjectId: string; classifier: ReportedContentClassifier }) => Promise<unknown>;
 };
 
@@ -189,9 +191,9 @@ export async function collapseBotCommentsByPrefix(
 
   clearPostOnceCacheForIssue(owner, repo, issueNumber);
 
-  let comments: IssueCommentLike[] = [];
+  let comments: IssueCommentLike[];
   try {
-    const res = await context.octokit.issues.listComments({
+    const res = await context.octokit.rest.issues.listComments({
       owner,
       repo,
       issue_number: issueNumber,
@@ -271,7 +273,7 @@ export async function postOnce(
     comments = cached;
   } else {
     try {
-      const res = await context.octokit.issues.listComments({
+      const res = await context.octokit.rest.issues.listComments({
         owner,
         repo,
         issue_number: issueNumber,
@@ -298,7 +300,7 @@ export async function postOnce(
 
   let created: IssueCommentLike;
   try {
-    const res = await context.octokit.issues.createComment({
+    const res = await context.octokit.rest.issues.createComment({
       owner,
       repo,
       issue_number: issueNumber,

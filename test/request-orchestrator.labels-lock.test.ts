@@ -26,31 +26,33 @@ type LoggerLike = {
 };
 
 type OctokitLike = {
-  issues: {
-    get: jest.MockedFunction<(p: IssueParams) => Promise<{ data: IssueLike }>>;
-    addLabels: jest.MockedFunction<(p: IssueParams & { labels: string[] }) => Promise<void>>;
-    removeLabel: jest.MockedFunction<(p: IssueParams & { name: string }) => Promise<void>>;
-    update: jest.MockedFunction<(p: IssueParams & { title: string }) => Promise<void>>;
-  };
-  pulls: {
-    list: jest.MockedFunction<
-      (p: {
-        owner: string;
-        repo: string;
-        state: string;
-        per_page: number;
-        page: number;
-      }) => Promise<{ data: unknown[] }>
-    >;
-    update: jest.MockedFunction<
-      (p: { owner: string; repo: string; pull_number: number; state: string }) => Promise<void>
-    >;
-  };
-  git: {
-    deleteRef: jest.MockedFunction<(p: { owner: string; repo: string; ref: string }) => Promise<void>>;
-  };
-  repos: {
-    getContent: jest.MockedFunction<(p: { owner: string; repo: string; path: string }) => Promise<void>>;
+  rest: {
+    issues: {
+      get: jest.MockedFunction<(p: IssueParams) => Promise<{ data: IssueLike }>>;
+      addLabels: jest.MockedFunction<(p: IssueParams & { labels: string[] }) => Promise<void>>;
+      removeLabel: jest.MockedFunction<(p: IssueParams & { name: string }) => Promise<void>>;
+      update: jest.MockedFunction<(p: IssueParams & { title: string }) => Promise<void>>;
+    };
+    pulls: {
+      list: jest.MockedFunction<
+        (p: {
+          owner: string;
+          repo: string;
+          state: string;
+          per_page: number;
+          page: number;
+        }) => Promise<{ data: unknown[] }>
+      >;
+      update: jest.MockedFunction<
+        (p: { owner: string; repo: string; pull_number: number; state: string }) => Promise<void>
+      >;
+    };
+    git: {
+      deleteRef: jest.MockedFunction<(p: { owner: string; repo: string; ref: string }) => Promise<void>>;
+    };
+    repos: {
+      getContent: jest.MockedFunction<(p: { owner: string; repo: string; path: string }) => Promise<void>>;
+    };
   };
 };
 
@@ -282,21 +284,23 @@ function mkLogger(): LoggerLike {
 
 function mkOctokit(): OctokitLike {
   return {
-    issues: {
-      get: jest.fn((_p: IssueParams) => Promise.resolve({ data: { number: 1, labels: [] } })),
-      addLabels: jest.fn((_p: IssueParams & { labels: string[] }) => Promise.resolve()),
-      removeLabel: jest.fn((_p: IssueParams & { name: string }) => Promise.resolve()),
-      update: jest.fn((_p: IssueParams & { title: string }) => Promise.resolve()),
-    },
-    pulls: {
-      list: jest.fn((_p) => Promise.resolve({ data: [] })),
-      update: jest.fn((_p) => Promise.resolve()),
-    },
-    git: {
-      deleteRef: jest.fn((_p) => Promise.resolve()),
-    },
-    repos: {
-      getContent: jest.fn((_p) => Promise.resolve()),
+    rest: {
+      issues: {
+        get: jest.fn((_p: IssueParams) => Promise.resolve({ data: { number: 1, labels: [] } })),
+        addLabels: jest.fn((_p: IssueParams & { labels: string[] }) => Promise.resolve()),
+        removeLabel: jest.fn((_p: IssueParams & { name: string }) => Promise.resolve()),
+        update: jest.fn((_p: IssueParams & { title: string }) => Promise.resolve()),
+      },
+      pulls: {
+        list: jest.fn((_p) => Promise.resolve({ data: [] })),
+        update: jest.fn((_p) => Promise.resolve()),
+      },
+      git: {
+        deleteRef: jest.fn((_p) => Promise.resolve()),
+      },
+      repos: {
+        getContent: jest.fn((_p) => Promise.resolve()),
+      },
     },
   };
 }
@@ -363,7 +367,7 @@ function mkCtx(args: {
 
 beforeAll(async () => {
   const mod = await import('../src/handlers/request/index.js');
-  requestHandler = mod.default as unknown as (app: Probot) => void;
+  requestHandler = mod.default;
 });
 
 beforeEach(() => {
@@ -415,8 +419,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     expect(loadTemplate).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
-    expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
   });
 
   test('issues.labeled: reverts manual add of locked workflow label from config', async () => {
@@ -457,8 +461,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledTimes(1);
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledTimes(1);
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 2,
@@ -509,8 +513,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.unlabeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.addLabels).toHaveBeenCalledTimes(1);
-    expect(octokit.issues.addLabels).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledTimes(1);
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 3,
@@ -523,7 +527,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     expect(String(body)).toContain('Workflow labels from config');
     expect(opts?.minimizeTag).toBe('nsreq:workflow-label-lock');
 
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
   });
 
   test('issues.labeled: manual "Approved" label uses label-guard (not workflow-label-lock)', async () => {
@@ -561,7 +565,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 4,
@@ -613,8 +617,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.unlabeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(setStateLabel).not.toHaveBeenCalled();
   });
@@ -654,8 +658,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.unlabeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(setStateLabel).not.toHaveBeenCalled();
   });
@@ -699,8 +703,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(setStateLabel).not.toHaveBeenCalled();
   });
@@ -742,8 +746,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.unlabeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(setStateLabel).not.toHaveBeenCalled();
   });
@@ -787,8 +791,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(setStateLabel).not.toHaveBeenCalled();
   });
@@ -808,7 +812,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 44,
         title: 'T',
@@ -844,7 +848,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 44,
@@ -892,7 +896,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 5,
@@ -916,7 +920,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 6,
         title: 'T',
@@ -952,14 +956,14 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.unlabeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 6,
       name: 'route-2',
     });
 
-    expect(octokit.issues.addLabels).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 6,
@@ -983,7 +987,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 7,
         title: 'T',
@@ -1019,7 +1023,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 7,
@@ -1046,8 +1050,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockRejectedValueOnce(new Error('boom'));
-    octokit.issues.get
+    octokit.rest.issues.get.mockRejectedValueOnce(new Error('boom'));
+    octokit.rest.issues.get
       .mockResolvedValueOnce({
         data: {
           number: 9,
@@ -1085,7 +1089,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 9,
@@ -1104,7 +1108,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 9,
         title: 'T',
@@ -1139,7 +1143,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 9,
@@ -1179,9 +1183,9 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.get).not.toHaveBeenCalled();
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.get).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -1203,7 +1207,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     const octokit = mkOctokit();
 
-    octokit.issues.get.mockRejectedValue(new Error('label refresh failed'));
+    octokit.rest.issues.get.mockRejectedValue(new Error('label refresh failed'));
 
     const ctx = mkCtx({
       eventName: 'issues.labeled',
@@ -1224,14 +1228,14 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.addLabels).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 11,
       labels: ['Rejected'],
     });
 
-    expect(octokit.issues.removeLabel).toHaveBeenCalledWith({
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       issue_number: 11,
@@ -1251,7 +1255,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     const octokit = mkOctokit();
 
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 12,
         title: 'T',
@@ -1290,8 +1294,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -1305,7 +1309,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 13,
         title: 'T',
@@ -1341,8 +1345,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -1356,7 +1360,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
     };
 
     const octokit = mkOctokit();
-    octokit.issues.get.mockResolvedValueOnce({
+    octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 14,
         title: 'T',
@@ -1393,8 +1397,8 @@ describe('request handler label guards (workflow-label-lock + routing label lock
 
     await handlers['issues.labeled']?.[0]?.(ctx);
 
-    expect(octokit.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 });

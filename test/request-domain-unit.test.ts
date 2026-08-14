@@ -95,7 +95,7 @@ describe('stripQuoteAndCode', () => {
   });
 
   test('passes an object returns empty string', () => {
-    expect(stripQuoteAndCode({} as unknown as string)).toBe('');
+    expect(stripQuoteAndCode({})).toBe('');
   });
 });
 
@@ -194,7 +194,7 @@ describe('stripRoutingLockFromBody', () => {
 
   test('handles number body - covers number branch of toStringTrim', () => {
     // toStringTrim isn't called directly, but String() coercion covers the path
-    expect(stripRoutingLockFromBody(42 as unknown as string)).toBe('42');
+    expect(stripRoutingLockFromBody(42)).toBe('42');
   });
 });
 
@@ -261,11 +261,11 @@ describe('readIssueBodyForProcessing', () => {
 
   test('handles number value — covers number branch of internal toStringTrim', () => {
     // Covers lines 7-8 (number/boolean branch in local toStringTrim)
-    expect(readIssueBodyForProcessing(42 as unknown as string)).toBe('42');
+    expect(readIssueBodyForProcessing(42)).toBe('42');
   });
 
   test('handles boolean value — strip functions use String() coercion', () => {
-    expect(readIssueBodyForProcessing(true as unknown as string)).toBe('true');
+    expect(readIssueBodyForProcessing(true)).toBe('true');
   });
 });
 
@@ -428,12 +428,12 @@ describe('resolveRegistryDocResourceName', () => {
 
   test('numeric identifier hits number branch of local toStringTrim — lines 10-11', () => {
     // toStringTrim(42) hits line 10, returns '42'
-    expect(resolveRegistryDocResourceName({ identifier: 42 as unknown as string })).toBe('42');
+    expect(resolveRegistryDocResourceName({ identifier: 42 })).toBe('42');
   });
 
   test('object identifier hits fallthrough branch of local toStringTrim — line 11', () => {
     // toStringTrim({}) hits line 11, returns '' → loop continues
-    expect(resolveRegistryDocResourceName({ identifier: {} as unknown as string })).toBe('');
+    expect(resolveRegistryDocResourceName({ identifier: {} })).toBe('');
   });
 });
 
@@ -700,7 +700,7 @@ describe('toStringTrim', () => {
   test('returns empty for undefined', () => expect(toStringTrim(undefined)).toBe(''));
   test('converts number to string — covers line 4', () => expect(toStringTrim(42)).toBe('42'));
   test('converts boolean to string — covers line 4', () => expect(toStringTrim(true)).toBe('true'));
-  test('returns empty for object — covers line 5', () => expect(toStringTrim({} as unknown as string)).toBe(''));
+  test('returns empty for object — covers line 5', () => expect(toStringTrim({})).toBe(''));
 });
 
 describe('normalizeLogin', () => {
@@ -735,8 +735,7 @@ import {
 describe('normalizeReviewState', () => {
   test('uppercases state', () => expect(normalizeReviewState('approved')).toBe('APPROVED'));
   test('handles null — covers number branch via toStringTrim', () => expect(normalizeReviewState(null)).toBe(''));
-  test('handles number — covers toStringTrim number branch', () =>
-    expect(normalizeReviewState(1 as unknown as string)).toBe('1'));
+  test('handles number — covers toStringTrim number branch', () => expect(normalizeReviewState(1)).toBe('1'));
 });
 
 describe('isActionableReviewState', () => {

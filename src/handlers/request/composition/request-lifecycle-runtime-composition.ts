@@ -87,18 +87,20 @@ type ValidateRequestIssueResultBase<TemplateType> = {
 };
 
 type OctokitLikeBase<IssueType> = {
-  issues: {
-    get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data?: IssueType }>;
-    removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
-  };
-  pulls: {
-    update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
-  };
-  repos: {
-    getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data?: unknown }>;
-  };
-  git: {
-    deleteRef: (args: { owner: string; repo: string; ref: string }) => Promise<unknown>;
+  rest: {
+    issues: {
+      get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data?: IssueType }>;
+      removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+    };
+    pulls: {
+      update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+    };
+    repos: {
+      getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data?: unknown }>;
+    };
+    git: {
+      deleteRef: (args: { owner: string; repo: string; ref: string }) => Promise<unknown>;
+    };
   };
 };
 
@@ -510,8 +512,7 @@ export function createRequestLifecycleRuntime<
             options: ReturnType<typeof dependencies.buildReviewHandoverOptions>
           ) => Promise<void>
         )(context, params, issue, nsType, namespace, labels, options),
-      buildReviewHandoverOptions: (): Record<string, unknown> =>
-        dependencies.buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+      buildReviewHandoverOptions: (): Record<string, unknown> => dependencies.buildReviewHandoverOptions(),
       appLog: app.log || console,
     });
   }
@@ -605,8 +606,7 @@ export function createRequestLifecycleRuntime<
             options: ReturnType<typeof dependencies.buildReviewHandoverOptions>
           ) => Promise<void>
         )(context, params, issue, nsType, namespace, labels, options),
-      buildReviewHandoverOptions: (): Record<string, unknown> =>
-        dependencies.buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+      buildReviewHandoverOptions: (): Record<string, unknown> => dependencies.buildReviewHandoverOptions(),
       appLog: app.log || console,
     });
   }

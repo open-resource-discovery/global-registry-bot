@@ -20,29 +20,37 @@ type RepoContentResponse = RepoContentFile | RepoContentFile[];
 type IssueListItem = { title: string; number: number };
 
 export type OctokitLike = {
-  repos: {
-    getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data: RepoContentResponse }>;
-  };
-  issues: {
-    get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data: unknown }>;
-    listForRepo: (args: {
-      owner: string;
-      repo: string;
-      state: 'open' | 'closed' | 'all';
-      per_page?: number;
-    }) => Promise<{ data: IssueListItem[] }>;
-    update: (args: {
-      owner: string;
-      repo: string;
-      issue_number: number;
-      body?: string;
-      state?: 'open' | 'closed';
-      title?: string;
-    }) => Promise<unknown>;
-    create: (args: { owner: string; repo: string; title: string; body: string; labels?: string[] }) => Promise<unknown>;
-    createComment: (args: { owner: string; repo: string; issue_number: number; body: string }) => Promise<unknown>;
-    addLabels: (args: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
-    removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+  rest: {
+    repos: {
+      getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data: RepoContentResponse }>;
+    };
+    issues: {
+      get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data: unknown }>;
+      listForRepo: (args: {
+        owner: string;
+        repo: string;
+        state: 'open' | 'closed' | 'all';
+        per_page?: number;
+      }) => Promise<{ data: IssueListItem[] }>;
+      update: (args: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        body?: string;
+        state?: 'open' | 'closed';
+        title?: string;
+      }) => Promise<unknown>;
+      create: (args: {
+        owner: string;
+        repo: string;
+        title: string;
+        body: string;
+        labels?: string[];
+      }) => Promise<unknown>;
+      createComment: (args: { owner: string; repo: string; issue_number: number; body: string }) => Promise<unknown>;
+      addLabels: (args: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
+      removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+    };
   };
 };
 
@@ -213,7 +221,7 @@ async function readRepoYamlObject(args: {
 }): Promise<Record<string, unknown> | null> {
   for (const ext of ['yaml', 'yml']) {
     try {
-      const res = await args.context.octokit.repos.getContent({
+      const res = await args.context.octokit.rest.repos.getContent({
         owner: args.owner,
         repo: args.repo,
         path: `${args.basePath}.${ext}`,

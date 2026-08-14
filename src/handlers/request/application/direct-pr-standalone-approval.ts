@@ -24,8 +24,10 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 type PullsUpdateContext = {
   octokit: {
-    pulls: {
-      update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+    rest: {
+      pulls: {
+        update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+      };
     };
   };
 };
@@ -139,7 +141,7 @@ export async function maybeHandleStandaloneDirectPrApproval<
     );
 
     try {
-      await context.octokit.pulls.update({
+      await context.octokit.rest.pulls.update({
         owner: repoInfo.owner,
         repo: repoInfo.repo,
         pull_number: pr.number,

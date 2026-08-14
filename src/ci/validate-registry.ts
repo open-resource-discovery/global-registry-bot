@@ -795,7 +795,7 @@ function createLocalOctokit(): OctokitLike {
     },
   };
 
-  return { repos, issues };
+  return { rest: { repos, issues } };
 }
 
 type HooksDescriptor = {
@@ -897,7 +897,7 @@ async function main(): Promise<void> {
     }),
   };
 
-  let targets: FileTarget[] = [];
+  let targets: FileTarget[];
 
   if (mode === 'pr') {
     const baseSha = requireEnv('PR_BASE_SHA');

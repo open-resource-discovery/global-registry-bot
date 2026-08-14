@@ -1,4 +1,4 @@
-import jsYamlModule from 'js-yaml';
+import * as jsYamlModule from 'js-yaml';
 import { calcSnapshotHash as calcSnapshotHashRaw, SNAPSHOT_HASH_MARKER_KEY } from './snapshot.js';
 import { tryEnableAutoMerge as tryEnableAutoMergeRaw } from '../../../lib/auto-merge.js';
 import { loadTemplate as loadTemplateRaw } from '../template.js';
@@ -72,47 +72,49 @@ type LoggerLike = {
 };
 
 type OctokitLike = {
-  repos: {
-    get: (args: { owner: string; repo: string }) => Promise<{ data: RepoGetResponse }>;
-    getBranch: (args: { owner: string; repo: string; branch: string }) => Promise<{ data: BranchGetResponse }>;
-    getContent: (args: {
-      owner: string;
-      repo: string;
-      path: string;
-      ref?: string;
-    }) => Promise<{ data: RepoContentResponse }>;
-    createOrUpdateFileContents: (args: {
-      owner: string;
-      repo: string;
-      path: string;
-      message: string;
-      content: string; // base64
-      branch: string;
-      sha?: string;
-    }) => Promise<unknown>;
-  };
-  git: {
-    createRef: (args: { owner: string; repo: string; ref: string; sha: string }) => Promise<unknown>;
-  };
-  pulls: {
-    list: (args: {
-      owner: string;
-      repo: string;
-      state?: 'open' | 'closed' | 'all';
-      head?: string;
-    }) => Promise<{ data: PullRequestLike[] }>;
-    create: (args: {
-      owner: string;
-      repo: string;
-      title: string;
-      head: string;
-      base: string;
-      body?: string;
-      maintainer_can_modify?: boolean;
-    }) => Promise<{ data: PullRequestLike }>;
-  };
-  issues: {
-    addLabels: (args: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
+  rest: {
+    repos: {
+      get: (args: { owner: string; repo: string }) => Promise<{ data: RepoGetResponse }>;
+      getBranch: (args: { owner: string; repo: string; branch: string }) => Promise<{ data: BranchGetResponse }>;
+      getContent: (args: {
+        owner: string;
+        repo: string;
+        path: string;
+        ref?: string;
+      }) => Promise<{ data: RepoContentResponse }>;
+      createOrUpdateFileContents: (args: {
+        owner: string;
+        repo: string;
+        path: string;
+        message: string;
+        content: string; // base64
+        branch: string;
+        sha?: string;
+      }) => Promise<unknown>;
+    };
+    git: {
+      createRef: (args: { owner: string; repo: string; ref: string; sha: string }) => Promise<unknown>;
+    };
+    pulls: {
+      list: (args: {
+        owner: string;
+        repo: string;
+        state?: 'open' | 'closed' | 'all';
+        head?: string;
+      }) => Promise<{ data: PullRequestLike[] }>;
+      create: (args: {
+        owner: string;
+        repo: string;
+        title: string;
+        head: string;
+        base: string;
+        body?: string;
+        maintainer_can_modify?: boolean;
+      }) => Promise<{ data: PullRequestLike }>;
+    };
+    issues: {
+      addLabels: (args: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
+    };
   };
 };
 
@@ -218,7 +220,9 @@ type JsYamlApi = {
   JSON_SCHEMA?: unknown;
 };
 
-const jsYaml = jsYamlModule as unknown as JsYamlApi;
+// js-yaml v5 is ESM-only with no default export; Jest's CJS-style module mocks
+// in test/create-pr.test.ts still supply one, so accept either shape.
+const jsYaml = ((jsYamlModule as { default?: unknown }).default ?? jsYamlModule) as JsYamlApi;
 
 function sanitizeForYaml(value: unknown): unknown {
   if (value === undefined) return undefined;
@@ -226,7 +230,7 @@ function sanitizeForYaml(value: unknown): unknown {
 
   const t = typeof value;
   if (t === 'string' || t === 'boolean') return value;
-  if (t === 'number') return Number.isFinite(value as number) ? value : String(value);
+  if (t === 'number') return Number.isFinite(value) ? value : String(value);
   if (t === 'bigint') return (value as bigint).toString();
 
   if (value instanceof Date) return value.toISOString();
@@ -423,7 +427,7 @@ async function loadSchemaForTemplate(
     if (REPO_SCHEMA_CACHE.has(cacheKey)) return REPO_SCHEMA_CACHE.get(cacheKey) ?? null;
 
     try {
-      const res = await context.octokit.repos.getContent({
+      const res = await context.octokit.rest.repos.getContent({
         owner: repoRef.owner,
         repo: repoRef.repo,
         path: p,
@@ -586,7 +590,7 @@ function mapPartnerNamespaceRequestTypeToConfigKey(v: unknown): string {
 }
 
 function getRequestEntryFromConfig(context: ContextLike, requestType: string): Record<string, unknown> | null {
-  const cfg = context.resourceBotConfig as unknown as Record<string, unknown> | undefined;
+  const cfg = context.resourceBotConfig;
   const reqs = cfg && isPlainObject(cfg['requests']) ? cfg['requests'] : null;
   if (!reqs) return null;
 
@@ -638,11 +642,11 @@ export async function createRequestPr(
     throw new Error('Configuration error: Missing form template (could not resolve template via labels).');
   }
 
-  const { data: repoData } = await context.octokit.repos.get({ owner, repo });
+  const { data: repoData } = await context.octokit.rest.repos.get({ owner, repo });
   const defaultBranch = repoData.default_branch;
   const baseBranch = prOpts.baseBranch || defaultBranch;
 
-  const { data: baseBranchData } = await context.octokit.repos.getBranch({
+  const { data: baseBranchData } = await context.octokit.rest.repos.getBranch({
     owner,
     repo,
     branch: baseBranch,
@@ -739,14 +743,14 @@ export async function createRequestPr(
 
   try {
     // Git refs are created under refs/heads/<branch>
-    await context.octokit.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+    await context.octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
   } catch (e: unknown) {
     if (getHttpStatus(e) !== 422) throw e;
   }
 
   const existsAt = async (p: string, refName: string): Promise<boolean> => {
     try {
-      await context.octokit.repos.getContent({ owner, repo, path: p, ref: refName });
+      await context.octokit.rest.repos.getContent({ owner, repo, path: p, ref: refName });
       return true;
     } catch (e: unknown) {
       if (getHttpStatus(e) === 404) return false;
@@ -776,7 +780,7 @@ export async function createRequestPr(
     };
 
     if (sha) params.sha = sha;
-    await context.octokit.repos.createOrUpdateFileContents(params);
+    await context.octokit.rest.repos.createOrUpdateFileContents(params);
   };
 
   const buildFlatPaths = (n: string): { file: string } => {
@@ -864,7 +868,7 @@ export async function createRequestPr(
 
     let pr: PullRequestLike | undefined;
     try {
-      const { data: prs } = await context.octokit.pulls.list({
+      const { data: prs } = await context.octokit.rest.pulls.list({
         owner,
         repo,
         state: 'open',
@@ -893,7 +897,7 @@ export async function createRequestPr(
   ${issueMarker}
   ${hashComment}`;
 
-      const res = await context.octokit.pulls.create({
+      const res = await context.octokit.rest.pulls.create({
         owner,
         repo,
         title: prTitle,
@@ -914,7 +918,7 @@ export async function createRequestPr(
 
     if (!enabled && prOpts.autoMergeLabel) {
       try {
-        await context.octokit.issues.addLabels({
+        await context.octokit.rest.issues.addLabels({
           owner,
           repo,
           issue_number: pr.number,
@@ -1066,7 +1070,7 @@ export async function createRequestPr(
 
   let pr: PullRequestLike | undefined;
   try {
-    const { data: prs } = await context.octokit.pulls.list({
+    const { data: prs } = await context.octokit.rest.pulls.list({
       owner,
       repo,
       state: 'open',
@@ -1088,7 +1092,7 @@ export async function createRequestPr(
       candidate.type || type
     )}\n${prOpts.bodyFooter}\n\n${hashComment}`;
 
-    const res = await context.octokit.pulls.create({
+    const res = await context.octokit.rest.pulls.create({
       owner,
       repo,
       head: branch,
@@ -1108,7 +1112,7 @@ export async function createRequestPr(
 
   if (!enabled && prOpts.autoMergeLabel) {
     try {
-      await context.octokit.issues.addLabels({
+      await context.octokit.rest.issues.addLabels({
         owner,
         repo,
         issue_number: pr.number,

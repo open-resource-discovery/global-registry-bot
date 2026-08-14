@@ -36,7 +36,7 @@ function asStringArray(v: unknown): string[] {
 
 function getPushPayload(payload: unknown): PushPayload {
   if (!isPlainObject(payload)) return {};
-  return payload as PushPayload;
+  return payload;
 }
 
 const configHandler = (app: Probot): void => {

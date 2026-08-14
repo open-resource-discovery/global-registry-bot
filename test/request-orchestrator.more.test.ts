@@ -175,48 +175,50 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
     repo: () => ({ owner, repo }),
     issue: () => ({ owner, repo, issue_number: issue.number }),
     octokit: {
-      issues: {
-        get: jest.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
-        update: jest.fn<IssuesUpdateFn>(() => Promise.resolve({})),
-        addLabels: jest.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
-        removeLabel: jest.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
-        addAssignees: jest.fn<IssuesAddAssigneesFn>(() => Promise.resolve({})),
-      },
-      pulls: {
-        get: jest.fn<PullsGetFn>((args: any) =>
-          Promise.resolve({
+      rest: {
+        issues: {
+          get: jest.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
+          update: jest.fn<IssuesUpdateFn>(() => Promise.resolve({})),
+          addLabels: jest.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
+          removeLabel: jest.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
+          addAssignees: jest.fn<IssuesAddAssigneesFn>(() => Promise.resolve({})),
+        },
+        pulls: {
+          get: jest.fn<PullsGetFn>((args: any) =>
+            Promise.resolve({
+              data: {
+                number: Number(args?.pull_number ?? 5),
+                node_id: 'PR_NODE',
+                state: 'open',
+                draft: false,
+                body: 'source: #1',
+                head: { ref: 'x', sha: 'sha1' },
+              },
+            })
+          ),
+          list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
+          listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
+          listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
+          listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
+          createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
+          update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
+          updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
+        },
+        git: {
+          deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
+        },
+        repos: {
+          getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
+        },
+        checks: {
+          listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
+          listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
+          listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
             data: {
-              number: Number(args?.pull_number ?? 5),
-              node_id: 'PR_NODE',
-              state: 'open',
-              draft: false,
-              body: 'source: #1',
-              head: { ref: 'x', sha: 'sha1' },
+              check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
             },
-          })
-        ),
-        list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
-        listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
-        listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
-        listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
-        createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
-        update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
-        updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
-      },
-      git: {
-        deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
-      },
-      repos: {
-        getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
-      },
-      checks: {
-        listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
-        listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
-        listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
-          data: {
-            check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
-          },
-        }),
+          }),
+        },
       },
       request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
     },
@@ -577,11 +579,11 @@ test('issue_comment: approval ignored when review label missing after auto-add a
     config: cfg,
   });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({ data: { ...issue, labels: [] } });
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({ data: { ...issue, labels: [] } });
 
   await handler(ctx);
 
-  expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
   expect(postOnce).toHaveBeenCalled();
   expect(String(postOnce.mock.calls[0][2])).toContain('Approval ignored: request is not in review state.');
 });
@@ -756,7 +758,7 @@ test('issue_comment: approval with existing PR only adds hook approvers missing 
     withCachedConfig: true,
     config: cfg,
   });
-  ctx.octokit.issues.get.mockImplementation(async ({ issue_number }: any) => {
+  ctx.octokit.rest.issues.get.mockImplementation(async ({ issue_number }: any) => {
     if (issue_number === 9) {
       return {
         data: {
@@ -781,7 +783,7 @@ test('issue_comment: approval with existing PR only adds hook approvers missing 
   await handler(ctx);
 
   expect(createRequestPr).not.toHaveBeenCalled();
-  expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 9, assignees: ['ReviewerB'] })
   );
   expect(String(postOnce.mock.calls[0][2])).toContain('PR already open: #9');
@@ -907,7 +909,7 @@ test('issue_comment: author update (subcontext) missing parent -> posts + author
     withCachedConfig: true,
   });
 
-  ctx.octokit.repos.getContent.mockImplementation(async (args: any) => {
+  ctx.octokit.rest.repos.getContent.mockImplementation(async (args: any) => {
     const p = String(args?.path || '');
     if (p === 'data/vendors/a.yaml') return { data: {} };
     if (p.includes('a.b.yaml') || p.includes('a.b.yml')) throw httpErr(404);
@@ -988,12 +990,12 @@ test('issue_comment: author update closes outdated PRs and hands over', async ()
     config: cfg,
   });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({ data: issue });
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({ data: issue });
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.update).toHaveBeenCalled();
-  expect(ctx.octokit.git.deleteRef).toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.update).toHaveBeenCalled();
+  expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalled();
 
   expect(postOnce).toHaveBeenCalled();
   const bodies = postOnce.mock.calls.map((c: any[]) => String(c[2]));
@@ -1018,13 +1020,13 @@ test('check_suite.success merges when hashes match', async () => {
 
   ctx.payload.check_suite.pull_requests = [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }];
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }],
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: {
       number: 1,
       title: 't',
@@ -1057,13 +1059,13 @@ test('check_suite.success closes outdated when hashes mismatch', async () => {
     withCachedConfig: true,
   });
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [{ number: 5, body: 'issue #1', head: { ref: 'x', sha: 'sha1' } }],
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: {
       number: 1,
       title: 't',
@@ -1079,7 +1081,7 @@ test('check_suite.success closes outdated when hashes mismatch', async () => {
   findOpenIssuePrs.mockResolvedValueOnce([{ number: 9, body: 'old', head: { ref: 'ref-old', sha: 'x' } }]);
 
   await handler(ctx);
-  expect(ctx.octokit.pulls.update).toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.update).toHaveBeenCalled();
   expect(postOnce).toHaveBeenCalled();
 });
 
@@ -1098,9 +1100,9 @@ test('check_suite.success treats matching default-branch head as default branch 
     withCachedConfig: true,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.payload.action = 'completed';
   ctx.payload.repository.default_branch = 'main';
@@ -1108,18 +1110,18 @@ test('check_suite.success treats matching default-branch head as default branch 
   ctx.payload.check_suite.head_branch = 'feature/not-main';
   ctx.payload.check_suite.head_sha = 'sha-default-suite';
   ctx.payload.check_suite.pull_requests = [{ number: 77 }];
-  ctx.octokit.repos.getBranch = jest.fn(async () => ({
+  ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({
     data: { commit: { sha: 'sha-default-suite' } },
   }));
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({ data: [] })
     .mockResolvedValueOnce({ data: [] })
     .mockResolvedValueOnce({ data: [] });
 
   await handler(ctx);
 
-  expect(ctx.octokit.repos.getBranch).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.repos.getBranch).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', branch: 'main' })
   );
   expect(collapseBotCommentsByPrefix).toHaveBeenCalledWith(
@@ -1127,7 +1129,7 @@ test('check_suite.success treats matching default-branch head as default branch 
     { owner: 'o1', repo: 'r1', issue_number: 77 },
     expect.objectContaining({ tagPrefix: 'nsreq:ci-validation' })
   );
-  expect(ctx.octokit.pulls.list).toHaveBeenCalledTimes(3);
+  expect(ctx.octokit.rest.pulls.list).toHaveBeenCalledTimes(3);
 
   setTimeoutSpy.mockRestore();
 });
@@ -1153,16 +1155,16 @@ test('check_suite.success ignores default-branch fallback when branch head looku
   ctx.payload.check_suite.head_branch = 'feature/not-main';
   ctx.payload.check_suite.head_sha = 'sha-default-suite-fail';
   ctx.payload.check_suite.pull_requests = [];
-  ctx.octokit.repos.getBranch = jest.fn(async () => {
+  ctx.octokit.rest.repos.getBranch = jest.fn(async () => {
     throw httpErr(503);
   });
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] });
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] });
 
   await handler(ctx);
 
-  expect(ctx.octokit.repos.getBranch).toHaveBeenCalledTimes(1);
-  expect(ctx.octokit.pulls.list).toHaveBeenCalledTimes(2);
+  expect(ctx.octokit.rest.repos.getBranch).toHaveBeenCalledTimes(1);
+  expect(ctx.octokit.rest.pulls.list).toHaveBeenCalledTimes(2);
 });
 
 test('check_suite.completed failure posts PR comment when registry-validate annotations exist', async () => {
@@ -1183,11 +1185,11 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
   ctx.payload.check_suite.id = 500;
   ctx.payload.check_suite.pull_requests = [{ number: 42 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 9001, html_url: 'https://example/check/9001' }] },
   });
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
     data: [
       {
         path: 'data/namespaces/sap.css.yaml',
@@ -1199,7 +1201,7 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
     ],
   });
 
-  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+  ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
     if (path === '.github/registry-bot/request-schemas/system-namespace.schema.json') {
       return {
         data: {
@@ -1220,7 +1222,7 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
     throw httpErr(404);
   });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/42' },
   });
 
@@ -1255,11 +1257,11 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
   ctx.payload.check_suite.id = 501;
   ctx.payload.check_suite.pull_requests = [{ number: 77 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 9002, html_url: 'https://example/check/9002' }] },
   });
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
     data: [
       {
         path: 'data/namespaces/sap.css.yaml',
@@ -1285,7 +1287,7 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
     ],
   });
 
-  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+  ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
     if (path === '.github/registry-bot/request-schemas/system-namespace.schema.json') {
       return {
         data: {
@@ -1328,7 +1330,7 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
     throw httpErr(404);
   });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/77' },
   });
 
@@ -1370,11 +1372,11 @@ test('check_suite.completed failure resolves machine-readable fields from nested
   ctx.payload.check_suite.id = 502;
   ctx.payload.check_suite.pull_requests = [{ number: 78 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 9003, html_url: 'https://example/check/9003' }] },
   });
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
     data: [
       {
         path: 'data/namespaces/sap.css.yaml',
@@ -1393,7 +1395,7 @@ test('check_suite.completed failure resolves machine-readable fields from nested
     ],
   });
 
-  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+  ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
     if (path === '.github/registry-bot/request-schemas/nested-system-namespace.schema.json') {
       return {
         data: {
@@ -1441,7 +1443,7 @@ test('check_suite.completed failure resolves machine-readable fields from nested
     throw httpErr(404);
   });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/78' },
   });
 
@@ -1477,11 +1479,11 @@ test('check_suite.completed failure resolves machine-readable fields from schema
   ctx.payload.check_suite.id = 5021;
   ctx.payload.check_suite.pull_requests = [{ number: 781 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 90031, html_url: 'https://example/check/90031' }] },
   });
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
     data: [
       {
         path: 'data/namespaces/sap.css.yaml',
@@ -1493,7 +1495,7 @@ test('check_suite.completed failure resolves machine-readable fields from schema
     ],
   });
 
-  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+  ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
     if (path === '.github/registry-bot/request-schemas/defs-system-namespace.schema.json') {
       return {
         data: {
@@ -1519,7 +1521,7 @@ test('check_suite.completed failure resolves machine-readable fields from schema
     throw httpErr(404);
   });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/781' },
   });
 
@@ -1553,11 +1555,11 @@ test('check_suite.completed failure falls back to the second schema candidate af
   ctx.payload.check_suite.id = 503;
   ctx.payload.check_suite.pull_requests = [{ number: 79 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 9004, html_url: 'https://example/check/9004' }] },
   });
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
     data: [
       {
         path: 'data/namespaces/sap.css.yaml',
@@ -1569,7 +1571,7 @@ test('check_suite.completed failure falls back to the second schema candidate af
     ],
   });
 
-  ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+  ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
     if (path === '.github/registry-bot/request-schemas/fallback-system-namespace.schema.json') {
       return {
         data: {
@@ -1600,7 +1602,7 @@ test('check_suite.completed failure falls back to the second schema candidate af
     throw httpErr(404);
   });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://github.tools.sap/o1/r1/pull/79' },
   });
 
@@ -1609,10 +1611,10 @@ test('check_suite.completed failure falls back to the second schema candidate af
   const bodyText = String((postOnce as jest.Mock).mock.calls[0]?.[2] ?? '');
   expect(bodyText).toContain('### Contacts');
   expect(bodyText).toContain('"field": "contacts"');
-  expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
     expect.objectContaining({ path: '.github/registry-bot/request-schemas/fallback-system-namespace.schema.json' })
   );
-  expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
     expect.objectContaining({ path: 'request-schemas/fallback-system-namespace.schema.json' })
   );
 });
@@ -1657,10 +1659,10 @@ test('check_suite.completed failure reuses cached schema alias lookup across rep
 
     ctx.payload.check_suite.id = suiteId;
     ctx.payload.check_suite.pull_requests = [{ number: prNumber }];
-    ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
       data: { check_runs: [{ id: 9100 + suiteId, html_url: `https://example/check/${9100 + suiteId}` }] },
     });
-    ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
       data: [
         {
           path: 'data/namespaces/sap.css.yaml',
@@ -1670,8 +1672,8 @@ test('check_suite.completed failure reuses cached schema alias lookup across rep
         },
       ],
     });
-    ctx.octokit.repos.getContent = getContent;
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent = getContent;
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: { html_url: `https://github.tools.sap/o1/r1/pull/${prNumber}` },
     });
 
@@ -1705,11 +1707,11 @@ test('check_suite.completed failure does nothing if there are no registry-valida
   ctx.payload.check_suite.id = 55;
   ctx.payload.check_suite.pull_requests = [{ number: 7 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 123, html_url: 'https://example/check/123' }] },
   });
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
     data: [
       { title: 'lint', path: 'x.yaml', message: 'some lint error' },
       { title: 'build', path: 'y.yaml', message: 'some build error' },
@@ -1718,7 +1720,7 @@ test('check_suite.completed failure does nothing if there are no registry-valida
 
   await handler(ctx);
 
-  expect(ctx.octokit.checks.listAnnotations).toHaveBeenCalledTimes(1);
+  expect(ctx.octokit.rest.checks.listAnnotations).toHaveBeenCalledTimes(1);
   expect(postOnce).not.toHaveBeenCalled();
 });
 
@@ -1742,13 +1744,13 @@ test('check_run.failure skips if check_run.id is missing', async () => {
     pull_requests: [{ number: 7 }],
   };
 
-  ctx.octokit.checks = {
+  ctx.octokit.rest.checks = {
     listAnnotations: jest.fn(),
   };
 
   await handlers['check_run.completed'][0](ctx);
 
-  expect(ctx.octokit.checks.listAnnotations).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.checks.listAnnotations).not.toHaveBeenCalled();
   expect(postOnce).not.toHaveBeenCalled();
 });
 
@@ -1778,7 +1780,7 @@ test('check_run.success without repo info returns early', async () => {
   await handlers['check_run.completed'][0](ctx);
 
   expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
 });
 
 test('check_run.success collapses CI comments and auto-merges matching PR head', async () => {
@@ -1805,17 +1807,17 @@ test('check_run.success collapses CI comments and auto-merges matching PR head',
     },
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [{ number: 301, body: 'source: #1', head: { ref: 'feature/checkrun', sha: 'sha-checkrun-success' } }],
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 301,
       state: 'open',
@@ -1857,7 +1859,7 @@ test('check_suite.completed failure stops listing annotations after 20 pages (sa
   ctx.payload.check_suite.id = 999;
   ctx.payload.check_suite.pull_requests = [{ number: 7 }];
 
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 777, html_url: 'https://example/check/777' }] },
   });
 
@@ -1867,16 +1869,16 @@ test('check_suite.completed failure stops listing annotations after 20 pages (sa
     message: '/name error [file=data/namespaces/a.yaml]',
   }));
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValue({ data: pageData });
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValue({ data: pageData });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: { html_url: 'https://example/pr/7' },
   });
 
   await handler(ctx);
 
   // 20 pages max in listAllCheckRunAnnotations
-  expect(ctx.octokit.checks.listAnnotations).toHaveBeenCalledTimes(20);
+  expect(ctx.octokit.rest.checks.listAnnotations).toHaveBeenCalledTimes(20);
   expect(postOnce).toHaveBeenCalled();
 });
 
@@ -1898,7 +1900,7 @@ test('check_suite.completed failure stops listing suite runs after 20 pages (saf
   ctx.payload.check_suite.id = 56;
   ctx.payload.check_suite.pull_requests = [{ number: 8 }];
 
-  ctx.octokit.checks.listForSuite.mockImplementation(async () => ({
+  ctx.octokit.rest.checks.listForSuite.mockImplementation(async () => ({
     data: {
       check_runs: Array.from({ length: 100 }, (_, index) => ({
         id: 4000 + index,
@@ -1907,12 +1909,12 @@ test('check_suite.completed failure stops listing suite runs after 20 pages (saf
     },
   }));
 
-  ctx.octokit.checks.listAnnotations.mockResolvedValue({ data: [] });
+  ctx.octokit.rest.checks.listAnnotations.mockResolvedValue({ data: [] });
 
   await handler(ctx);
 
-  expect(ctx.octokit.checks.listForSuite).toHaveBeenCalledTimes(20);
-  expect(ctx.octokit.checks.listAnnotations).toHaveBeenCalledTimes(2000);
+  expect(ctx.octokit.rest.checks.listForSuite).toHaveBeenCalledTimes(20);
+  expect(ctx.octokit.rest.checks.listAnnotations).toHaveBeenCalledTimes(2000);
   expect(postOnce).not.toHaveBeenCalled();
 });
 
@@ -1948,13 +1950,13 @@ test('status success triggers tryAutoMerge flow', async () => {
     withCachedConfig: true,
   });
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }],
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: { number: 1, title: 't', body: 'b', labels: [], user: { login: 'author' } },
   });
 
@@ -1980,7 +1982,7 @@ test('status success with missing sha skips auto-merge candidate lookup', async 
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
 });
 
 test('status ignored when state != success', async () => {
@@ -2049,7 +2051,7 @@ describe('parent owner approval gating', () => {
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
-    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -2076,7 +2078,7 @@ describe('parent owner approval gating', () => {
 
     expect(setStateLabel).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -2085,7 +2087,7 @@ describe('parent owner approval gating', () => {
       })
     );
 
-    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -2140,7 +2142,7 @@ describe('parent owner approval gating', () => {
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
 
-    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -2182,7 +2184,7 @@ describe('parent owner approval gating', () => {
     expect(postedBodies()).toContain('Approved by parent namespace owner @barOwner');
     expect(postedBodies()).toContain('Opened PR: #777');
 
-    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalledWith(
       expect.objectContaining({
         labels: ['Parent Owner Action'],
       })
@@ -2250,7 +2252,7 @@ describe('parent owner approval gating', () => {
       } as any),
     });
 
-    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -2310,7 +2312,7 @@ describe('parent owner approval gating', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2396,7 +2398,7 @@ describe('parent owner approval gating', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2483,7 +2485,7 @@ describe('parent owner approval gating', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    (ctx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2602,7 +2604,7 @@ describe('parent owner approval gating', () => {
     };
 
     const firstCtx = mkIssuesContext({ issue: firstIssue, action: 'opened' });
-    (firstCtx.octokit.repos.getContent as jest.Mock) = getContent as any;
+    (firstCtx.octokit.rest.repos.getContent as jest.Mock) = getContent as any;
     firstCtx.octokit.search = { users: firstSearchUsers };
     firstCtx.octokit.graphql = firstGraphql;
 
@@ -2621,7 +2623,7 @@ describe('parent owner approval gating', () => {
     };
 
     const secondCtx = mkIssuesContext({ issue: secondIssue, action: 'opened' });
-    (secondCtx.octokit.repos.getContent as jest.Mock) = getContent as any;
+    (secondCtx.octokit.rest.repos.getContent as jest.Mock) = getContent as any;
     secondCtx.octokit.search = { users: secondSearchUsers };
     secondCtx.octokit.graphql = secondGraphql;
 
@@ -2675,7 +2677,7 @@ describe('parent owner approval gating', () => {
     const openCtx = mkIssuesContext({ issue, action: 'opened' });
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
-    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
@@ -2753,7 +2755,7 @@ describe('parent owner approval gating', () => {
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
-    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2830,7 +2832,7 @@ describe('parent owner approval gating', () => {
     const openCtx = mkIssuesContext({ issue, action: 'opened' });
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
-    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
@@ -2915,7 +2917,7 @@ describe('parent owner approval gating', () => {
         users: jest.fn(async () => ({ data: { items: [{ login: 'resolvedOwner' }] } })),
       };
       ctx.octokit.graphql = jest.fn(async () => ({ search: { nodes: [] } }));
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
         }
@@ -3179,7 +3181,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
         }
@@ -3354,7 +3356,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
+      ctx.octokit.rest.issues.update.mockRejectedValueOnce(new Error('update failed'));
 
       await handlers['issues.opened'][0](ctx);
 
@@ -3398,7 +3400,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
         }
@@ -3448,8 +3450,8 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.issues.update.mockRejectedValueOnce(new Error('update failed'));
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
         }
@@ -3499,7 +3501,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
         }
@@ -3548,7 +3550,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
         }
@@ -3558,7 +3560,7 @@ describe('parent owner approval gating', () => {
       await handlers['issues.opened'][0](ctx);
 
       expect(postedBodies()).not.toContain('Contact owner approval required');
-      expect(ctx.octokit.issues.update).not.toHaveBeenCalledWith(
+      expect(ctx.octokit.rest.issues.update).not.toHaveBeenCalledWith(
         expect.objectContaining({ body: expect.stringContaining('nsreq:contact-approval') })
       );
     });
@@ -3714,7 +3716,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.issues.update.mockRejectedValueOnce(new Error('update failed'));
+      ctx.octokit.rest.issues.update.mockRejectedValueOnce(new Error('update failed'));
 
       await handlers['issues.opened'][0](ctx);
 
@@ -3758,7 +3760,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (path === 'data/vendors/sap.yaml') {
           return {
             data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -3816,11 +3818,11 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.issues.update.mockImplementation(async (args: any) => {
+      ctx.octokit.rest.issues.update.mockImplementation(async (args: any) => {
         if (Object.prototype.hasOwnProperty.call(args, 'body')) throw new Error('update failed');
         return {};
       });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (path === 'data/vendors/sap.yaml') {
           return {
             data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -3880,7 +3882,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (path === 'data/vendors/sap.yaml') {
           return {
             data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -3939,7 +3941,7 @@ describe('parent owner approval gating', () => {
       });
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
-      ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+      ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (path === 'data/vendors/sap.yaml') {
           return {
             data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -4080,7 +4082,7 @@ describe('parent owner approval gating', () => {
       expect.stringContaining('Opened PR'),
       expect.anything()
     );
-    expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalledWith(
       expect.objectContaining({
         labels: expect.arrayContaining(['Approved']),
       })
@@ -4268,7 +4270,7 @@ describe('parent owner approval gating', () => {
 
     await handler(ctx);
 
-    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       ref: 'heads/feat/resource-sap.aiadm-issue-176',
@@ -4380,7 +4382,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
       if (String(path) === 'data/vendors/sap.yaml') {
         return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
       }
@@ -4396,7 +4398,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       ref: 'heads/feat/resource-sap.aiadm-issue-176',
@@ -4501,12 +4503,12 @@ public
       config: cfg,
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({ data: { content: 'x', encoding: 'base64' } });
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({ data: { content: 'x', encoding: 'base64' } });
 
     await handler(ctx);
 
     expect(createRequestPr).toHaveBeenCalledTimes(1);
-    expect(ctx.octokit.git.deleteRef).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
 
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
     expect(bodies).toContain("Failed to create PR automatically: Resource 'sap.aiadm' already exists in the registry.");
@@ -4617,7 +4619,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith({
       owner: 'o',
       repo: 'r',
       ref: 'heads/feat/resource-sap.aiadm-issue-176',
@@ -4737,13 +4739,13 @@ public
       nsType: 'subContextNamespace',
       template: tpl,
       formData: { identifier: target, description: 'x' },
-    } as any);
+    });
 
     const openCtx = mkIssuesContext({ issue, action: 'opened' });
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
-    (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -4809,20 +4811,20 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({ data: [{ number: 5, body: 'source: #1', head: { ref: 'x', sha: 'sha1' } }] })
       .mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
     });
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValueOnce({
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 1,
         title: 'Request',
@@ -4833,7 +4835,7 @@ public
     });
 
     extractHashFromPrBody.mockReturnValueOnce('');
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'ignored-author' }, committer: { login: 'last-committer' } }],
     });
     runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
@@ -4847,7 +4849,7 @@ public
       { owner: 'o1', repo: 'r1' },
       expect.objectContaining({ requestAuthorId: 'author' })
     );
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(expect.objectContaining({ labels: ['Approved'] }));
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(expect.objectContaining({ labels: ['Approved'] }));
   });
 
   test('check_suite.success: standalone direct PR with changed registry yaml uses onApproval and merges', async () => {
@@ -4875,7 +4877,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -4888,7 +4890,7 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/product-one.yaml', status: 'modified' },
         { filename: '.github/workflows/review.yaml', status: 'modified' },
@@ -4897,7 +4899,7 @@ public
       ],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from(
           'type: product\nname: product-one\ndescription: Example\ncontact: owner@example.com\n',
@@ -4907,11 +4909,11 @@ public
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'ignored-author' }, committer: { login: 'direct-last-committer' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 51,
         state: 'open',
@@ -4928,10 +4930,10 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.listFiles).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.listFiles).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 51, per_page: 100, page: 1 })
     );
-    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -4954,7 +4956,7 @@ public
         }),
       })
     );
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -4994,7 +4996,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5007,11 +5009,11 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-two.yaml', status: 'added' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-two\n', 'utf8').toString('base64'),
         encoding: 'base64',
@@ -5056,7 +5058,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5069,14 +5071,14 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/bad.yaml', status: 'modified' },
         { filename: 'resources/no-name.yaml', status: 'modified' },
       ],
     });
 
-    ctx.octokit.repos.getContent
+    ctx.octokit.rest.repos.getContent
       .mockResolvedValueOnce({
         data: {
           content: Buffer.from('::: not yaml :::', 'utf8').toString('base64'),
@@ -5093,8 +5095,8 @@ public
     await handler(ctx);
 
     expect(runApprovalHook).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.update).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postOnce).toHaveBeenCalledWith(
@@ -5131,7 +5133,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5144,23 +5146,23 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-review.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-review\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.createReview.mockRejectedValueOnce(new Error('review api failed'));
+    ctx.octokit.rest.pulls.createReview.mockRejectedValueOnce(new Error('review api failed'));
     runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approve please' } as any);
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.update).not.toHaveBeenCalled();
     const posted = postedBodies();
     expect(posted).toContain('automatic PR approval failed');
     expect(posted).toContain('approve please');
@@ -5192,17 +5194,17 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
     });
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
-    ctx.octokit.issues.get.mockResolvedValueOnce({
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         number: 1,
         title: 'Request',
@@ -5223,10 +5225,10 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.update).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 5, state: 'closed' })
     );
-    expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 1, state: 'closed' })
     );
 
@@ -5260,7 +5262,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5274,11 +5276,11 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-five.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-five\n', 'utf8').toString('base64'),
         encoding: 'base64',
@@ -5295,7 +5297,7 @@ public
     await handler(ctx);
 
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.update).not.toHaveBeenCalled();
     expect(postOnce).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 5 }),
@@ -5331,7 +5333,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5346,7 +5348,7 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 61,
         body: 'source: #999',
@@ -5359,13 +5361,13 @@ public
       },
     });
 
-    ctx.octokit.issues.get.mockRejectedValueOnce(httpErr(500));
+    ctx.octokit.rest.issues.get.mockRejectedValueOnce(httpErr(500));
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-fallback.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-fallback\n', 'utf8').toString('base64'),
         encoding: 'base64',
@@ -5379,7 +5381,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -5425,7 +5427,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5438,11 +5440,11 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/vendor-one.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from(
           'type: vendor\nname: vendor-one\ncontact:\n  - owner1@example.com\n  - owner2@example.com\n',
@@ -5471,7 +5473,7 @@ public
         }),
       })
     );
-    const reviewCall = ctx.octokit.pulls.createReview.mock.calls[0]?.[0] as { body?: string };
+    const reviewCall = ctx.octokit.rest.pulls.createReview.mock.calls[0]?.[0] as { body?: string };
     const reviewBody = String(reviewCall?.body ?? '');
 
     expect(reviewBody).toContain('nsreq:auto-approval:');
@@ -5481,7 +5483,7 @@ public
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 55, mergeMethod: 'squash' })
     );
-    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR requests branch update when merge helper returns false', async () => {
@@ -5509,7 +5511,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5522,21 +5524,21 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-merge-false.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-merge-false\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ committer: { login: 'merge-helper-user' } }],
     });
-    ctx.octokit.pulls.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.get.mockResolvedValue({
       data: {
         number: 155,
         state: 'open',
@@ -5554,7 +5556,7 @@ public
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 155, mergeMethod: 'squash' })
     );
-    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR merge blocked by branch protection does not request branch update', async () => {
@@ -5582,12 +5584,12 @@ public
       config: cfg,
     });
 
-    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
       if (typeof callback === 'function') callback();
       return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-    }) as unknown as typeof setTimeout);
+    });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5600,22 +5602,22 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-branch-protection.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-branch-protection\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ committer: { login: 'branch-protection-user' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.get.mockResolvedValue({
       data: {
         number: 156,
         state: 'open',
@@ -5633,14 +5635,14 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 156, event: 'APPROVE' })
     );
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 156, mergeMethod: 'squash' })
     );
-    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
 
     setTimeoutSpy.mockRestore();
   });
@@ -5670,7 +5672,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5683,28 +5685,28 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-no-approval.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-no-approval\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ committer: { login: 'no-approval-user' } }],
     });
 
-    runApprovalHook.mockResolvedValueOnce(false as never);
+    runApprovalHook.mockResolvedValueOnce(false);
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR skips merge when current head checks are not green', async () => {
@@ -5732,7 +5734,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5745,23 +5747,23 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-not-green.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: product\nname: product-not-green\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ committer: { login: 'green-check-user' } }],
     });
 
     runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
-    ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
       data: {
         check_runs: [{ id: 2, name: 'ci', status: 'completed', conclusion: 'failure' }],
       },
@@ -5770,9 +5772,9 @@ public
     await handler(ctx);
 
     expect(runApprovalHook).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR skips merge when changed yaml cannot be read from repo ref', async () => {
@@ -5800,7 +5802,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5813,16 +5815,16 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/unreadable.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockRejectedValueOnce(new Error('cannot load ref content'));
+    ctx.octokit.rest.repos.getContent.mockRejectedValueOnce(new Error('cannot load ref content'));
 
     await handler(ctx);
 
     expect(runApprovalHook).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postOnce).toHaveBeenCalledWith(
@@ -5858,7 +5860,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5871,14 +5873,14 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/malformed.yaml', status: 'modified' },
         { filename: 'resources/scalar.yaml', status: 'modified' },
       ],
     });
 
-    ctx.octokit.repos.getContent
+    ctx.octokit.rest.repos.getContent
       .mockResolvedValueOnce({
         data: {
           content: Buffer.from('type: [broken\n', 'utf8').toString('base64'),
@@ -5895,8 +5897,8 @@ public
     await handler(ctx);
 
     expect(runApprovalHook).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.update).not.toHaveBeenCalled();
   });
 
   test('check_suite.success: standalone direct PR paginates changed files and skips multi-match resources without matching doc type', async () => {
@@ -5925,7 +5927,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -5938,7 +5940,7 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles
+    ctx.octokit.rest.pulls.listFiles
       .mockResolvedValueOnce({
         data: [
           ...Array.from({ length: 99 }, (_, index) => ({ filename: `docs/file-${index}.md`, status: 'modified' })),
@@ -5949,7 +5951,7 @@ public
         data: [{ filename: 'resources/shared.yaml', status: 'modified' }],
       });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: unsupported\nname: shared-resource\n', 'utf8').toString('base64'),
         encoding: 'base64',
@@ -5958,9 +5960,9 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.listFiles.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(ctx.octokit.rest.pulls.listFiles.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(runApprovalHook).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postOnce).toHaveBeenCalledWith(
@@ -5996,7 +5998,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -6009,14 +6011,14 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/product-ok.yaml', status: 'modified' },
         { filename: 'resources/product-missing.yaml', status: 'modified' },
       ],
     });
 
-    ctx.octokit.repos.getContent
+    ctx.octokit.rest.repos.getContent
       .mockResolvedValueOnce({
         data: {
           content: Buffer.from('type: product\nname: product-ok\n', 'utf8').toString('base64'),
@@ -6030,8 +6032,8 @@ public
     await handler(ctx);
 
     expect(runApprovalHook).toHaveBeenCalledTimes(1);
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.update).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.update).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postOnce).toHaveBeenCalledWith(
@@ -6067,7 +6069,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -6080,14 +6082,14 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [
         { filename: 'resources/product-ok.yaml', status: 'modified' },
         { filename: '.github/release.yml', status: 'modified' },
       ],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from(
           'type: product\nidentifier: product-ok\ntitle: Product OK\nvisibility: public\n',
@@ -6097,11 +6099,11 @@ public
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ committer: { login: 'registry-committer' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 60,
         state: 'open',
@@ -6118,8 +6120,8 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.repos.getContent).toHaveBeenCalledTimes(1);
-    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -6172,7 +6174,7 @@ public
 
     const forkRepo = { full_name: 'fork-owner/fork-repo', name: 'fork-repo', owner: { login: 'fork-owner' } };
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -6186,9 +6188,9 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({ data: [] });
-    ctx.octokit.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
-    ctx.octokit.git.getTree = jest.fn(async ({ owner, repo, tree_sha }: any) => {
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+    ctx.octokit.rest.git.getTree = jest.fn(async ({ owner, repo, tree_sha }: any) => {
       if (owner === 'o1' && repo === 'r1' && tree_sha === 'base-head-sha') {
         return {
           data: { tree: [{ path: 'resources/product-fork.yaml', type: 'blob', sha: 'base-file-sha' }] },
@@ -6204,7 +6206,7 @@ public
       return { data: { tree: [] } };
     });
 
-    ctx.octokit.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+    ctx.octokit.rest.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
       if (
         owner === 'fork-owner' &&
         repo === 'fork-repo' &&
@@ -6224,11 +6226,11 @@ public
       throw httpErr(404);
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'fork-author' }, committer: { login: 'fork-committer' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 61,
         state: 'open',
@@ -6245,10 +6247,10 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.git.getTree).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.git.getTree).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', tree_sha: 'base-head-sha', recursive: 'true' })
     );
-    expect(ctx.octokit.git.getTree).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.git.getTree).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'fork-owner',
         repo: 'fork-repo',
@@ -6256,7 +6258,7 @@ public
         recursive: 'true',
       })
     );
-    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'fork-owner',
         repo: 'fork-repo',
@@ -6312,7 +6314,7 @@ public
 
     const forkRepo = { full_name: 'fork-owner/fork-repo', name: 'fork-repo', owner: { login: 'fork-owner' } };
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -6326,11 +6328,11 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/product-fork-issue.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+    ctx.octokit.rest.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
       if (
         owner === 'fork-owner' &&
         repo === 'fork-repo' &&
@@ -6348,11 +6350,11 @@ public
       throw httpErr(404);
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'fork-author-issue' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 62,
         state: 'open',
@@ -6369,7 +6371,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.issues.get).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.get).not.toHaveBeenCalled();
     expect(runApprovalHook).toHaveBeenCalledWith(
       ctx,
       { owner: 'o1', repo: 'r1' },
@@ -6419,7 +6421,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -6434,18 +6436,18 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-neutral.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-neutral\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
@@ -6455,7 +6457,7 @@ public
       approvers: ['hookApproverShouldNotBeAssigned'],
     } as any);
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -6464,13 +6466,13 @@ public
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
 
-    Object.assign(ctx.octokit.issues, {
+    Object.assign(ctx.octokit.rest.issues, {
       addAssignees,
     });
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(setStateLabel).toHaveBeenCalledWith(
@@ -6504,7 +6506,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -6566,24 +6568,24 @@ public
       head: { ref: 'feature/direct-no-match', sha: 'sha-direct-no-match-pool-assignment' },
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-no-match.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-no-match\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -6591,13 +6593,13 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({} as any);
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
@@ -6685,24 +6687,24 @@ public
       head: { ref: 'feature/direct-hook-manual', sha: 'sha-direct-hook-manual-assignment' },
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-hook-manual.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-hook-manual\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -6710,7 +6712,7 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({
       status: 'unknown',
@@ -6720,7 +6722,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
@@ -6801,24 +6803,24 @@ public
       head: { ref: 'feature/direct-no-pool', sha: 'sha-direct-no-pool-no-assignment' },
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-no-pool.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-no-pool\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -6826,19 +6828,19 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({} as any);
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(ensureAssigneesOnce).not.toHaveBeenCalled();
     expect(addAssignees).not.toHaveBeenCalled();
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -6913,7 +6915,7 @@ public
       resourceBotHooksSource: 'test',
     };
 
-    ctx.octokit.pulls.get
+    ctx.octokit.rest.pulls.get
       .mockResolvedValueOnce({
         data: {
           number: 428,
@@ -6941,33 +6943,33 @@ public
         },
       });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [{ login: 'poolA' }],
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-pool-approval.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-pool-approval\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [],
     });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -6977,7 +6979,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -7043,7 +7045,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -7058,18 +7060,18 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-neutral-pool.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-neutral-pool\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
@@ -7078,7 +7080,7 @@ public
       message: 'manual review required',
     } as any);
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -7087,13 +7089,13 @@ public
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
 
-    Object.assign(ctx.octokit.issues, {
+    Object.assign(ctx.octokit.rest.issues, {
       addAssignees,
     });
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
@@ -7112,7 +7114,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -7166,7 +7168,7 @@ public
         config: cfg,
       });
 
-      ctx.octokit.pulls.get.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({
         data: {
           number: 162,
           body: 'manual direct pr',
@@ -7179,23 +7181,23 @@ public
         },
       });
 
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-comment.yaml', status: 'modified' }],
       });
 
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-comment\n', 'utf8').toString('base64'),
           encoding: 'base64',
         },
       });
 
-      ctx.octokit.pulls.listCommits.mockResolvedValue({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
         data: [{ author: { login: 'requester' } }],
       });
 
-      ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-      ctx.octokit.checks.listForRef.mockResolvedValue({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+      ctx.octokit.rest.checks.listForRef.mockResolvedValue({
         data: {
           check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
         },
@@ -7209,7 +7211,7 @@ public
 
       await handlers['issue_comment.created'][0](ctx);
 
-      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
         expect.objectContaining({
           owner: 'o',
           repo: 'r',
@@ -7263,7 +7265,7 @@ public
         config: cfg,
       });
 
-      ctx.octokit.pulls.get.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({
         data: {
           number: 1621,
           body: 'manual direct pr',
@@ -7276,22 +7278,22 @@ public
         },
       });
 
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-comment-existing-review.yaml', status: 'modified' }],
       });
 
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-comment-existing-review\n', 'utf8').toString('base64'),
           encoding: 'base64',
         },
       });
 
-      ctx.octokit.pulls.listCommits.mockResolvedValue({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
         data: [{ author: { login: 'requester' } }],
       });
 
-      ctx.octokit.pulls.listReviews.mockResolvedValue({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
         data: [
           {
             id: 1,
@@ -7301,7 +7303,7 @@ public
           },
         ],
       });
-      ctx.octokit.checks.listForRef.mockResolvedValue({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValue({
         data: {
           check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
         },
@@ -7315,7 +7317,7 @@ public
 
       await handlers['issue_comment.created'][0](ctx);
 
-      expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
       expect(tryMergeIfGreen).toHaveBeenCalledWith(
         ctx,
         expect.objectContaining({ owner: 'o', repo: 'r', prNumber: 1621, mergeMethod: 'squash' })
@@ -7385,26 +7387,26 @@ public
           config: cfg,
         });
 
-        ctx.octokit.pulls.get.mockResolvedValue({ data: sharedPr });
-        ctx.octokit.pulls.listFiles.mockResolvedValue({
+        ctx.octokit.rest.pulls.get.mockResolvedValue({ data: sharedPr });
+        ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
           data: [{ filename: 'resources/product-comment-dedupe.yaml', status: 'modified' }],
         });
-        ctx.octokit.repos.getContent.mockResolvedValue({
+        ctx.octokit.rest.repos.getContent.mockResolvedValue({
           data: {
             content: Buffer.from('type: product\nname: product-comment-dedupe\n', 'utf8').toString('base64'),
             encoding: 'base64',
           },
         });
-        ctx.octokit.pulls.listCommits.mockResolvedValue({
+        ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
           data: [{ author: { login: 'requester' } }],
         });
-        ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-        ctx.octokit.checks.listForRef.mockResolvedValue({
+        ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+        ctx.octokit.rest.checks.listForRef.mockResolvedValue({
           data: {
             check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
           },
         });
-        ctx.octokit.pulls.createReview = createReview;
+        ctx.octokit.rest.pulls.createReview = createReview;
 
         return ctx;
       };
@@ -7493,20 +7495,20 @@ public
         head: { ref: 'feature/direct-pr-comment-two-pass', sha: 'sha-direct-pr-comment-two-pass' },
       };
 
-      ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-comment-two-pass.yaml', status: 'modified' }],
       });
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-comment-two-pass\n', 'utf8').toString('base64'),
           encoding: 'base64',
         },
       });
-      ctx.octokit.pulls.listCommits.mockResolvedValue({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
         data: [{ author: { login: 'requester' } }],
       });
-      ctx.octokit.checks.listForRef.mockResolvedValue({
+      ctx.octokit.rest.checks.listForRef.mockResolvedValue({
         data: {
           check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
         },
@@ -7518,7 +7520,7 @@ public
         approvers: ['reviewer1'],
       } as any);
 
-      ctx.octokit.pulls.listReviews.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
         data: [
           {
             id: 1,
@@ -7532,7 +7534,7 @@ public
       await handlers['issue_comment.created'][0](ctx);
       await handlers['issue_comment.created'][0](ctx);
 
-      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledTimes(1);
       expect(tryMergeIfGreen).toHaveBeenCalledTimes(2);
     } finally {
       if (previousJestWorkerId === undefined) {
@@ -7578,7 +7580,7 @@ public
         config: cfg,
       });
 
-      ctx.octokit.pulls.get.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({
         data: {
           number: 163,
           body: 'manual direct pr',
@@ -7591,11 +7593,11 @@ public
         },
       });
 
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-denied.yaml', status: 'modified' }],
       });
 
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-denied\n', 'utf8').toString('base64'),
           encoding: 'base64',
@@ -7610,7 +7612,7 @@ public
 
       await handlers['issue_comment.created'][0](ctx);
 
-      expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
       expect(postOnce).toHaveBeenCalledWith(
         ctx,
         expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 163 }),
@@ -7675,12 +7677,12 @@ public
         mergeable_state: 'behind',
       };
 
-      ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-      ctx.octokit.pulls.list.mockResolvedValue({ data: [pr] });
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+      ctx.octokit.rest.pulls.list.mockResolvedValue({ data: [pr] });
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-direct-pr-sequential-branch-update.yaml', status: 'modified' }],
       });
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-direct-pr-sequential-branch-update\n', 'utf8').toString(
             'base64'
@@ -7688,18 +7690,18 @@ public
           encoding: 'base64',
         },
       });
-      ctx.octokit.pulls.listCommits.mockResolvedValue({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
         data: [{ author: { login: 'requester' } }],
       });
-      ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-      ctx.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+      ctx.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
 
       await handlers['issue_comment.created'][0](ctx);
 
-      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
         expect.objectContaining({ owner: 'o', repo: 'r', pull_number: 1623, event: 'APPROVE' })
       );
-      expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+      expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
         expect.objectContaining({
           owner: 'o',
           repo: 'r',
@@ -7750,7 +7752,7 @@ public
       owner: { login: 'fork-owner' },
     };
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -7769,11 +7771,11 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-cross-cleanup.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+    ctx.octokit.rest.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
       if (
         owner === 'fork-owner' &&
         repo === 'fork-repo' &&
@@ -7791,11 +7793,11 @@ public
       throw httpErr(404);
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'fork-author' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 201,
         state: 'open',
@@ -7817,7 +7819,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -7826,8 +7828,8 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.get).not.toHaveBeenCalled();
-    expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.get).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
 
     expect(runApprovalHook).toHaveBeenCalledWith(
       ctx,
@@ -7879,7 +7881,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -7894,22 +7896,22 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-same-cleanup.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-same-cleanup\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 202,
         state: 'open',
@@ -7923,7 +7925,7 @@ public
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'Approved' }, { name: 'needs-review' }, { name: 'Requester Action' }, { name: 'Rejected' }],
         assignees: [],
@@ -7934,7 +7936,7 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -7943,13 +7945,13 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.get).toHaveBeenCalledWith({
+    expect(ctx.octokit.rest.issues.get).toHaveBeenCalledWith({
       owner: 'o1',
       repo: 'r1',
       issue_number: 202,
     });
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -7958,7 +7960,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -7967,7 +7969,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -8019,7 +8021,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -8034,17 +8036,17 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-unresolved.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockRejectedValue(httpErr(404));
+    ctx.octokit.rest.repos.getContent.mockRejectedValue(httpErr(404));
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -8052,11 +8054,11 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     await handler(ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(setStateLabel).toHaveBeenCalledWith(
@@ -8082,7 +8084,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -8137,9 +8139,9 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         ...issue,
         labels: [],
@@ -8254,9 +8256,9 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         ...issue,
         labels: [],
@@ -8352,9 +8354,9 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-    ctx.octokit.issues.get
+    ctx.octokit.rest.issues.get
       .mockResolvedValueOnce({
         data: {
           ...issue,
@@ -8387,7 +8389,7 @@ public
 
     await handlers['issues.opened'][0](ctx);
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -8442,9 +8444,9 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-    ctx.octokit.issues.get
+    ctx.octokit.rest.issues.get
       .mockResolvedValueOnce({
         data: {
           ...issue,
@@ -8453,7 +8455,7 @@ public
         },
       })
       .mockRejectedValueOnce(new Error('label refresh failed'));
-    ctx.octokit.issues.addLabels.mockRejectedValueOnce(httpErr(500));
+    ctx.octokit.rest.issues.addLabels.mockRejectedValueOnce(httpErr(500));
 
     parseForm.mockReturnValue({
       'product-id': 'product-label-add-failed',
@@ -8478,7 +8480,7 @@ public
 
     await handlers['issues.opened'][0](ctx);
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -8626,9 +8628,9 @@ public
         config: cfg,
       });
 
-      Object.assign(ctx.octokit.issues, { addAssignees });
+      Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-      ctx.octokit.issues.get.mockResolvedValue({
+      ctx.octokit.rest.issues.get.mockResolvedValue({
         data: {
           ...issue,
           labels: [],
@@ -8759,9 +8761,9 @@ public
         config: cfg,
       });
 
-      Object.assign(ctx.octokit.issues, { addAssignees });
+      Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-      ctx.octokit.issues.get.mockResolvedValue({
+      ctx.octokit.rest.issues.get.mockResolvedValue({
         data: {
           ...issue,
           labels: [],
@@ -8868,7 +8870,7 @@ public
         config: cfg,
       });
 
-      ctx.octokit.issues.get.mockResolvedValue({
+      ctx.octokit.rest.issues.get.mockResolvedValue({
         data: {
           ...issue,
           labels: [{ name: 'needs-review' }],
@@ -8960,7 +8962,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         ...issue,
         labels: [{ name: 'needs-review' }],
@@ -9046,7 +9048,7 @@ public
       resourceBotHooksSource: 'test',
     };
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 204,
         state: 'open',
@@ -9060,7 +9062,7 @@ public
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValueOnce({
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         labels: [],
         assignees: [],
@@ -9069,7 +9071,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postedBodies()).toContain(
@@ -9140,7 +9142,7 @@ public
       resourceBotHooksSource: 'test',
     };
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         number: 205,
         state: 'open',
@@ -9154,25 +9156,25 @@ public
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValueOnce({
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [],
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-denied.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-denied\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
@@ -9183,7 +9185,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postedBodies()).toContain(
@@ -9254,7 +9256,7 @@ public
       resourceBotHooksSource: 'test',
     };
 
-    ctx.octokit.pulls.get
+    ctx.octokit.rest.pulls.get
       .mockResolvedValueOnce({
         data: {
           number: 206,
@@ -9282,29 +9284,29 @@ public
         },
       });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [],
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-approved.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-approved\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [],
     });
 
@@ -9315,7 +9317,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -9399,7 +9401,7 @@ public
       resourceBotHooksSource: 'test',
     };
 
-    ctx.octokit.pulls.get
+    ctx.octokit.rest.pulls.get
       .mockResolvedValueOnce({
         data: {
           number: 2061,
@@ -9427,31 +9429,31 @@ public
         },
       });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [],
       },
     });
 
-    ctx.octokit.issues.addLabels.mockRejectedValueOnce(new Error('cannot add approved label'));
+    ctx.octokit.rest.issues.addLabels.mockRejectedValueOnce(new Error('cannot add approved label'));
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-approved-label-fail.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-approved-label-fail\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [],
     });
 
@@ -9462,7 +9464,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -9471,10 +9473,10 @@ public
         body: expect.stringContaining('Approved by @allowedApprover'),
       })
     );
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 2061, labels: ['Approved'] })
     );
-    expect(ctx.octokit.issues.removeLabel).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({
@@ -9553,7 +9555,7 @@ public
         resourceBotHooksSource: 'test',
       };
 
-      ctx.octokit.pulls.get
+      ctx.octokit.rest.pulls.get
         .mockResolvedValueOnce({
           data: {
             number: 207,
@@ -9581,29 +9583,29 @@ public
           },
         });
 
-      ctx.octokit.issues.get.mockResolvedValue({
+      ctx.octokit.rest.issues.get.mockResolvedValue({
         data: {
           labels: [{ name: 'needs-review' }],
           assignees: [],
         },
       });
 
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-hook-manual.yaml', status: 'modified' }],
       });
 
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-hook-manual\n', 'utf8').toString('base64'),
           encoding: 'base64',
         },
       });
 
-      ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
         data: [{ author: { login: 'requester' } }],
       });
 
-      ctx.octokit.pulls.listReviews.mockResolvedValue({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
         data: [],
       });
 
@@ -9615,7 +9617,7 @@ public
 
       await handler(ctx);
 
-      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
         expect.objectContaining({
           owner: 'o1',
           repo: 'r1',
@@ -9710,7 +9712,7 @@ public
         resourceBotHooksSource: 'test',
       };
 
-      ctx.octokit.pulls.get
+      ctx.octokit.rest.pulls.get
         .mockResolvedValueOnce({
           data: {
             number: 208,
@@ -9738,29 +9740,29 @@ public
           },
         });
 
-      ctx.octokit.issues.get.mockResolvedValue({
+      ctx.octokit.rest.issues.get.mockResolvedValue({
         data: {
           labels: [{ name: 'needs-review' }],
           assignees: [],
         },
       });
 
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-config-approver.yaml', status: 'modified' }],
       });
 
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: {
           content: Buffer.from('type: product\nname: product-config-approver\n', 'utf8').toString('base64'),
           encoding: 'base64',
         },
       });
 
-      ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
         data: [{ author: { login: 'requester' } }],
       });
 
-      ctx.octokit.pulls.listReviews.mockResolvedValue({
+      ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
         data: [],
       });
 
@@ -9772,7 +9774,7 @@ public
 
       await handler(ctx);
 
-      expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+      expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
         expect.objectContaining({
           owner: 'o1',
           repo: 'r1',
@@ -9834,7 +9836,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -9849,22 +9851,22 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-no-match.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-no-match\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -9872,7 +9874,7 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     // onApproval did not match this registry doc.
     runApprovalHook.mockResolvedValueOnce({} as any);
@@ -9890,7 +9892,7 @@ public
       })
     );
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(setStateLabel).toHaveBeenCalledWith(
@@ -9923,7 +9925,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -9982,7 +9984,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.get
+    ctx.octokit.rest.pulls.get
       .mockResolvedValueOnce({
         data: {
           number: 421,
@@ -10010,33 +10012,33 @@ public
         },
       });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [{ login: 'poolA' }],
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-no-match.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-no-match\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [],
     });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -10048,7 +10050,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -10113,7 +10115,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.get.mockResolvedValue({
       data: {
         number: 422,
         state: 'open',
@@ -10127,25 +10129,25 @@ public
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [{ login: 'poolB' }],
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-no-match-self.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-no-match-self\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
@@ -10153,7 +10155,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect(postOnce).toHaveBeenCalledWith(
@@ -10217,31 +10219,31 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.get.mockResolvedValue({
       data: pr,
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-current-head-approved.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-current-head-approved\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'Approved' }, { name: 'needs-review' }],
         assignees: [{ login: 'poolA' }],
       },
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [
         {
           id: 1,
@@ -10253,7 +10255,7 @@ public
       ],
     });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -10275,7 +10277,7 @@ public
       })
     );
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
     expect(
       postOnce.mock.calls.some((call) =>
@@ -10343,28 +10345,28 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-current-head-approved.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-current-head-approved\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'Approved' }, { name: 'needs-review' }],
         assignees: [{ login: 'poolA' }],
       },
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [
         {
           id: 1,
@@ -10377,7 +10379,7 @@ public
       ],
     });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -10464,32 +10466,32 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-current-head-manual-approved.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-current-head-manual-approved\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'needs-review' }],
         assignees: [{ login: 'configuredApprover' }],
       },
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [
         {
           id: 1,
@@ -10501,7 +10503,7 @@ public
       ],
     });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -10524,7 +10526,7 @@ public
         mergeMethod: 'squash',
       })
     );
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(
       postOnce.mock.calls.some((call) => String(call[2] ?? '').includes('Routing to an approver for review'))
     ).toBe(false);
@@ -10583,32 +10585,32 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-current-head-bot-approved.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-current-head-bot-approved\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'Approved' }, { name: 'needs-review' }],
         assignees: [{ login: 'poolB' }],
       },
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [
         {
           id: 1,
@@ -10621,7 +10623,7 @@ public
       ],
     });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -10645,7 +10647,7 @@ public
         mergeMethod: 'squash',
       })
     );
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(
       postOnce.mock.calls.some((call) => String(call[2] ?? '').includes('Routing to an approver for review'))
     ).toBe(false);
@@ -10696,7 +10698,7 @@ public
       },
     };
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -10711,22 +10713,22 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-unknown-blocked.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-unknown-blocked\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -10734,9 +10736,9 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [
         {
           id: 1,
@@ -10763,7 +10765,7 @@ public
     await handler(ctx);
 
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(setStateLabel).toHaveBeenCalledWith(
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 427 }),
@@ -10826,7 +10828,7 @@ public
       },
     };
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -10841,29 +10843,29 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-unknown-unauthorized.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-unknown-unauthorized\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
       },
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
       data: [
         {
           id: 1,
@@ -10884,7 +10886,7 @@ public
     await handler(ctx);
 
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(postedBodies()).toContain('manual review required');
     expect(postedBodies()).toContain('Continuing with the standard review flow.');
     expect(postedBodies()).toContain('Routing to an approver for review');
@@ -10947,27 +10949,27 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValue({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValue({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/products/product-pool-requester.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-pool-requester\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValue({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
       data: [{ author: { login: 'C5388932' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -10975,13 +10977,13 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({} as any);
 
     await handlers['check_run.completed'][0](ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
@@ -11006,7 +11008,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o1',
         repo: 'r1',
@@ -11079,33 +11081,33 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [{ name: 'CPA Action' }],
         assignees: [{ login: 'C5388932' }],
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/products/product-pool-requester-approval.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-pool-requester-approval\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValue({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
       data: [{ author: { login: 'C5388932' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
 
-    ctx.octokit.checks.listForRef.mockResolvedValue({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValue({
       data: {
         check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
       },
@@ -11116,7 +11118,7 @@ public
 
     await runIssueCommentWithoutJestWorker(handler, ctx);
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -11126,7 +11128,7 @@ public
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -11203,27 +11205,27 @@ public
       mergeable_state: 'clean',
     };
 
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValue({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValue({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/products/product-hook-manual-override.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-hook-manual-override\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValue({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         labels: [],
         assignees: [],
@@ -11231,7 +11233,7 @@ public
     });
 
     const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
-    Object.assign(ctx.octokit.issues, { addAssignees });
+    Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({
       status: 'unknown',
@@ -11241,7 +11243,7 @@ public
 
     await handlers['check_run.completed'][0](ctx);
 
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
@@ -11305,13 +11307,13 @@ public
     ctx.payload.check_suite.id = 777;
     ctx.payload.check_suite.pull_requests = [{ number: 301 }];
 
-    ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
       data: {
         check_runs: [{ id: 888, conclusion: 'failure', html_url: 'https://example.test/checks/888' }],
       },
     });
 
-    ctx.octokit.checks.listAnnotations.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listAnnotations.mockResolvedValueOnce({
       data: [
         {
           path: 'resources/product-bad.yaml',
@@ -11323,7 +11325,7 @@ public
       ],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
       data: {
         html_url: 'https://github.example/o1/r1/pull/301',
       },
@@ -11373,13 +11375,13 @@ public
       },
     };
 
-    ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
       data: {
         check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
       },
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -11396,22 +11398,22 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-status.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: product\nname: product-status\n', 'utf8').toString('base64'),
         encoding: 'base64',
       },
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'requester' } }],
     });
 
-    ctx.octokit.pulls.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.get.mockResolvedValue({
       data: {
         number: 401,
         state: 'open',
@@ -11479,8 +11481,8 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.checks.listForRef).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.checks.listForRef).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(runApprovalHook).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
@@ -11509,7 +11511,7 @@ public
       config: cfg,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           {
@@ -11524,15 +11526,15 @@ public
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
       data: [{ filename: 'resources/sap.agtj100.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+    ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
       data: [{ author: { login: 'C5388932' } }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValueOnce({
+    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
       data: {
         content: Buffer.from('type: system\nname: sap.agtj100\n', 'utf8').toString('base64'),
         encoding: 'base64',
@@ -11547,10 +11549,10 @@ public
 
     await handler(ctx);
 
-    const reviewCall = ctx.octokit.pulls.createReview.mock.calls[0]?.[0] as { body?: string };
+    const reviewCall = ctx.octokit.rest.pulls.createReview.mock.calls[0]?.[0] as { body?: string };
     const reviewBody = String(reviewCall?.body ?? '');
 
-    expect(ctx.octokit.pulls.createReview).toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalled();
     expect(reviewBody).toContain('nsreq:auto-approval:');
     expect(reviewBody).not.toContain('Manual approval required');
     expect(reviewBody).not.toContain('agent onboarding namespace request');
@@ -11685,13 +11687,13 @@ test('status: without jest worker id skips non-form linked issues outside test r
       withCachedConfig: true,
     });
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [{ number: 74, body: 'source: #1', head: { ref: 'feature/freeform', sha: 'sha-freeform-status' } }],
       })
       .mockResolvedValueOnce({ data: [] });
 
-    ctx.octokit.issues.get.mockResolvedValueOnce({
+    ctx.octokit.rest.issues.get.mockResolvedValueOnce({
       data: { number: 1, title: 'Freeform', body: 'plain text only', labels: [], state: 'open', user: { login: 'u' } },
     });
 
@@ -11732,9 +11734,9 @@ test('push: default branch push updates approved green registry PR branches', as
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -11743,7 +11745,7 @@ test('push: default branch push updates approved green registry PR branches', as
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
     data: [
       {
         number: 202,
@@ -11764,19 +11766,19 @@ test('push: default branch push updates approved green registry PR branches', as
     ],
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-approved.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: { number: 201, labels: [{ name: 'Approved' }] },
   });
 
-  ctx.octokit.pulls.listReviews.mockResolvedValue({
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
     data: [],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 201,
       state: 'open',
@@ -11791,7 +11793,7 @@ test('push: default branch push updates approved green registry PR branches', as
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
     expect.objectContaining({
       owner: 'o1',
       repo: 'r1',
@@ -11820,7 +11822,7 @@ test('push: default branch push without repo info returns early', async () => {
   await handler(ctx);
 
   expect(loadStaticConfig).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
 });
 
 test('push: default branch delayed retry logs when approved branch update retry crashes', async () => {
@@ -11839,10 +11841,10 @@ test('push: default branch delayed retry logs when approved branch update retry 
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-delayed-retry', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -11852,7 +11854,7 @@ test('push: default branch delayed retry logs when approved branch update retry 
   };
 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({ data: [] })
     .mockResolvedValueOnce({ data: [] })
     .mockRejectedValueOnce(new Error('retry crashed'));
@@ -11886,11 +11888,11 @@ test('push: direct PR reevaluation skips missing head sha', async () => {
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -11907,7 +11909,7 @@ test('push: direct PR reevaluation skips missing head sha', async () => {
   await handler(ctx);
 
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.get).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.get).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -11926,12 +11928,12 @@ test('push: direct PR reevaluation skips different base branch', async () => {
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   extractHashFromPrBody.mockReturnValueOnce('');
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -11947,7 +11949,7 @@ test('push: direct PR reevaluation skips different base branch', async () => {
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.listFiles).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.listFiles).not.toHaveBeenCalled();
   expect(runApprovalHook).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
@@ -11973,9 +11975,9 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -11984,7 +11986,7 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -11999,8 +12001,8 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({ data: [] });
-  ctx.octokit.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({ data: [] });
+  ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
   const getTreeMock: any = jest.fn();
   getTreeMock.mockResolvedValueOnce({
     data: { tree: [{ path: 'resources/product-tree.yaml', type: 'blob', sha: 'base-file-sha' }] },
@@ -12008,9 +12010,9 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
   getTreeMock.mockResolvedValueOnce({
     data: { tree: [{ path: 'resources/product-tree.yaml', type: 'blob', sha: 'head-file-sha' }] },
   });
-  ctx.octokit.git.getTree = getTreeMock;
+  ctx.octokit.rest.git.getTree = getTreeMock;
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: {
       number: 208,
       state: 'closed',
@@ -12025,9 +12027,9 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
 
   await handler(ctx);
 
-  expect(ctx.octokit.git.getTree).toHaveBeenCalledTimes(2);
+  expect(ctx.octokit.rest.git.getTree).toHaveBeenCalledTimes(2);
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12052,9 +12054,9 @@ test('push: direct PR reevaluation requests update when current base comparison 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12063,7 +12065,7 @@ test('push: direct PR reevaluation requests update when current base comparison 
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12078,11 +12080,11 @@ test('push: direct PR reevaluation requests update when current base comparison 
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
     data: [{ filename: 'resources/product-current-base-stale.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.get.mockResolvedValueOnce({
     data: {
       number: 210,
       state: 'open',
@@ -12095,17 +12097,17 @@ test('push: direct PR reevaluation requests update when current base comparison 
     },
   });
 
-  ctx.octokit.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
-  ctx.octokit.repos.compareCommitsWithBasehead = jest.fn(async () => ({
+  ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+  ctx.octokit.rest.repos.compareCommitsWithBasehead = jest.fn(async () => ({
     data: { status: 'ahead', ahead_by: 1 },
   }));
 
   await handler(ctx);
 
-  expect(ctx.octokit.repos.compareCommitsWithBasehead).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.repos.compareCommitsWithBasehead).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', basehead: 'sha-current-base-stale...base-head-sha' })
   );
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 210, expected_head_sha: 'sha-current-base-stale' })
   );
 
@@ -12132,9 +12134,9 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12143,7 +12145,7 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12158,15 +12160,15 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({ data: [] });
-  ctx.octokit.repos.getBranch = jest.fn(async () => {
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({ data: [] });
+  ctx.octokit.rest.repos.getBranch = jest.fn(async () => {
     throw httpErr(500);
   });
 
   await handler(ctx);
 
-  expect(ctx.octokit.repos.getBranch).toHaveBeenCalledTimes(1);
-  expect(ctx.octokit.git.getTree).toBeUndefined();
+  expect(ctx.octokit.rest.repos.getBranch).toHaveBeenCalledTimes(1);
+  expect(ctx.octokit.rest.git.getTree).toBeUndefined();
   expect(runApprovalHook).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
@@ -12192,10 +12194,10 @@ test('push: direct PR reevaluation does not run approval when approved head chec
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12204,7 +12206,7 @@ test('push: direct PR reevaluation does not run approval when approved head chec
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12219,19 +12221,19 @@ test('push: direct PR reevaluation does not run approval when approved head chec
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-not-green.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-not-green\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'not-green-user' } }] });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'not-green-user' } }] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 209,
       state: 'open',
@@ -12245,14 +12247,14 @@ test('push: direct PR reevaluation does not run approval when approved head chec
   });
 
   runApprovalHook.mockResolvedValueOnce({ status: 'approved', comment: 'approved but wait for ci' } as any);
-  ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
     data: { check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'failure' }] },
   });
 
   await handler(ctx);
 
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12277,10 +12279,10 @@ test('push: direct PR reevaluation waits when latest approved head check runs ar
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12289,7 +12291,7 @@ test('push: direct PR reevaluation waits when latest approved head check runs ar
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12304,19 +12306,19 @@ test('push: direct PR reevaluation waits when latest approved head check runs ar
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-not-completed.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-not-completed\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'waiting-user' } }] });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'waiting-user' } }] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2091,
       state: 'open',
@@ -12329,14 +12331,14 @@ test('push: direct PR reevaluation waits when latest approved head check runs ar
     },
   });
 
-  ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
     data: { check_runs: [{ id: 1, name: 'ci', status: 'in_progress', conclusion: null }] },
   });
 
   await handler(ctx);
 
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12361,10 +12363,10 @@ test('push: direct PR reevaluation waits when completed head check runs have no 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12373,7 +12375,7 @@ test('push: direct PR reevaluation waits when completed head check runs have no 
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12388,19 +12390,19 @@ test('push: direct PR reevaluation waits when completed head check runs have no 
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-no-success.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-no-success\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'neutral-user' } }] });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'neutral-user' } }] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2092,
       state: 'open',
@@ -12413,14 +12415,14 @@ test('push: direct PR reevaluation waits when completed head check runs have no 
     },
   });
 
-  ctx.octokit.checks.listForRef.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForRef.mockResolvedValueOnce({
     data: { check_runs: [{ id: 1, name: 'lint', status: 'completed', conclusion: 'neutral' }] },
   });
 
   await handler(ctx);
 
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12445,10 +12447,10 @@ test('push: direct PR reevaluation falls back to combined status when head check
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12457,7 +12459,7 @@ test('push: direct PR reevaluation falls back to combined status when head check
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12472,19 +12474,21 @@ test('push: direct PR reevaluation falls back to combined status when head check
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-combined-status.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-combined-status\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'combined-status-user' } }] });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
+    data: [{ committer: { login: 'combined-status-user' } }],
+  });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2093,
       state: 'open',
@@ -12497,12 +12501,12 @@ test('push: direct PR reevaluation falls back to combined status when head check
     },
   });
 
-  ctx.octokit.checks.listForRef.mockRejectedValueOnce(httpErr(500));
-  ctx.octokit.repos.getCombinedStatusForRef = jest.fn(async () => ({ data: { state: 'pending' } }));
+  ctx.octokit.rest.checks.listForRef.mockRejectedValueOnce(httpErr(500));
+  ctx.octokit.rest.repos.getCombinedStatusForRef = jest.fn(async () => ({ data: { state: 'pending' } }));
 
   await handler(ctx);
 
-  expect(ctx.octokit.repos.getCombinedStatusForRef).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.repos.getCombinedStatusForRef).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', ref: 'sha-combined-status' })
   );
   expect(
@@ -12511,7 +12515,7 @@ test('push: direct PR reevaluation falls back to combined status when head check
     )
   ).toBe(true);
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12536,10 +12540,10 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12548,7 +12552,7 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12563,21 +12567,21 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-combined-status-failed.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-combined-status-failed\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
     data: [{ committer: { login: 'combined-status-failed-user' } }],
   });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2094,
       state: 'open',
@@ -12590,18 +12594,18 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
     },
   });
 
-  ctx.octokit.checks.listForRef.mockRejectedValueOnce(httpErr(500));
-  ctx.octokit.repos.getCombinedStatusForRef = jest.fn(async () => {
+  ctx.octokit.rest.checks.listForRef.mockRejectedValueOnce(httpErr(500));
+  ctx.octokit.rest.repos.getCombinedStatusForRef = jest.fn(async () => {
     throw httpErr(502);
   });
 
   await handler(ctx);
 
-  expect(ctx.octokit.repos.getCombinedStatusForRef).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.repos.getCombinedStatusForRef).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', ref: 'sha-combined-status-failed' })
   );
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12626,10 +12630,10 @@ test('push: direct PR reevaluation stops when the current head sha is missing', 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12638,7 +12642,7 @@ test('push: direct PR reevaluation stops when the current head sha is missing', 
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12653,19 +12657,19 @@ test('push: direct PR reevaluation stops when the current head sha is missing', 
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-missing-head-sha.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-missing-head-sha\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'missing-head-user' } }] });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'missing-head-user' } }] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2095,
       state: 'open',
@@ -12680,10 +12684,10 @@ test('push: direct PR reevaluation stops when the current head sha is missing', 
 
   await handler(ctx);
 
-  expect(ctx.octokit.checks.listForRef).not.toHaveBeenCalled();
-  expect(ctx.octokit.repos.getCombinedStatusForRef).toBeUndefined();
+  expect(ctx.octokit.rest.checks.listForRef).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.repos.getCombinedStatusForRef).toBeUndefined();
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12708,10 +12712,10 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12720,7 +12724,7 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12735,19 +12739,19 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-check-runs-page-cap.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-check-runs-page-cap\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'page-cap-user' } }] });
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({ data: [{ committer: { login: 'page-cap-user' } }] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2096,
       state: 'open',
@@ -12760,7 +12764,7 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
     },
   });
 
-  ctx.octokit.checks.listForRef.mockImplementation(async ({ page }: { page?: number }) => ({
+  ctx.octokit.rest.checks.listForRef.mockImplementation(async ({ page }: { page?: number }) => ({
     data: {
       check_runs: Array.from({ length: 100 }, (_, index) => ({
         id: ((page ?? 1) - 1) * 100 + index + 1,
@@ -12773,12 +12777,12 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
 
   await handler(ctx);
 
-  expect(ctx.octokit.checks.listForRef).toHaveBeenCalledTimes(20);
-  expect(ctx.octokit.checks.listForRef).toHaveBeenLastCalledWith(
+  expect(ctx.octokit.rest.checks.listForRef).toHaveBeenCalledTimes(20);
+  expect(ctx.octokit.rest.checks.listForRef).toHaveBeenLastCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', ref: 'sha-check-runs-page-cap', page: 20 })
   );
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -12813,10 +12817,10 @@ test('push: stale direct registry PR retries updateBranch without expected head 
   });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12825,7 +12829,7 @@ test('push: stale direct registry PR retries updateBranch without expected head 
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12840,11 +12844,11 @@ test('push: stale direct registry PR retries updateBranch without expected head 
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
     data: [{ filename: 'resources/product-stale.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 204,
       state: 'open',
@@ -12857,15 +12861,15 @@ test('push: stale direct registry PR retries updateBranch without expected head 
     },
   });
 
-  ctx.octokit.pulls.updateBranch
+  ctx.octokit.rest.pulls.updateBranch
     .mockRejectedValueOnce(Object.assign(new Error('expected_head_sha mismatch'), { status: 422 }))
     .mockResolvedValueOnce({});
 
   await handler(ctx);
 
   expect(runApprovalHook).not.toHaveBeenCalled();
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledTimes(2);
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenNthCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(2);
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenNthCalledWith(
     1,
     expect.objectContaining({
       owner: 'o1',
@@ -12874,7 +12878,7 @@ test('push: stale direct registry PR retries updateBranch without expected head 
       expected_head_sha: 'sha-stale-direct',
     })
   );
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenNthCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenNthCalledWith(
     2,
     expect.objectContaining({
       owner: 'o1',
@@ -12882,7 +12886,7 @@ test('push: stale direct registry PR retries updateBranch without expected head 
       pull_number: 204,
     })
   );
-  expect(ctx.octokit.pulls.updateBranch.mock.calls[1]?.[0]).not.toHaveProperty('expected_head_sha');
+  expect(ctx.octokit.rest.pulls.updateBranch.mock.calls[1]?.[0]).not.toHaveProperty('expected_head_sha');
 
   setTimeoutSpy.mockRestore();
 });
@@ -12917,10 +12921,10 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -12929,7 +12933,7 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -12944,22 +12948,22 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-direct-green.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValue({
+  ctx.octokit.rest.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-green\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-green-user' } }],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 205,
       state: 'open',
@@ -12985,14 +12989,14 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
       namespace: 'product-direct-green',
     })
   );
-  expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 205, event: 'APPROVE' })
   );
   expect(tryMergeIfGreen).toHaveBeenCalledWith(
     ctx,
     expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 205, mergeMethod: 'squash' })
   );
-  expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -13027,10 +13031,10 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13039,7 +13043,7 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -13054,22 +13058,22 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-direct-mergeability-poll.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValue({
+  ctx.octokit.rest.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-mergeability-poll\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-mergeability-poll-user' } }],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2054,
       state: 'open',
@@ -13086,7 +13090,7 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.get.mock.calls.length).toBeGreaterThanOrEqual(6);
+  expect(ctx.octokit.rest.pulls.get.mock.calls.length).toBeGreaterThanOrEqual(6);
   expect(tryMergeIfGreen).toHaveBeenCalledWith(
     ctx,
     expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 2054, mergeMethod: 'squash' })
@@ -13125,10 +13129,10 @@ test('push: direct registry PR creates an approval review when prior review look
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: TimerHandler) => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13137,7 +13141,7 @@ test('push: direct registry PR creates an approval review when prior review look
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -13152,11 +13156,11 @@ test('push: direct registry PR creates an approval review when prior review look
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-direct-green-review-fetch-failed.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.repos.getContent.mockResolvedValue({
+  ctx.octokit.rest.repos.getContent.mockResolvedValue({
     data: {
       content: Buffer.from('type: product\nname: product-direct-green-review-fetch-failed\n', 'utf8').toString(
         'base64'
@@ -13165,11 +13169,11 @@ test('push: direct registry PR creates an approval review when prior review look
     },
   });
 
-  ctx.octokit.pulls.listCommits.mockResolvedValue({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValue({
     data: [{ committer: { login: 'direct-green-review-fetch-failed-user' } }],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2051,
       state: 'open',
@@ -13181,14 +13185,14 @@ test('push: direct registry PR creates an approval review when prior review look
       mergeable_state: 'clean',
     },
   });
-  ctx.octokit.pulls.listReviews.mockRejectedValueOnce(httpErr(500));
+  ctx.octokit.rest.pulls.listReviews.mockRejectedValueOnce(httpErr(500));
 
   runApprovalHook.mockResolvedValue({ status: 'approved', comment: 'approved after review lookup failure' } as any);
 
   await handler(ctx);
 
   expect(runApprovalHook).toHaveBeenCalled();
-  expect(ctx.octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 2051, event: 'APPROVE' })
   );
   expect(tryMergeIfGreen).toHaveBeenCalledWith(
@@ -13228,9 +13232,9 @@ test('push: approved review remains eligible for branch update after later comme
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13239,7 +13243,7 @@ test('push: approved review remains eligible for branch update after later comme
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
     data: [
       {
         number: 202,
@@ -13252,15 +13256,15 @@ test('push: approved review remains eligible for branch update after later comme
     ],
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-commented.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: { number: 202, labels: [] },
   });
 
-  ctx.octokit.pulls.listReviews.mockResolvedValue({
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
     data: [
       {
         id: 1,
@@ -13278,7 +13282,7 @@ test('push: approved review remains eligible for branch update after later comme
     ],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 202,
       state: 'open',
@@ -13293,7 +13297,7 @@ test('push: approved review remains eligible for branch update after later comme
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
     expect.objectContaining({
       owner: 'o1',
       repo: 'r1',
@@ -13334,9 +13338,9 @@ test('push: paginated review history uses later review id as tie-breaker for sam
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13345,7 +13349,7 @@ test('push: paginated review history uses later review id as tie-breaker for sam
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
     data: [
       {
         number: 2021,
@@ -13358,15 +13362,15 @@ test('push: paginated review history uses later review id as tie-breaker for sam
     ],
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-review-pagination.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: { number: 2021, labels: [{ name: 'Approved' }] },
   });
 
-  ctx.octokit.pulls.listReviews
+  ctx.octokit.rest.pulls.listReviews
     .mockResolvedValueOnce({
       data: [
         {
@@ -13393,9 +13397,9 @@ test('push: paginated review history uses later review id as tie-breaker for sam
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.listReviews).toHaveBeenCalledTimes(2);
-  expect(ctx.octokit.pulls.listReviews).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
-  expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.listReviews).toHaveBeenCalledTimes(2);
+  expect(ctx.octokit.rest.pulls.listReviews).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
+  expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -13429,9 +13433,9 @@ test('push: review fetch and approved-label fallback fetch failures skip branch 
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13440,7 +13444,7 @@ test('push: review fetch and approved-label fallback fetch failures skip branch 
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
     data: [
       {
         number: 2022,
@@ -13453,16 +13457,16 @@ test('push: review fetch and approved-label fallback fetch failures skip branch 
     ],
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-review-fetch-failed.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.pulls.listReviews.mockRejectedValueOnce(httpErr(500));
-  ctx.octokit.issues.get.mockRejectedValueOnce(httpErr(500));
+  ctx.octokit.rest.pulls.listReviews.mockRejectedValueOnce(httpErr(500));
+  ctx.octokit.rest.issues.get.mockRejectedValueOnce(httpErr(500));
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -13506,33 +13510,33 @@ test('push: branch update cooldown expires and allows a later retry', async () =
       repository: { name: 'r1', owner: { login: 'o1' }, default_branch: 'main' },
       commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
     };
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [pr] });
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-branch-cooldown-expiry.yaml', status: 'modified' }],
     });
-    ctx.octokit.issues.get.mockResolvedValue({ data: { number: 20225, labels: [{ name: 'Approved' }] } });
-    ctx.octokit.pulls.listReviews.mockResolvedValue({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.issues.get.mockResolvedValue({ data: { number: 20225, labels: [{ name: 'Approved' }] } });
+    ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
     return ctx;
   };
 
   const ctx1 = buildCtx();
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx1.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  ctx1.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
 
   await handler(ctx1);
 
-  expect(ctx1.octokit.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  expect(ctx1.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
 
   currentTestNow += 16 * 1000;
 
   const ctx2 = buildCtx();
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
-  ctx2.octokit.pulls.updateBranch.mockResolvedValueOnce({});
+  ctx2.octokit.rest.pulls.updateBranch.mockResolvedValueOnce({});
 
   await handler(ctx2);
 
-  expect(ctx2.octokit.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  expect(ctx2.octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
   expect(
     ctx2.log.info.mock.calls.some(
       (call: any[]) => String(call[1] ?? '') === 'pull-request branch update skipped: cooldown active'
@@ -13569,9 +13573,9 @@ test('push: plain approved review without bot marker is enough for branch update
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13580,7 +13584,7 @@ test('push: plain approved review without bot marker is enough for branch update
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
     data: [
       {
         number: 2023,
@@ -13593,11 +13597,11 @@ test('push: plain approved review without bot marker is enough for branch update
     ],
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: 'resources/product-plain-approved-review.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.pulls.listReviews.mockResolvedValue({
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
     data: [
       {
         id: 1,
@@ -13609,7 +13613,7 @@ test('push: plain approved review without bot marker is enough for branch update
     ],
   });
 
-  ctx.octokit.pulls.get.mockResolvedValue({
+  ctx.octokit.rest.pulls.get.mockResolvedValue({
     data: {
       number: 2023,
       state: 'open',
@@ -13624,7 +13628,7 @@ test('push: plain approved review without bot marker is enough for branch update
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.updateBranch).toHaveBeenCalledWith(
     expect.objectContaining({
       owner: 'o1',
       repo: 'r1',
@@ -13665,9 +13669,9 @@ test('push: changes requested review blocks approved-label based branch update',
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((() => {
+  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
     return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
-  }) as unknown as typeof setTimeout);
+  });
 
   ctx.name = 'push';
   ctx.payload = {
@@ -13676,7 +13680,7 @@ test('push: changes requested review blocks approved-label based branch update',
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({
     data: [
       {
         number: 203,
@@ -13689,15 +13693,15 @@ test('push: changes requested review blocks approved-label based branch update',
     ],
   });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
     data: [{ filename: 'resources/product-changes-requested.yaml', status: 'modified' }],
   });
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: { number: 203, labels: [{ name: 'Approved' }] },
   });
 
-  ctx.octokit.pulls.listReviews.mockResolvedValue({
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
     data: [
       {
         id: 1,
@@ -13716,7 +13720,7 @@ test('push: changes requested review blocks approved-label based branch update',
 
   await handler(ctx);
 
-  expect(ctx.octokit.pulls.updateBranch).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
 
   setTimeoutSpy.mockRestore();
 });
@@ -13894,11 +13898,11 @@ test('issues.opened: routing lock marker update failure is tolerated', async () 
     withCachedConfig: true,
   });
 
-  ctx.octokit.issues.update.mockRejectedValueOnce(new Error('cannot persist routing lock')).mockResolvedValue({});
+  ctx.octokit.rest.issues.update.mockRejectedValueOnce(new Error('cannot persist routing lock')).mockResolvedValue({});
 
   await handler(ctx);
 
-  expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({
       owner: 'o',
       repo: 'r',
@@ -13926,11 +13930,11 @@ test('issues.opened: routing label lock falls back to payload labels when label 
     withCachedConfig: true,
   });
 
-  ctx.octokit.issues.get.mockRejectedValueOnce(new Error('label refresh failed'));
+  ctx.octokit.rest.issues.get.mockRejectedValueOnce(new Error('label refresh failed'));
 
   await handler(ctx);
 
-  expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 89, name: 'route-2' })
   );
 });
@@ -14016,7 +14020,7 @@ test('issue_comment: approval tolerates approved-label refresh failures after ap
     config: cfg,
   });
 
-  ctx.octokit.issues.get
+  ctx.octokit.rest.issues.get
     .mockResolvedValueOnce({ data: { ...issue, labels: [{ name: 'needs-review' }] } })
     .mockRejectedValueOnce(httpErr(500))
     .mockRejectedValueOnce(httpErr(500));
@@ -14024,7 +14028,7 @@ test('issue_comment: approval tolerates approved-label refresh failures after ap
   await handler(ctx);
 
   expect(createRequestPr).toHaveBeenCalled();
-  expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 76, labels: ['Approved'] })
   );
 });
@@ -14058,7 +14062,7 @@ test('issue_comment: already-existing resource retry failure reports stale branc
     .mockRejectedValueOnce(new Error("Resource 'product-stale' already exists at resources/product-stale.yaml"))
     .mockRejectedValueOnce(new Error("Resource 'product-stale' already exists at resources/product-stale.yaml"));
 
-  ctx.octokit.repos.getContent.mockRejectedValueOnce(httpErr(404)).mockRejectedValueOnce(httpErr(404));
+  ctx.octokit.rest.repos.getContent.mockRejectedValueOnce(httpErr(404)).mockRejectedValueOnce(httpErr(404));
 
   await handler(ctx);
 
@@ -14090,7 +14094,7 @@ test('check_suite.success: direct PR request author pagination falls back to las
     config: cfg,
   });
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -14103,16 +14107,16 @@ test('check_suite.success: direct PR request author pagination falls back to las
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
     data: [{ filename: 'resources/product-paginated.yaml', status: 'modified' }],
   });
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from('type: product\nname: product-paginated\n', 'utf8').toString('base64'),
       encoding: 'base64',
     },
   });
-  ctx.octokit.pulls.listCommits
+  ctx.octokit.rest.pulls.listCommits
     .mockResolvedValueOnce({
       data: Array.from({ length: 100 }, (_, index) => ({
         committer: { login: index === 99 ? 'page-one-user' : `user-${index}` },
@@ -14160,7 +14164,7 @@ test('check_suite.success: direct PR serializes complex yaml form values before 
     config: cfg,
   });
 
-  ctx.octokit.pulls.list
+  ctx.octokit.rest.pulls.list
     .mockResolvedValueOnce({
       data: [
         {
@@ -14173,10 +14177,10 @@ test('check_suite.success: direct PR serializes complex yaml form values before 
     })
     .mockResolvedValueOnce({ data: [] });
 
-  ctx.octokit.pulls.listFiles.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({
     data: [{ filename: 'resources/product-complex.yaml', status: 'modified' }],
   });
-  ctx.octokit.repos.getContent.mockResolvedValueOnce({
+  ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({
     data: {
       content: Buffer.from(
         'type: product\nname: product-complex\nmaintainers:\n  - name: Alice\n    github: alice\n',
@@ -14185,7 +14189,7 @@ test('check_suite.success: direct PR serializes complex yaml form values before 
       encoding: 'base64',
     },
   });
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
     data: [{ committer: { login: 'complex-author' } }],
   });
 
@@ -14220,7 +14224,7 @@ test('check_suite.completed failure exits quietly when suite runs cannot be list
 
   ctx.payload.check_suite.id = 880;
   ctx.payload.check_suite.pull_requests = [{ number: 80 }];
-  ctx.octokit.checks.listForSuite.mockRejectedValueOnce(new Error('suite lookup failed'));
+  ctx.octokit.rest.checks.listForSuite.mockRejectedValueOnce(new Error('suite lookup failed'));
 
   await handler(ctx);
 
@@ -14243,10 +14247,10 @@ test('check_suite.completed failure skips a run when its annotations cannot be l
 
   ctx.payload.check_suite.id = 881;
   ctx.payload.check_suite.pull_requests = [{ number: 81 }];
-  ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+  ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
     data: { check_runs: [{ id: 9009, html_url: 'https://example/check/9009' }] },
   });
-  ctx.octokit.checks.listAnnotations.mockRejectedValueOnce(new Error('annotations failed'));
+  ctx.octokit.rest.checks.listAnnotations.mockRejectedValueOnce(new Error('annotations failed'));
 
   await handler(ctx);
 
@@ -14303,7 +14307,7 @@ test('issues.labeled: closed approved issue removes rejected and progress labels
   ctx.name = 'issues.labeled';
   ctx.payload = { action: 'labeled', issue, sender: { type: 'User', login: 'bob' }, label: { name: 'other' } };
 
-  ctx.octokit.issues.get.mockResolvedValueOnce({
+  ctx.octokit.rest.issues.get.mockResolvedValueOnce({
     data: {
       ...issue,
       labels: ['Approved', 'Rejected', 'Requester Action', 'Review Pending'],
@@ -14312,9 +14316,9 @@ test('issues.labeled: closed approved issue removes rejected and progress labels
 
   await handler(ctx);
 
-  const removed = ctx.octokit.issues.removeLabel.mock.calls.map((call: any[]) => call[0]?.name).sort();
+  const removed = ctx.octokit.rest.issues.removeLabel.mock.calls.map((call: any[]) => call[0]?.name).sort();
   expect(removed).toEqual(expect.arrayContaining(['Rejected', 'Requester Action', 'Review Pending']));
-  expect(ctx.octokit.issues.addLabels).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.issues.addLabels).not.toHaveBeenCalled();
 });
 
 test('issues.labeled: closed non-approved issue adds rejected and removes approved after refresh', async () => {
@@ -14343,7 +14347,7 @@ test('issues.labeled: closed non-approved issue adds rejected and removes approv
   ctx.name = 'issues.labeled';
   ctx.payload = { action: 'labeled', issue, sender: { type: 'User', login: 'bob' }, label: { name: 'other' } };
 
-  ctx.octokit.issues.get
+  ctx.octokit.rest.issues.get
     .mockResolvedValueOnce({
       data: {
         ...issue,
@@ -14359,10 +14363,10 @@ test('issues.labeled: closed non-approved issue adds rejected and removes approv
 
   await handler(ctx);
 
-  expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 84, labels: ['Rejected'] })
   );
-  const removed = ctx.octokit.issues.removeLabel.mock.calls.map((call: any[]) => call[0]?.name);
+  const removed = ctx.octokit.rest.issues.removeLabel.mock.calls.map((call: any[]) => call[0]?.name);
   expect(removed).toEqual(expect.arrayContaining(['Approved', 'Requester Action']));
 });
 
@@ -14400,7 +14404,7 @@ test('issue_comment: parent-owner approval posts validation fallback errors and 
   });
 
   const openCtx = mkIssuesContext({ issue, action: 'opened' });
-  (openCtx.octokit.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+  (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
     if (path === 'data/vendors/sap.yaml') {
       return {
         data: {
@@ -14479,10 +14483,10 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     ctx.payload.check_suite.id = 9901;
     ctx.payload.check_suite.pull_requests = [{ number: 901 }];
 
-    ctx.octokit.checks.listForSuite.mockResolvedValueOnce({
+    ctx.octokit.rest.checks.listForSuite.mockResolvedValueOnce({
       data: { check_runs: [{ id: 9902, html_url: 'https://example/check/9902' }] },
     });
-    ctx.octokit.checks.listAnnotations
+    ctx.octokit.rest.checks.listAnnotations
       .mockResolvedValueOnce({
         data: Array.from({ length: 100 }, () => ({
           title: 'registry-validate product',
@@ -14500,12 +14504,12 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         ],
       });
 
-    ctx.octokit.pulls.get.mockResolvedValueOnce({ data: { html_url: 'https://example/pr/901' } });
+    ctx.octokit.rest.pulls.get.mockResolvedValueOnce({ data: { html_url: 'https://example/pr/901' } });
 
     await handlers['check_suite.completed'][0](ctx);
 
-    expect(ctx.octokit.checks.listAnnotations).toHaveBeenCalledTimes(2);
-    expect(ctx.octokit.checks.listAnnotations).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
+    expect(ctx.octokit.rest.checks.listAnnotations).toHaveBeenCalledTimes(2);
+    expect(ctx.octokit.rest.checks.listAnnotations).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
     expect(postedBodies()).toContain('final page issue');
   });
 
@@ -14536,7 +14540,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         },
       });
 
-      ctx.octokit.pulls.get.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({
         data: {
           number: 902,
           body: 'manual direct pr',
@@ -14548,11 +14552,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
           head: { ref: 'feature/direct-pr-rejected-comment', sha: 'sha-direct-pr-rejected-comment' },
         },
       });
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-rejected-comment.yaml', status: 'modified' }],
       });
-      ctx.octokit.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: { content: b64('type: product\nname: product-rejected-comment\n'), encoding: 'base64' },
       });
       runApprovalHook.mockResolvedValue({ status: 'rejected', reason: 'policy denied' } as any);
@@ -14565,7 +14569,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         expect.stringContaining('policy denied'),
         expect.objectContaining({ minimizeTag: 'nsreq:on-approval:rejected' })
       );
-      expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
       expect(tryMergeIfGreen).not.toHaveBeenCalled();
     } finally {
       if (previousJestWorkerId === undefined) delete process.env.JEST_WORKER_ID;
@@ -14600,7 +14604,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         },
       });
 
-      ctx.octokit.pulls.get.mockResolvedValue({
+      ctx.octokit.rest.pulls.get.mockResolvedValue({
         data: {
           number: 9021,
           body: 'manual direct pr',
@@ -14612,11 +14616,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
           head: { ref: 'feature/direct-pr-rejected-ordered', sha: 'sha-direct-pr-rejected-ordered' },
         },
       });
-      ctx.octokit.pulls.listFiles.mockResolvedValue({
+      ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
         data: [{ filename: 'resources/product-rejected-ordered.yaml', status: 'modified' }],
       });
-      ctx.octokit.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
-      ctx.octokit.repos.getContent.mockResolvedValue({
+      ctx.octokit.rest.pulls.listCommits.mockResolvedValue({ data: [{ author: { login: 'requester' } }] });
+      ctx.octokit.rest.repos.getContent.mockResolvedValue({
         data: { content: b64('type: product\nname: product-rejected-ordered\n'), encoding: 'base64' },
       });
       runApprovalHook.mockResolvedValue({
@@ -14642,7 +14646,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       expect(rejectionBody.indexOf('### Alpha')).toBeLessThan(rejectionBody.indexOf('### True'));
       expect(rejectionBody.indexOf('### True')).toBeLessThan(rejectionBody.indexOf('### Zeta'));
       expect(rejectionBody.indexOf('### Zeta')).toBeLessThan(rejectionBody.indexOf('### Details'));
-      expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+      expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
       expect(tryMergeIfGreen).not.toHaveBeenCalled();
     } finally {
       if (previousJestWorkerId === undefined) delete process.env.JEST_WORKER_ID;
@@ -14682,9 +14686,9 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     });
 
     extractHashFromPrBody.mockReturnValue('');
-    ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         number: 31,
         title: 'Request',
@@ -14694,10 +14698,10 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         state: 'open',
       },
     });
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-linked-unknown.yaml', status: 'modified' }],
     });
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: { content: b64('type: product\nname: product-linked-unknown\n'), encoding: 'base64' },
     });
     runApprovalHook.mockResolvedValue({ status: 'unknown', reason: 'manual review required' } as any);
@@ -14710,7 +14714,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       expect.stringContaining('manual review required'),
       expect.objectContaining({ minimizeTag: 'nsreq:on-approval:unknown' })
     );
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -14731,7 +14735,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/namespaces/sap.agtwf01.yaml', status: 'added' }],
     });
 
@@ -14762,7 +14766,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     extractHashFromPrBody.mockReturnValue('');
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from('type: system\nname: sap.agtwf01\ndescription: Workflow approval test\n', 'utf8').toString(
           'base64'
@@ -14808,11 +14812,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/namespaces/sap.untrustedwf01.yaml', status: 'added' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from(
           'type: system\nname: sap.untrustedwf01\ndescription: Untrusted workflow approval test\n',
@@ -14874,7 +14878,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [
         { filename: 'data/namespaces/sap.agtwf02.yaml', status: 'added' },
         { filename: 'README.md', status: 'modified' },
@@ -14930,7 +14934,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/namespaces/sap.agtwf03.yaml', status: 'added' }],
     });
 
@@ -14957,7 +14961,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     extractHashFromPrBody.mockReturnValue('');
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from(
           'type: system\nname: sap.agtwf03\ndescription: Workflow approval completed-run test\n',
@@ -15000,11 +15004,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     extractHashFromPrBody.mockReturnValue('');
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/namespaces/sap.untrustedwf01.yaml', status: 'added' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from(
           'type: system\nname: sap.untrustedwf01\ndescription: Untrusted workflow approval test\n',
@@ -15076,11 +15080,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     extractHashFromPrBody.mockReturnValue('');
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/namespaces/sap.agtwf05.yaml', status: 'added' }],
     });
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from(
           'type: system\nname: sap.agtwf05\ndescription: No-runs workflow approval test\n',
@@ -15123,7 +15127,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'data/namespaces/sap.agtwf06.yaml', status: 'added' }],
     });
 
@@ -15150,7 +15154,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     extractHashFromPrBody.mockReturnValue('');
 
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: {
         content: Buffer.from(
           'type: system\nname: sap.agtwf06\ndescription: Queued-run workflow approval test\n',
@@ -15211,12 +15215,12 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     });
 
     extractHashFromPrBody.mockReturnValue('');
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({ data: [pr] })
       .mockResolvedValueOnce({ data: [pr, siblingPr] })
       .mockResolvedValueOnce({ data: [] });
-    ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         number: 32,
         title: 'Request',
@@ -15226,20 +15230,20 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         state: 'open',
       },
     });
-    ctx.octokit.pulls.listFiles.mockResolvedValue({
+    ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
       data: [{ filename: 'resources/product-linked-rejected.yaml', status: 'modified' }],
     });
-    ctx.octokit.repos.getContent.mockResolvedValue({
+    ctx.octokit.rest.repos.getContent.mockResolvedValue({
       data: { content: b64('type: product\nname: product-linked-rejected\n'), encoding: 'base64' },
     });
     runApprovalHook.mockResolvedValue({ status: 'rejected', reason: 'policy denied' } as any);
 
     await handlers['check_suite.completed'][0](ctx);
 
-    expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.update).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 904, state: 'closed' })
     );
-    expect(ctx.octokit.pulls.update).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.pulls.update).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o1', repo: 'r1', pull_number: 905, state: 'closed' })
     );
     expect(postedBodies()).toContain('Closed linked PR(s): #904, #905.');
@@ -15283,7 +15287,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       withCachedConfig: true,
       config: productCfg(),
     });
-    ctx.octokit.repos.getContent.mockRejectedValue(Object.assign(new Error('missing'), { status: 404 }));
+    ctx.octokit.rest.repos.getContent.mockRejectedValue(Object.assign(new Error('missing'), { status: 404 }));
 
     await handlers['issue_comment.created'][0](ctx);
 
@@ -15350,11 +15354,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       withCachedConfig: true,
       config: productCfg(),
     });
-    ctx.octokit.git.deleteRef.mockRejectedValueOnce(Object.assign(new Error('already gone'), { status: 404 }));
+    ctx.octokit.rest.git.deleteRef.mockRejectedValueOnce(Object.assign(new Error('already gone'), { status: 404 }));
 
     await handlers['issue_comment.created'][0](ctx);
 
-    expect(ctx.octokit.git.deleteRef).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o', repo: 'r', ref: 'heads/feat/resource-abc-issue-908' })
     );
     expect(postedBodies()).toContain('retry tail is not json');
@@ -15395,11 +15399,13 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       withCachedConfig: true,
       config: productCfg(),
     });
-    ctx.octokit.repos.getContent.mockRejectedValueOnce(Object.assign(new Error('server exploded'), { status: 500 }));
+    ctx.octokit.rest.repos.getContent.mockRejectedValueOnce(
+      Object.assign(new Error('server exploded'), { status: 500 })
+    );
 
     await handlers['issue_comment.created'][0](ctx);
 
-    expect(ctx.octokit.repos.getContent).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o', repo: 'r', path: 'resources/ABC.yaml' })
     );
     expect(postedBodies()).toContain('server exploded');
@@ -15414,7 +15420,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       errorsFormatted: '',
       errorsFormattedSingle: '',
       validationIssues: [{ path: '', message: 'missing structured details' }],
-    } as any);
+    });
 
     const issue = {
       number: 910,
@@ -15476,7 +15482,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       sender: { type: 'User', login: 'someone' },
       label: { name: 'broken-route' },
     };
-    ctx.octokit.issues.get.mockResolvedValue({ data: issue });
+    ctx.octokit.rest.issues.get.mockResolvedValue({ data: issue });
     (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
       const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
 
@@ -15493,7 +15499,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       (call: any[]) => call[1]?.issueLabels ?? []
     );
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 9111, name: 'route-2' })
     );
     expect(loadTemplateLabelSets).toEqual(
@@ -15516,11 +15522,11 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       state: 'open',
     };
     const ctx = mkIssuesContext({ issue, action: 'opened', withCachedConfig: true, config: productCfg() });
-    ctx.octokit.issues.update.mockRejectedValueOnce(new Error('cannot update marker'));
+    ctx.octokit.rest.issues.update.mockRejectedValueOnce(new Error('cannot update marker'));
 
     await handlers['issues.opened'][0](ctx);
 
-    expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -15562,14 +15568,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened', withCachedConfig: true, config: productCfg() });
-    ctx.octokit.issues.update.mockImplementation(async (args: any) => {
+    ctx.octokit.rest.issues.update.mockImplementation(async (args: any) => {
       if (String(args?.body || '').includes('nsreq:parent-approval')) {
         throw new Error('cannot add marker');
       }
 
       return {} as any;
     });
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -15595,7 +15601,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     expect(postedBodies()).toContain('Parent owner approval required');
     expect(postedBodies()).toContain('@parentOwner');
-    expect(ctx.octokit.issues.update).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -15604,7 +15610,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -15613,7 +15619,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       })
     );
 
-    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'o',
         repo: 'r',
@@ -15686,7 +15692,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.issues.get.mockResolvedValue({
+    ctx.octokit.rest.issues.get.mockResolvedValue({
       data: {
         ...issue,
         labels: issue.labels,
@@ -15694,7 +15700,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       },
     });
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -15709,28 +15715,28 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['issues.opened'][0](ctx);
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 914,
         name: 'Requester Action',
       })
     );
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 914,
         name: 'Review Pending',
       })
     );
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 914,
         name: 'Approved',
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 914,
         labels: ['Parent Owner Action'],
@@ -15780,9 +15786,9 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
 
-    ctx.octokit.issues.addAssignees.mockRejectedValueOnce(new Error('Validation Failed'));
+    ctx.octokit.rest.issues.addAssignees.mockRejectedValueOnce(new Error('Validation Failed'));
 
-    ctx.octokit.repos.getContent.mockImplementation(async ({ path }: any) => {
+    ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -15797,14 +15803,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['issues.opened'][0](ctx);
 
-    expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 915,
         assignees: ['parentOwner'],
       })
     );
 
-    expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 915,
         labels: ['Parent Owner Action'],
@@ -15836,7 +15842,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       sender: { type: 'User', login: 'someone' },
       label: { name: 'broken-route' },
     };
-    ctx.octokit.issues.get.mockResolvedValue({ data: issue });
+    ctx.octokit.rest.issues.get.mockResolvedValue({ data: issue });
     (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
       const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
 
@@ -15849,7 +15855,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['issues.labeled'][0](ctx);
 
-    expect(ctx.octokit.issues.removeLabel).toHaveBeenCalledWith(
+    expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 914, name: 'route-2' })
     );
     expect(postOnce).not.toHaveBeenCalled();
@@ -15877,7 +15883,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         sender: { type: 'User', login: 'someone' },
         label: { name: 'route-2' },
       };
-      ctx.octokit.issues.get.mockResolvedValue({ data: issue });
+      ctx.octokit.rest.issues.get.mockResolvedValue({ data: issue });
       return ctx;
     };
 
@@ -15948,7 +15954,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         classifier: 'RESOLVED',
       })
     );
-    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -15970,8 +15976,8 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['check_suite.completed'][0](ctx);
 
-    expect(ctx.octokit.checks.listForSuite).not.toHaveBeenCalled();
-    expect(ctx.octokit.checks.listAnnotations).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.checks.listForSuite).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.checks.listAnnotations).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -15994,8 +16000,8 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['check_suite.completed'][0](ctx);
 
-    expect(ctx.octokit.checks.listForSuite).not.toHaveBeenCalled();
-    expect(ctx.octokit.checks.listAnnotations).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.checks.listForSuite).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.checks.listAnnotations).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
   });
 
@@ -16025,7 +16031,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       })
     );
 
-    ctx.octokit.repos.listPullRequestsAssociatedWithCommit = listPullRequestsAssociatedWithCommit;
+    ctx.octokit.rest.repos.listPullRequestsAssociatedWithCommit = listPullRequestsAssociatedWithCommit;
 
     await handlers['check_suite.completed'][0](ctx);
 
@@ -16066,9 +16072,9 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       throw new Error('commit association lookup failed');
     });
 
-    ctx.octokit.repos.listPullRequestsAssociatedWithCommit = listPullRequestsAssociatedWithCommit;
+    ctx.octokit.rest.repos.listPullRequestsAssociatedWithCommit = listPullRequestsAssociatedWithCommit;
 
-    ctx.octokit.pulls.list
+    ctx.octokit.rest.pulls.list
       .mockResolvedValueOnce({
         data: [
           ...Array.from({ length: 99 }, (_, index) => ({
@@ -16093,7 +16099,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     await handlers['check_suite.completed'][0](ctx);
 
     expect(listPullRequestsAssociatedWithCommit).toHaveBeenCalledTimes(1);
-    expect(ctx.octokit.pulls.list).toHaveBeenNthCalledWith(
+    expect(ctx.octokit.rest.pulls.list).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
         owner: 'o1',
@@ -16103,7 +16109,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
         page: 1,
       })
     );
-    expect(ctx.octokit.pulls.list).toHaveBeenNthCalledWith(
+    expect(ctx.octokit.rest.pulls.list).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         owner: 'o1',
@@ -16154,7 +16160,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     await handlers['check_run.completed'][0](ctx);
 
     expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -16185,8 +16191,8 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     await handlers['check_run.completed'][0](ctx);
 
     expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.listFiles).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.listFiles).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -16217,7 +16223,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     await handlers['check_run.completed'][0](ctx);
 
     expect(collapseBotCommentsByPrefix).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -16235,7 +16241,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['status'][0](failureCtx);
 
-    expect(failureCtx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(failureCtx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     const missingShaCtx = mkStatusContext({
@@ -16248,7 +16254,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['status'][0](missingShaCtx);
 
-    expect(missingShaCtx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(missingShaCtx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
     const missingRepoCtx = mkBaseContext({ withCachedConfig: true });
@@ -16261,7 +16267,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['status'][0](missingRepoCtx);
 
-    expect(missingRepoCtx.octokit.pulls.list).not.toHaveBeenCalled();
+    expect(missingRepoCtx.octokit.rest.pulls.list).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });
 
@@ -16291,7 +16297,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     expect(loadTemplate).toHaveBeenCalled();
     expect(createRequestPr).not.toHaveBeenCalled();
-    expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(postOnce).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
   });

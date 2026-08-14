@@ -23,7 +23,7 @@ function mkContext(args: { files: Record<string, FileEntry>; resourceBotConfig?:
 
   return {
     context: {
-      octokit: { repos: { getContent } },
+      octokit: { rest: { repos: { getContent } } },
       resourceBotConfig: args.resourceBotConfig ?? {},
       log: { debug: jest.fn() },
     },
@@ -76,7 +76,7 @@ _meta:
     },
   });
 
-  const tpl = await loadTemplate(context as any, {
+  const tpl = await loadTemplate(context, {
     owner,
     repo,
     templatePath: 'templates/product.yml',
@@ -131,7 +131,7 @@ attributes:
     },
   });
 
-  const tpl = await loadTemplate(context as any, {
+  const tpl = await loadTemplate(context, {
     owner,
     repo,
     templatePath: 'templates/attr.yml',
@@ -170,7 +170,7 @@ _meta:
     },
   });
 
-  const tpl = await loadTemplate(context as any, { owner, repo, templatePath: tplPath });
+  const tpl = await loadTemplate(context, { owner, repo, templatePath: tplPath });
 
   expect(tpl.title).toBe('MD Title');
   expect(tpl.labels).toEqual(['registry-bot:md']);
@@ -213,7 +213,7 @@ body: []
     },
   });
 
-  const tpl1 = await loadTemplate(context as any, {
+  const tpl1 = await loadTemplate(context, {
     owner,
     repo,
     issueLabels: ['Registry-Bot:Service'],
@@ -225,7 +225,7 @@ body: []
 
   expect(getContent).toHaveBeenCalledTimes(2);
 
-  const tpl2 = await loadTemplate(context as any, {
+  const tpl2 = await loadTemplate(context, {
     owner,
     repo,
     issueLabels: ['registry-bot:service'],
@@ -340,7 +340,7 @@ test('label-index: unique-label fallback works when no prefixed labels exist', a
     },
   });
 
-  const tpl = await loadTemplate(context as any, {
+  const tpl = await loadTemplate(context, {
     owner,
     repo,
     issueLabels: ['service'],

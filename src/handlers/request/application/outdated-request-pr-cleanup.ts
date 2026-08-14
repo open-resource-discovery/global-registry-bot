@@ -38,15 +38,17 @@ type PostOnceOptionsBase = {
 };
 
 type OctokitLike<IssueType extends IssueLikeBase> = {
-  issues: {
-    get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data?: IssueType }>;
-    removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
-  };
-  pulls: {
-    update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
-  };
-  git: {
-    deleteRef: (args: { owner: string; repo: string; ref: string }) => Promise<unknown>;
+  rest: {
+    issues: {
+      get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data?: IssueType }>;
+      removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+    };
+    pulls: {
+      update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+    };
+    git: {
+      deleteRef: (args: { owner: string; repo: string; ref: string }) => Promise<unknown>;
+    };
   };
 };
 
@@ -92,7 +94,7 @@ async function closePr<
   IssueType extends IssueLikeBase,
 >(context: ContextType, params: ParamsType, prNum: number, ref: string): Promise<void> {
   try {
-    await context.octokit.pulls.update({
+    await context.octokit.rest.pulls.update({
       owner: params.owner,
       repo: params.repo,
       pull_number: prNum,
@@ -103,7 +105,7 @@ async function closePr<
   }
 
   try {
-    await context.octokit.git.deleteRef({
+    await context.octokit.rest.git.deleteRef({
       owner: params.owner,
       repo: params.repo,
       ref: `heads/${ref}`,
@@ -155,7 +157,7 @@ export async function closeOutdatedRequestPrs<
       };
     }
 
-    const { data } = await context.octokit.issues.get({ owner, repo, issue_number: issueNumber });
+    const { data } = await context.octokit.rest.issues.get({ owner, repo, issue_number: issueNumber });
     const issue = (data || {}) as IssueType;
     const bodyStr = callbacks.readIssueBodyForProcessing(issue.body);
     const form = callbacks.parseForm(bodyStr, template);
@@ -203,7 +205,7 @@ export async function closeOutdatedRequestPrs<
 
   if (!onApproved) return;
   try {
-    await context.octokit.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: onApproved });
+    await context.octokit.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: onApproved });
   } catch {
     // preserve best-effort approved-label cleanup semantics
   }

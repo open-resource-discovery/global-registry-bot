@@ -360,7 +360,7 @@ export function createHookApi(
       }
     } catch (err: unknown) {
       const msg = isAbortError(err) ? 'timeout' : err instanceof Error ? err.message : String(err);
-      throw new Error(msg);
+      throw new Error(msg, { cause: err });
     } finally {
       clearTimeout(timer);
     }

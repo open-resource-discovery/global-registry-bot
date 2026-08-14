@@ -101,29 +101,37 @@ type RepoContentResponse = RepoContentFile | RepoContentFile[];
 export type IssueListItem = { title: string; number: number };
 
 export type OctokitLike = {
-  repos: {
-    getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data: RepoContentResponse }>;
-  };
-  issues: {
-    get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data: unknown }>;
-    listForRepo: (args: {
-      owner: string;
-      repo: string;
-      state: 'open' | 'closed' | 'all';
-      per_page?: number;
-    }) => Promise<{ data: IssueListItem[] }>;
-    update: (args: {
-      owner: string;
-      repo: string;
-      issue_number: number;
-      body?: string;
-      state?: 'open' | 'closed';
-      title?: string;
-    }) => Promise<unknown>;
-    create: (args: { owner: string; repo: string; title: string; body: string; labels?: string[] }) => Promise<unknown>;
-    createComment: (args: { owner: string; repo: string; issue_number: number; body: string }) => Promise<unknown>;
-    addLabels: (args: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
-    removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+  rest: {
+    repos: {
+      getContent: (args: { owner: string; repo: string; path: string }) => Promise<{ data: RepoContentResponse }>;
+    };
+    issues: {
+      get: (args: { owner: string; repo: string; issue_number: number }) => Promise<{ data: unknown }>;
+      listForRepo: (args: {
+        owner: string;
+        repo: string;
+        state: 'open' | 'closed' | 'all';
+        per_page?: number;
+      }) => Promise<{ data: IssueListItem[] }>;
+      update: (args: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        body?: string;
+        state?: 'open' | 'closed';
+        title?: string;
+      }) => Promise<unknown>;
+      create: (args: {
+        owner: string;
+        repo: string;
+        title: string;
+        body: string;
+        labels?: string[];
+      }) => Promise<unknown>;
+      createComment: (args: { owner: string; repo: string; issue_number: number; body: string }) => Promise<unknown>;
+      addLabels: (args: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
+      removeLabel: (args: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+    };
   };
 };
 
@@ -428,7 +436,7 @@ function buildHookRuntimeConfig(secrets: HookSecrets): HookRuntimeConfig {
   return Object.freeze({
     ...values,
     getSecret: (key: string): string => values[normalizeHookSecretName(key)] || '',
-  }) as HookRuntimeConfig;
+  });
 }
 
 function pickHookSecretsForWorker(secrets: HookSecrets): Record<string, string> {
@@ -619,8 +627,8 @@ async function ensureStaticConfigLoaded(context: ValidationContext): Promise<voi
       }
     );
 
-    context.resourceBotConfig = (config || {}) as unknown as ResourceBotConfig;
-    context.resourceBotHooks = (hooks || null) as unknown as ResourceBotHooks | null;
+    context.resourceBotConfig = config || {};
+    context.resourceBotHooks = hooks || null;
     context.resourceBotHooksSource = hooksSource || null;
   } catch (err: unknown) {
     context.log?.warn?.({ err: err instanceof Error ? err.message : String(err) }, 'static-config:load-failed');

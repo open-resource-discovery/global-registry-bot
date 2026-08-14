@@ -11,17 +11,19 @@ type IssueLike = { number: number; state?: string | null };
 type ApprovalRejectionContext<PullRequestType extends { number: number }> = {
   state?: Record<string, unknown>;
   octokit: {
-    pulls: {
-      list: (args: {
-        owner: string;
-        repo: string;
-        state: 'open' | 'closed' | 'all';
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data: PullRequestType[] }>;
-      update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+    rest: {
+      pulls: {
+        list: (args: {
+          owner: string;
+          repo: string;
+          state: 'open' | 'closed' | 'all';
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data: PullRequestType[] }>;
+        update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+      };
+      issues: { update: (args: IssueParams & { state: 'closed' }) => Promise<unknown> };
     };
-    issues: { update: (args: IssueParams & { state: 'closed' }) => Promise<unknown> };
   };
 };
 
@@ -67,7 +69,7 @@ export async function rejectRequestFromApprovalHook<
   });
 
   try {
-    await context.octokit.issues.update({ ...params, state: 'closed' });
+    await context.octokit.rest.issues.update({ ...params, state: 'closed' });
     issue.state = 'closed';
   } catch {
     // ignore

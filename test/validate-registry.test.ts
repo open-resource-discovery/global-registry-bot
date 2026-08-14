@@ -20,25 +20,27 @@ function mkBotValidationContext(repoInfo: RepoInfo): BotValidationContext {
   return {
     // Octokit shape only needs to satisfy types; hooks are null so it's not used in the happy path.
     octokit: {
-      repos: {
-        getContent(): Promise<never> {
-          const e = new Error('Not Found') as Error & { status: number };
-          e.status = 404;
-          return Promise.reject(e);
+      rest: {
+        repos: {
+          getContent(): Promise<never> {
+            const e = new Error('Not Found') as Error & { status: number };
+            e.status = 404;
+            return Promise.reject(e);
+          },
         },
-      },
-      issues: {
-        get: () => Promise.resolve({ data: {} }),
-        listForRepo: () => Promise.resolve({ data: [] }),
-        update: () => Promise.resolve({}),
-        create: () => Promise.resolve({}),
-        createComment: () => Promise.resolve({}),
-        addLabels: () => Promise.resolve({}),
-        removeLabel: () => Promise.resolve({}),
+        issues: {
+          get: () => Promise.resolve({ data: {} }),
+          listForRepo: () => Promise.resolve({ data: [] }),
+          update: () => Promise.resolve({}),
+          create: () => Promise.resolve({}),
+          createComment: () => Promise.resolve({}),
+          addLabels: () => Promise.resolve({}),
+          removeLabel: () => Promise.resolve({}),
+        },
       },
     },
     log: console,
-    resourceBotConfig: { requests: {} } as unknown as BotValidationContext['resourceBotConfig'],
+    resourceBotConfig: { requests: {} },
     resourceBotHooks: null,
     resourceBotHooksSource: null,
     repo: () => repoInfo,
@@ -765,16 +767,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn2 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg2 = Parameters<ValidateOneFileFn2>[0];
-    type AjvArg2 = Parameters<ValidateOneFileFn2>[1];
     type CacheArg2 = Parameters<ValidateOneFileFn2>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'systemNamespace', schemaPath }],
-    } as unknown as TargetArg2;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg2;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg2;
 
     const repoInfo = mkRepoInfo();
@@ -826,8 +826,6 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn = typeof TEST_UTILS.validateOneFile;
-    type TargetArg = Parameters<ValidateOneFileFn>[0];
-    type AjvArg = Parameters<ValidateOneFileFn>[1];
     type CacheArg = Parameters<ValidateOneFileFn>[2];
 
     const target = {
@@ -836,9 +834,9 @@ describe('validate-registry', () => {
         { requestType: 'authorityNamespace', schemaPath: authoritySchemaPath },
         { requestType: 'systemNamespace', schemaPath: systemSchemaPath },
       ],
-    } as unknown as TargetArg;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg;
 
     const repoInfo = mkRepoInfo();
@@ -875,16 +873,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn3 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg3 = Parameters<ValidateOneFileFn3>[0];
-    type AjvArg3 = Parameters<ValidateOneFileFn3>[1];
     type CacheArg3 = Parameters<ValidateOneFileFn3>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'systemNamespace', schemaPath }],
-    } as unknown as TargetArg3;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg3;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg3;
 
     const repoInfo = mkRepoInfo();
@@ -892,11 +888,13 @@ describe('validate-registry', () => {
     botCtx.resourceBotConfig = {
       requests: {},
       hooks: { allowedHosts: ['api.sap.com'] },
-    } as unknown as BotValidationContext['resourceBotConfig'];
+    };
 
     botCtx.resourceBotHooks = {
-      onValidate: () => [{ field: 'identifier', message: 'hook rejected candidate' }],
-    } as unknown as BotValidationContext['resourceBotHooks'];
+      onValidate: (): { field: string; message: string }[] => [
+        { field: 'identifier', message: 'hook rejected candidate' },
+      ],
+    };
 
     const res = await TEST_UTILS.validateOneFile(target, ajv, schemaCache, botCtx, repoInfo, 'pr');
 
@@ -928,16 +926,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn4 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg4 = Parameters<ValidateOneFileFn4>[0];
-    type AjvArg4 = Parameters<ValidateOneFileFn4>[1];
     type CacheArg4 = Parameters<ValidateOneFileFn4>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'systemNamespace', schemaPath }],
-    } as unknown as TargetArg4;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg4;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg4;
 
     const repoInfo = mkRepoInfo();
@@ -977,16 +973,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn5 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg5 = Parameters<ValidateOneFileFn5>[0];
-    type AjvArg5 = Parameters<ValidateOneFileFn5>[1];
     type CacheArg5 = Parameters<ValidateOneFileFn5>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'product', schemaPath }],
-    } as unknown as TargetArg5;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg5;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg5;
 
     const repoInfo = mkRepoInfo();
@@ -1026,16 +1020,14 @@ describe('validate-registry', () => {
     });
 
     type ValidateOneFileFn6 = typeof TEST_UTILS.validateOneFile;
-    type TargetArg6 = Parameters<ValidateOneFileFn6>[0];
-    type AjvArg6 = Parameters<ValidateOneFileFn6>[1];
     type CacheArg6 = Parameters<ValidateOneFileFn6>[2];
 
     const target = {
       filePath,
       candidates: [{ requestType: 'product', schemaPath }],
-    } as unknown as TargetArg6;
+    };
 
-    const ajv = TEST_UTILS.buildAjv() as unknown as AjvArg6;
+    const ajv = TEST_UTILS.buildAjv();
     const schemaCache = new Map<string, unknown>() as unknown as CacheArg6;
 
     const repoInfo = mkRepoInfo();
@@ -1148,7 +1140,7 @@ describe('validate-registry', () => {
     await expect(TEST_UTILS.resolveMergeBase('')).rejects.toThrow('Missing base ref for merge-base calculation');
     expect(await TEST_UTILS.resolveMergeBase(baseSha, undefined as unknown as string)).toBe(baseSha);
 
-    const changedWithDefaultHead = await TEST_UTILS.getChangedFiles(baseSha, undefined as unknown as string);
+    const changedWithDefaultHead = await TEST_UTILS.getChangedFiles(baseSha, undefined);
     expect(changedWithDefaultHead).toContain('README.md');
     expect(changedWithDefaultHead).toContain('data/namespaces/new-file.yaml');
     expect(changedWithDefaultHead).not.toContain('data/namespaces/delete-me.yaml');
@@ -1175,13 +1167,13 @@ describe('validate-registry', () => {
     await mkdirp(path.join(tmpDir, 'docs/subdir'));
 
     const octokit = TEST_UTILS.createLocalOctokit();
-    const fileData = await octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'docs/readme.txt' });
+    const fileData = await octokit.rest.repos.getContent({ owner: 'o', repo: 'r', path: 'docs/readme.txt' });
     expect(Array.isArray(fileData.data)).toBe(false);
     if (!Array.isArray(fileData.data)) {
       expect(Buffer.from(fileData.data.content, 'base64').toString('utf8')).toBe('hello');
     }
 
-    const dirData = await octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'docs' });
+    const dirData = await octokit.rest.repos.getContent({ owner: 'o', repo: 'r', path: 'docs' });
     expect(Array.isArray(dirData.data)).toBe(true);
     if (Array.isArray(dirData.data)) {
       expect((dirData.data as unknown as { name: string }[]).map((entry) => entry.name)).toEqual(
@@ -1189,23 +1181,25 @@ describe('validate-registry', () => {
       );
     }
 
-    await expect(octokit.repos.getContent({ owner: 'o', repo: 'r', path: 'missing' })).rejects.toMatchObject({
+    await expect(octokit.rest.repos.getContent({ owner: 'o', repo: 'r', path: 'missing' })).rejects.toMatchObject({
       status: 404,
     });
 
-    await expect(octokit.issues.get({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({ data: {} });
-    await expect(octokit.issues.listForRepo({ owner: 'o', repo: 'r', state: 'open' })).resolves.toEqual({ data: [] });
-    await expect(octokit.issues.update({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({});
-    await expect(octokit.issues.create({ owner: 'o', repo: 'r', title: 't', body: 'b' })).resolves.toEqual({});
+    await expect(octokit.rest.issues.get({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({ data: {} });
+    await expect(octokit.rest.issues.listForRepo({ owner: 'o', repo: 'r', state: 'open' })).resolves.toEqual({
+      data: [],
+    });
+    await expect(octokit.rest.issues.update({ owner: 'o', repo: 'r', issue_number: 1 })).resolves.toEqual({});
+    await expect(octokit.rest.issues.create({ owner: 'o', repo: 'r', title: 't', body: 'b' })).resolves.toEqual({});
     await expect(
-      octokit.issues.createComment({ owner: 'o', repo: 'r', issue_number: 1, body: 'note' })
+      octokit.rest.issues.createComment({ owner: 'o', repo: 'r', issue_number: 1, body: 'note' })
     ).resolves.toEqual({});
-    await expect(octokit.issues.addLabels({ owner: 'o', repo: 'r', issue_number: 1, labels: ['x'] })).resolves.toEqual(
-      {}
-    );
-    await expect(octokit.issues.removeLabel({ owner: 'o', repo: 'r', issue_number: 1, name: 'x' })).resolves.toEqual(
-      {}
-    );
+    await expect(
+      octokit.rest.issues.addLabels({ owner: 'o', repo: 'r', issue_number: 1, labels: ['x'] })
+    ).resolves.toEqual({});
+    await expect(
+      octokit.rest.issues.removeLabel({ owner: 'o', repo: 'r', issue_number: 1, name: 'x' })
+    ).resolves.toEqual({});
 
     TEST_UTILS.ghAnnotateError('a:b,c.yaml', 'line1\nline2');
     const errs: string = (errorSpy?.mock.calls ?? [])
@@ -1269,10 +1263,10 @@ describe('validate-registry', () => {
     const repoInfo = mkRepoInfo();
     const botCtx = mkBotValidationContext(repoInfo);
     botCtx.resourceBotHooks = {
-      onValidate: () => {
+      onValidate: (): never => {
         throw new Error('hook blew up');
       },
-    } as unknown as BotValidationContext['resourceBotHooks'];
+    };
 
     const bestScoreRes = await TEST_UTILS.validateOneFile(
       {

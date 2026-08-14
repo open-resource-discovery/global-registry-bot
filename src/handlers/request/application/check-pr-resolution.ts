@@ -124,7 +124,7 @@ export async function resolveCheckSuitePrNumbers<
       per_page: 100,
     });
 
-    const data = (res as unknown as { data?: unknown }).data;
+    const data = res.data;
     const items = Array.isArray(data) ? data : [];
 
     const fromCommit = items

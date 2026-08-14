@@ -43,35 +43,41 @@ type RepoContentFileBase = {
 
 type ContextWithPullFiles<PullRequestFileType extends PullRequestFileLikeBase> = {
   octokit: {
-    pulls: {
-      listFiles: (args: {
-        owner: string;
-        repo: string;
-        pull_number: number;
-        per_page?: number;
-        page?: number;
-      }) => Promise<{ data?: PullRequestFileType[] }>;
+    rest: {
+      pulls: {
+        listFiles: (args: {
+          owner: string;
+          repo: string;
+          pull_number: number;
+          per_page?: number;
+          page?: number;
+        }) => Promise<{ data?: PullRequestFileType[] }>;
+      };
     };
   };
 };
 
 type ContextWithGitTree<GitTreeEntryType extends GitTreeEntryLikeBase> = {
   octokit: {
-    git: {
-      getTree: (args: {
-        owner: string;
-        repo: string;
-        tree_sha: string;
-        recursive?: 'true';
-      }) => Promise<{ data?: { tree?: GitTreeEntryType[] } }>;
+    rest: {
+      git: {
+        getTree: (args: {
+          owner: string;
+          repo: string;
+          tree_sha: string;
+          recursive?: 'true';
+        }) => Promise<{ data?: { tree?: GitTreeEntryType[] } }>;
+      };
     };
   };
 };
 
 type ContextWithRepoContent = {
   octokit: {
-    repos: {
-      getContent: (args: { owner: string; repo: string; path: string; ref?: string }) => Promise<{ data?: unknown }>;
+    rest: {
+      repos: {
+        getContent: (args: { owner: string; repo: string; path: string; ref?: string }) => Promise<{ data?: unknown }>;
+      };
     };
   };
 };
@@ -216,7 +222,7 @@ export async function listChangedYamlFilesPage<
   RepoInfoType extends RepoInfoBase,
   PullRequestFileType extends PullRequestFileLikeBase,
 >(context: ContextType, repoInfo: RepoInfoType, prNumber: number, page: number): Promise<PullRequestFileType[]> {
-  const res = await context.octokit.pulls.listFiles({
+  const res = await context.octokit.rest.pulls.listFiles({
     owner: repoInfo.owner,
     repo: repoInfo.repo,
     pull_number: prNumber,
@@ -271,7 +277,7 @@ export async function readRecursiveGitTreeEntries<
   if (!treeSha) return [];
 
   try {
-    const res = await context.octokit.git.getTree({
+    const res = await context.octokit.rest.git.getTree({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       tree_sha: treeSha,
@@ -372,7 +378,7 @@ export async function readRepoFileTextAtRef<
   if (!p || !branchRef) return null;
 
   try {
-    const res = await context.octokit.repos.getContent({
+    const res = await context.octokit.rest.repos.getContent({
       owner: repoInfo.owner,
       repo: repoInfo.repo,
       path: p,

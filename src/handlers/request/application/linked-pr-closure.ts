@@ -5,8 +5,10 @@ type LinkedPrClosureRepoInfo = Parameters<typeof findOpenIssuePrs>[1];
 
 type LinkedPrClosureContext = SnapshotContext & {
   octokit: SnapshotContext['octokit'] & {
-    pulls: SnapshotContext['octokit']['pulls'] & {
-      update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+    rest: SnapshotContext['octokit']['rest'] & {
+      pulls: SnapshotContext['octokit']['rest']['pulls'] & {
+        update: (args: { owner: string; repo: string; pull_number: number; state: 'closed' }) => Promise<unknown>;
+      };
     };
   };
 };
@@ -30,7 +32,7 @@ export async function closeLinkedIssuePrs<
   issueNumber: number,
   options: CloseLinkedIssuePrsOptions<ContextType, RepoInfoType, PullRequestType>
 ): Promise<number[]> {
-  let prs: PullRequestType[] = [];
+  let prs: PullRequestType[];
 
   try {
     prs = (await findOpenIssuePrs(context, repoInfo, issueNumber)) as unknown as PullRequestType[];
@@ -48,7 +50,7 @@ export async function closeLinkedIssuePrs<
 
   for (const pr of prs) {
     try {
-      await context.octokit.pulls.update({
+      await context.octokit.rest.pulls.update({
         owner: repoInfo.owner,
         repo: repoInfo.repo,
         pull_number: pr.number,

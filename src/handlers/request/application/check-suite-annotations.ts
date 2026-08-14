@@ -67,7 +67,7 @@ export async function listAllCheckRunsForSuite<ContextType, CheckRunType extends
       page,
     });
 
-    const data = (res as unknown as { data?: unknown }).data;
+    const data = res.data;
     const runs =
       callbacks.isPlainObject(data) && Array.isArray(data['check_runs']) ? (data['check_runs'] as unknown[]) : [];
 
@@ -104,7 +104,7 @@ export async function listAllCheckRunAnnotations<
       page,
     });
 
-    const data = (res as unknown as { data?: unknown }).data;
+    const data = res.data;
     const items = Array.isArray(data) ? (data as unknown[]) : [];
 
     all.push(...(items as unknown as CheckRunAnnotationType[]));
@@ -132,7 +132,7 @@ export async function readFirstRegistryValidationArtifactsForSuiteRuns<
     const runId = callbacks.readCheckRunId(run);
     if (!runId) continue;
 
-    let annotations: CheckRunAnnotationType[] = [];
+    let annotations: CheckRunAnnotationType[];
     try {
       annotations = await listAllCheckRunAnnotations(context, owner, repo, runId, callbacks);
     } catch {

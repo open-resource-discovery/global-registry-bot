@@ -166,8 +166,10 @@ World
     function mkCtx(): any {
       return {
         octokit: {
-          pulls: {
-            list: jest.fn(),
+          rest: {
+            pulls: {
+              list: jest.fn(),
+            },
           },
         },
         state: undefined as any,
@@ -197,7 +199,7 @@ World
         { number: 208, body: 'fix: #999' }, // different issue
       ];
 
-      const list = ctx.octokit.pulls.list;
+      const list = ctx.octokit.rest.pulls.list;
 
       list.mockImplementation(async (args: any) => {
         if (args.page === 1) return { data: page1 };
@@ -235,7 +237,7 @@ World
 
       const ctx = mkCtx();
 
-      const list = ctx.octokit.pulls.list;
+      const list = ctx.octokit.rest.pulls.list;
       list.mockResolvedValue({ data: [{ number: 1, body: 'issue #1' }] });
 
       const r1 = await mod.findOpenIssuePrs(ctx, { owner: 'o1', repo: 'r1' }, 1);

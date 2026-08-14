@@ -92,48 +92,50 @@ function mkBaseContext(args: { owner?: string; repo?: string; withCachedConfig?:
     repo: () => ({ owner, repo }),
     issue: () => ({ owner, repo, issue_number: 1 }),
     octokit: {
-      issues: {
-        get: jest.fn(async () => ({ data: { number: 1, labels: [] } })),
-        update: jest.fn(async () => ({})),
-        addLabels: jest.fn(async () => ({})),
-        removeLabel: jest.fn(async () => ({})),
-        addAssignees: jest.fn(async () => ({})),
-      },
-      pulls: {
-        get: jest.fn(async (pullArgs: any) => ({
-          data: {
-            number: Number(pullArgs?.pull_number ?? 5),
-            state: 'open',
-            draft: false,
-            body: 'manual direct pr',
-            head: { ref: 'x', sha: 'sha1' },
-            base: { ref: 'main', sha: 'base-sha' },
-            mergeable: true,
-            mergeable_state: 'clean',
-          },
-        })),
-        list: jest.fn(async () => ({ data: [] })),
-        listFiles: jest.fn(async () => ({ data: [] })),
-        listCommits: jest.fn(async () => ({ data: [] })),
-        listReviews: jest.fn(async () => ({ data: [] })),
-        createReview: jest.fn(async () => ({})),
-        update: jest.fn(async () => ({})),
-        updateBranch: jest.fn(async () => ({})),
-      },
-      git: {
-        deleteRef: jest.fn(async () => ({})),
-      },
-      repos: {
-        getContent: jest.fn(async () => ({})),
-      },
-      checks: {
-        listAnnotations: jest.fn(async () => ({ data: [] as any[] })),
-        listForSuite: jest.fn(async () => ({ data: { check_runs: [] } })),
-        listForRef: jest.fn(async () => ({
-          data: {
-            check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
-          },
-        })),
+      rest: {
+        issues: {
+          get: jest.fn(async () => ({ data: { number: 1, labels: [] } })),
+          update: jest.fn(async () => ({})),
+          addLabels: jest.fn(async () => ({})),
+          removeLabel: jest.fn(async () => ({})),
+          addAssignees: jest.fn(async () => ({})),
+        },
+        pulls: {
+          get: jest.fn(async (pullArgs: any) => ({
+            data: {
+              number: Number(pullArgs?.pull_number ?? 5),
+              state: 'open',
+              draft: false,
+              body: 'manual direct pr',
+              head: { ref: 'x', sha: 'sha1' },
+              base: { ref: 'main', sha: 'base-sha' },
+              mergeable: true,
+              mergeable_state: 'clean',
+            },
+          })),
+          list: jest.fn(async () => ({ data: [] })),
+          listFiles: jest.fn(async () => ({ data: [] })),
+          listCommits: jest.fn(async () => ({ data: [] })),
+          listReviews: jest.fn(async () => ({ data: [] })),
+          createReview: jest.fn(async () => ({})),
+          update: jest.fn(async () => ({})),
+          updateBranch: jest.fn(async () => ({})),
+        },
+        git: {
+          deleteRef: jest.fn(async () => ({})),
+        },
+        repos: {
+          getContent: jest.fn(async () => ({})),
+        },
+        checks: {
+          listAnnotations: jest.fn(async () => ({ data: [] as any[] })),
+          listForSuite: jest.fn(async () => ({ data: { check_runs: [] } })),
+          listForRef: jest.fn(async () => ({
+            data: {
+              check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
+            },
+          })),
+        },
       },
     },
   };
@@ -203,28 +205,28 @@ function prepareUnknownStandaloneCurrentHeadCase(args: {
   };
 
   ctx.payload.check_run.pull_requests = [{ number: args.prNumber }];
-  ctx.octokit.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
-  ctx.octokit.pulls.get.mockResolvedValue({ data: pr });
-  ctx.octokit.pulls.listFiles.mockResolvedValue({
+  ctx.octokit.rest.pulls.list.mockResolvedValueOnce({ data: [pr] }).mockResolvedValueOnce({ data: [] });
+  ctx.octokit.rest.pulls.get.mockResolvedValue({ data: pr });
+  ctx.octokit.rest.pulls.listFiles.mockResolvedValue({
     data: [{ filename: args.fileName, status: 'modified' }],
   });
-  ctx.octokit.repos.getContent.mockResolvedValue({
+  ctx.octokit.rest.repos.getContent.mockResolvedValue({
     data: {
       content: b64(`type: product\nname: ${args.resourceName}\n`),
       encoding: 'base64',
     },
   });
-  ctx.octokit.pulls.listCommits.mockResolvedValueOnce({
+  ctx.octokit.rest.pulls.listCommits.mockResolvedValueOnce({
     data: [{ author: { login: 'requester' } }],
   });
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: {
       labels: [{ name: 'needs-review' }],
       assignees: [{ login: 'configuredApprover' }],
     },
   });
-  ctx.octokit.pulls.listReviews.mockResolvedValue({ data: args.reviews });
-  ctx.octokit.checks.listForRef.mockResolvedValue({
+  ctx.octokit.rest.pulls.listReviews.mockResolvedValue({ data: args.reviews });
+  ctx.octokit.rest.checks.listForRef.mockResolvedValue({
     data: {
       check_runs: [{ id: 1, name: 'validate', status: 'completed', conclusion: 'success' }],
     },
@@ -377,8 +379,8 @@ test('check_run.success: unknown approval accepts bot manual fallback review for
     ctx,
     expect.objectContaining({ owner: 'o1', repo: 'r1', prNumber: 501, mergeMethod: 'squash' })
   );
-  expect(ctx.octokit.pulls.createReview).not.toHaveBeenCalled();
-  expect(ctx.octokit.issues.addLabels).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
+  expect(ctx.octokit.rest.issues.addLabels).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 501, labels: ['Approved'] })
   );
   expect(postedBodies()).not.toContain('Routing to an approver for review');
@@ -422,7 +424,7 @@ test('check_run.success: current-head merge falls back to the listed PR when ref
     ],
   });
 
-  ctx.octokit.pulls.get.mockRejectedValueOnce(new Error('refresh failed'));
+  ctx.octokit.rest.pulls.get.mockRejectedValueOnce(new Error('refresh failed'));
   runApprovalHook.mockResolvedValueOnce({ status: 'unknown', message: 'manual review required' } as any);
 
   await handlers['check_run.completed'][0](ctx);
@@ -482,7 +484,7 @@ test('check_run.success: unknown approval with bot current-head changes requeste
       },
     ],
   });
-  ctx.octokit.issues.get.mockResolvedValue({
+  ctx.octokit.rest.issues.get.mockResolvedValue({
     data: {
       labels: [{ name: 'needs-review' }],
       assignees: [],
@@ -595,7 +597,7 @@ test('check_run.success: unknown approval handover only adds assignees missing f
       },
     ],
   });
-  ctx.octokit.issues.get
+  ctx.octokit.rest.issues.get
     .mockResolvedValueOnce({
       data: {
         labels: [{ name: 'needs-review' }],
@@ -617,7 +619,7 @@ test('check_run.success: unknown approval handover only adds assignees missing f
 
   await handlers['check_run.completed'][0](ctx);
 
-  expect(ctx.octokit.issues.addAssignees).toHaveBeenCalledWith(
+  expect(ctx.octokit.rest.issues.addAssignees).toHaveBeenCalledWith(
     expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 504, assignees: ['ReviewerB'] })
   );
   expect(postedBodies()).toContain('Routing to an approver for review');

@@ -923,7 +923,7 @@ function buildCheckPrResolutionCallbacks(): CheckPrResolutionCallbacks<BotContex
         commit_sha: string;
         per_page: number;
       }
-    ): Promise<{ data?: unknown }> => await context.octokit.repos.listPullRequestsAssociatedWithCommit(args),
+    ): Promise<{ data?: unknown }> => await context.octokit.rest.repos.listPullRequestsAssociatedWithCommit(args),
     listPulls: async (
       context: BotContext<RequestEvents>,
       args: {
@@ -1489,7 +1489,7 @@ function buildBranchUpdateDecisionCallbacks(): BranchUpdateDecisionCallbacks<Bot
       args: { owner: string; repo: string; basehead: string }
     ): Promise<{ data?: { status?: string | null; ahead_by?: number | null } }> =>
       await (
-        context.octokit.repos as unknown as {
+        context.octokit.rest.repos as unknown as {
           compareCommitsWithBasehead: (args: {
             owner: string;
             repo: string;
@@ -1664,7 +1664,7 @@ async function listOpenPullRequests(
       page,
     })) as { data?: PullRequestLike[] };
 
-    const prs = (data || []) as unknown as PullRequestLike[];
+    const prs = data || [];
     if (!prs.length) break;
 
     out.push(...prs);
@@ -2598,8 +2598,7 @@ function buildOwnerApprovalCommentHandlingCallbacks(): OwnerApprovalCommentHandl
         labels,
         options as ReturnType<typeof buildReviewHandoverOptions>
       ),
-    buildReviewHandoverOptions: (): Record<string, unknown> =>
-      buildReviewHandoverOptions() as unknown as Record<string, unknown>,
+    buildReviewHandoverOptions: (): Record<string, unknown> => buildReviewHandoverOptions(),
     setParentOwnerActionState,
     assignParentOwnersForApproval,
     clearParentOwnerActionState,
@@ -2920,8 +2919,8 @@ export default function requestHandler(app: Probot): void {
       issue_number: issueNumber,
     }),
     readLinkedIssue: async (context: BotContext<RequestEvents>, params: IssueParams): Promise<IssueLike> => {
-      const res = await context.octokit.issues.get(params);
-      return res.data as unknown as IssueLike;
+      const res = await context.octokit.rest.issues.get(params);
+      return res.data;
     },
     log,
     getErrorMessage,

@@ -1,0 +1,31 @@
+name: 'GitHub Release'
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for the release (e.g. 1.2.3)'
+        required: false
+        type: string
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: write
+      statuses: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: open-resource-discovery/github-release@1d30cd7ee5eeef35d7015bf15838e0536cbf0338 # main
+        with:
+          tag-template: 'v<version>'
+          version: ${{ inputs.version }}
+          ci-workflows: 'ci-check.yml'

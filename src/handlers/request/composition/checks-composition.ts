@@ -28,8 +28,10 @@ type RegistryValidationArtifactsBase<MachineReadableSourceType> = {
 
 type PullRequestHtmlContextBase = {
   octokit: {
-    pulls: {
-      get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{ data: unknown }>;
+    rest: {
+      pulls: {
+        get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{ data: unknown }>;
+      };
     };
   };
 };
@@ -85,7 +87,7 @@ export function composeCheckCompletedHandlerCallbacks<
     ...callbacks,
 
     readPullRequestHtmlUrl: async (context: ContextType, repoInfo: RepoInfoType, prNumber: number): Promise<string> => {
-      const pr = await context.octokit.pulls.get({
+      const pr = await context.octokit.rest.pulls.get({
         owner: repoInfo.owner,
         repo: repoInfo.repo,
         pull_number: prNumber,
