@@ -7,11 +7,41 @@ on:
         description: 'Version for the release (e.g. 1.2.3)'
         required: false
         type: string
+      dryRun:
+        description: 'Dry-run mode: no branch, PR, tag, or release is created'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: write
+      statuses: write
     steps:
+      - name: Verify release ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          EXPECTED_REF="refs/heads/${DEFAULT_BRANCH}"
+          ACTUAL_REF="${GITHUB_REF}"
+          echo "Expected ref: ${EXPECTED_REF}"
+          echo "Actual ref:   ${ACTUAL_REF}"
+          if [[ "${ACTUAL_REF}" != "${EXPECTED_REF}" ]]; then
+            echo "ERROR: GitHub Releases may only be created from the default branch."
+            echo "       Expected '${EXPECTED_REF}', got '${ACTUAL_REF}'."
+            exit 1
+          fi
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -20,5 +50,8 @@ jobs:
       - name: Create GitHub Release
         uses: open-resource-discovery/github-release@1d30cd7ee5eeef35d7015bf15838e0536cbf0338 # main
         with:
+          github-token: ${{ github.token }}
           tag-template: 'v<version>'
           version: ${{ inputs.version }}
+          dry-run: ${{ inputs.dryRun }}
+          ci-workflows: 'ci-check.yml'

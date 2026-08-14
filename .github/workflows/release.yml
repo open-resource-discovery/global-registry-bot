@@ -9,12 +9,34 @@ on:
         type: boolean
         default: true
 
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   docker:
     if: inputs.docker
     runs-on: ubuntu-latest
     environment: docker-registry
+    permissions:
+      contents: read
+      packages: write
     steps:
+      - name: Verify release ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          EXPECTED_REF="refs/heads/${DEFAULT_BRANCH}"
+          ACTUAL_REF="${GITHUB_REF}"
+          echo "Expected ref: ${EXPECTED_REF}"
+          echo "Actual ref:   ${ACTUAL_REF}"
+          if [[ "${ACTUAL_REF}" != "${EXPECTED_REF}" ]]; then
+            echo "ERROR: Docker images may only be published from the default branch."
+            echo "       Expected '${EXPECTED_REF}', got '${ACTUAL_REF}'."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,19 +52,65 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Set Docker Tags
-        id: docker_tags
+      - name: Resolve release version
+        id: release_version
         run: |
-          VERSION=$(node -p -e "require('./package.json').version")
-          TAGS=""
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
 
-          if [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            TAGS="ghcr.io/${{ github.repository }}:latest"
+          if [[ -z "${VERSION}" || "${VERSION}" =~ [[:space:]] ]]; then
+            echo "ERROR: version is empty or contains whitespace: '${VERSION}'"
+            exit 1
+          fi
+          if [[ "${VERSION}" == *"/"* ]]; then
+            echo "ERROR: version contains a slash: '${VERSION}'"
+            exit 1
+          fi
+          if [[ "${VERSION}" == *":"* ]]; then
+            echo "ERROR: version contains a colon: '${VERSION}'"
+            exit 1
+          fi
+          if [[ "${VERSION}" == ","* ]]; then
+            echo "ERROR: version starts with a comma: '${VERSION}'"
+            exit 1
+          fi
+          if [[ "${VERSION}" == *"+"* ]]; then
+            echo "ERROR: version contains build metadata (+): '${VERSION}'"
+            exit 1
+          fi
+          if [[ ${#VERSION} -gt 128 ]]; then
+            echo "ERROR: version exceeds Docker tag length limit: '${VERSION}'"
+            exit 1
+          fi
+          if ! [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-][a-zA-Z0-9._-]+)?$ ]]; then
+            echo "ERROR: version is not a valid semver Docker tag (expected N.N.N or N.N.N-pre): '${VERSION}'"
+            exit 1
           fi
 
-          TAGS="$TAGS,ghcr.io/${{ github.repository }}:$VERSION"
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "$TAGS"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Set Docker tags
+        id: docker_tags
+        env:
+          REGISTRY: ghcr.io
+          IMAGE_NAME: ${{ github.repository }}
+          VERSION: ${{ steps.release_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE_LOWER="${REGISTRY}/${IMAGE_NAME,,}"
+          TAGS=()
+          TAGS+=("${IMAGE_LOWER}:${VERSION}")
+          if [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            TAGS+=("${IMAGE_LOWER}:latest")
+          fi
+          {
+            printf 'tags<<EOF\n'
+            printf '%s\n' "${TAGS[@]}"
+            printf 'EOF\n'
+          } >> "${GITHUB_OUTPUT}"
+          echo "Docker tags:"
+          printf '  %s\n' "${TAGS[@]}"
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -52,3 +120,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.docker_tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release_version.outputs.version }}
