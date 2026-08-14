@@ -24,8 +24,7 @@ jobs:
           fetch-depth: 0
 
       - name: Create GitHub Release
-        uses: open-resource-discovery/github-release@1d30cd7ee5eeef35d7015bf15838e0536cbf0338 # main
+        uses: open-resource-discovery/github-release@v0.1.0
         with:
           tag-template: 'v<version>'
           version: ${{ inputs.version }}
-          ci-workflows: 'ci-check.yml'
