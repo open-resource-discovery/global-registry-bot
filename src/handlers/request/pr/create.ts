@@ -7,6 +7,14 @@ import {
   resolvePrimaryIdFromTemplate as resolvePrimaryIdFromTemplateRaw,
   projectForSchema as projectForSchemaRaw,
 } from '../validation/run.js';
+import {
+  inspectExistingBranch,
+  compareFileOnBranch,
+  writeFileWithReconciliation,
+  createPrWithReconciliation,
+  type ContextForReconciliation,
+  type DelayFn,
+} from './reconciliation.js';
 
 // All root/type/title/labels must come from user config or template meta.
 
@@ -91,6 +99,11 @@ type OctokitLike = {
         branch: string;
         sha?: string;
       }) => Promise<unknown>;
+      compareCommitsWithBasehead?: (args: {
+        owner: string;
+        repo: string;
+        basehead: string;
+      }) => Promise<{ data: { files?: { filename: string; status?: string; previous_filename?: string }[] } }>;
     };
     git: {
       createRef: (args: { owner: string; repo: string; ref: string; sha: string }) => Promise<unknown>;
@@ -140,6 +153,8 @@ type ContextLike = {
 
 type CreateRequestPrOptions = {
   template?: TemplateLike;
+  /** Injectable delay for reconciliation backoff — used in tests to avoid real waits. */
+  _delay?: DelayFn;
 };
 
 type EffectivePrOptions = {
@@ -303,7 +318,7 @@ const getEffectivePrOptions = (context: ContextLike): EffectivePrOptions => {
   const commitMessageTemplate =
     typeof pr.commitMessageTemplate === 'string' && pr.commitMessageTemplate.trim()
       ? pr.commitMessageTemplate
-      : 'chore({root}): register {resource} (#${issue})';
+      : 'chore({root}): register {resource} (#{issue})';
 
   // Body footer: own key preferred, fallback to commit template
   const bodyFooter =
@@ -740,48 +755,59 @@ export async function createRequestPr(
   }
 
   const branch = applyBranchTemplate(prOpts.branchTemplate, resourceName, issue.number);
+  const localRepoRef = repoRef;
+  const delay = options?._delay;
 
+  // Reconstruct context with compareCommitsWithBasehead forwarded to repos (if present).
+  // reconciliation.ts expects repos.compareCommitsWithBasehead.
+  const reconciliationContext: ContextForReconciliation = {
+    octokit: {
+      rest: {
+        repos: {
+          getBranch: context.octokit.rest.repos.getBranch.bind(context.octokit.rest.repos),
+          getContent: context.octokit.rest.repos.getContent.bind(context.octokit.rest.repos),
+          createOrUpdateFileContents: context.octokit.rest.repos.createOrUpdateFileContents.bind(
+            context.octokit.rest.repos
+          ),
+          compareCommitsWithBasehead: context.octokit.rest.repos.compareCommitsWithBasehead
+            ? context.octokit.rest.repos.compareCommitsWithBasehead.bind(context.octokit.rest.repos)
+            : undefined,
+        },
+        pulls: {
+          list: context.octokit.rest.pulls.list.bind(context.octokit.rest.pulls),
+          create: context.octokit.rest.pulls.create.bind(context.octokit.rest.pulls),
+        },
+      },
+    },
+    log: context.log,
+  };
+
+  // Branch creation — discriminate createRef 422 carefully.
+  let branchExisted = false;
   try {
-    // Git refs are created under refs/heads/<branch>
     await context.octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
   } catch (e: unknown) {
-    if (getHttpStatus(e) !== 422) throw e;
-  }
-
-  const existsAt = async (p: string, refName: string): Promise<boolean> => {
-    try {
-      await context.octokit.rest.repos.getContent({ owner, repo, path: p, ref: refName });
-      return true;
-    } catch (e: unknown) {
-      if (getHttpStatus(e) === 404) return false;
-      throw e;
+    if (getHttpStatus(e) !== 422) {
+      throw new Error(
+        `[request-pr:branch-create] Failed to create request branch '${branch}': ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e }
+      );
     }
-  };
-
-  const writeFileAt = async (p: string, contentText: string, sha?: string | null): Promise<void> => {
-    const message = buildCommitMessage(prOpts.commitMessageTemplate, STRUCT_ROOT, resourceName, issue.number);
-
-    // Contents API expects Base64 encoded content for create/update
-    const params: {
-      owner: string;
-      repo: string;
-      path: string;
-      message: string;
-      content: string;
-      branch: string;
-      sha?: string;
-    } = {
-      owner,
-      repo,
-      path: p,
-      message,
-      content: Buffer.from(contentText, 'utf8').toString('base64'),
+    // 422: confirm the branch actually exists before resuming.
+    const safetyResult = await inspectExistingBranch(
+      reconciliationContext,
+      localRepoRef,
       branch,
-    };
-
-    if (sha) params.sha = sha;
-    await context.octokit.rest.repos.createOrUpdateFileContents(params);
-  };
+      baseSha,
+      `${STRUCT_ROOT}/${resourceName}.yaml`
+    );
+    if (!safetyResult.safe) {
+      throw new Error(`[request-pr:branch-existing] ${safetyResult.reason}`, {
+        cause: e,
+      });
+    }
+    branchExisted = true;
+  }
 
   const buildFlatPaths = (n: string): { file: string } => {
     const safe = String(n || '').trim();
@@ -860,34 +886,97 @@ export async function createRequestPr(
     const productSub = getTypeSubschema(prSchemaObj, 'Product') || prSchemaObj;
     stripDefaultsBySchema(candidate, productSub);
 
-    const exists = (await existsAt(productFile, defaultBranch)) || (await existsAt(productFile, branch));
-    if (exists) throw new Error(`Resource '${resourceName}' already exists at ${STRUCT_ROOT}`);
-
-    const yamlText = dumpYamlDoc(candidate);
-    await writeFileAt(productFile, yamlText, null);
-
-    let pr: PullRequestLike | undefined;
+    // Check default branch (and effective base branch when different) for duplicate.
     try {
-      const { data: prs } = await context.octokit.rest.pulls.list({
-        owner,
-        repo,
-        state: 'open',
-        head: `${owner}:${branch}`,
-      });
-      pr = prs[0];
-    } catch {
-      // ignore listing errors
+      await context.octokit.rest.repos.getContent({ owner, repo, path: productFile, ref: defaultBranch });
+      throw new Error(
+        `[request-pr:default-file-read] Resource '${resourceName}' is already registered on '${defaultBranch}' at ${STRUCT_ROOT}.`
+      );
+    } catch (e: unknown) {
+      if (getHttpStatus(e) !== 404)
+        throw new Error('[request-pr:default-file-read] ' + (e instanceof Error ? e.message : String(e)), {
+          cause: e,
+        });
+      // 404 = not on default branch, continue.
     }
 
-    if (!pr) {
-      const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
-      const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
-      const issueMarker = `<!-- nsreq:issue:${issue.number} -->`;
+    // When baseBranch differs from defaultBranch, also check baseBranch for duplicate.
+    if (baseBranch !== defaultBranch) {
+      try {
+        await context.octokit.rest.repos.getContent({ owner, repo, path: productFile, ref: baseBranch });
+        throw new Error(
+          `[request-pr:base-file-read] Resource '${resourceName}' is already registered on '${baseBranch}' at ${STRUCT_ROOT}.`
+        );
+      } catch (e: unknown) {
+        if (getHttpStatus(e) !== 404)
+          throw new Error('[request-pr:base-file-read] ' + (e instanceof Error ? e.message : String(e)), {
+            cause: e,
+          });
+        // 404 = not on base branch, continue.
+      }
+    }
 
-      const prTitle = buildPrTitle(prOpts.prTitleTemplate, 'Product', resourceName, STRUCT_ROOT);
-      const bodyHeader = `This PR registers **${resourceName}**.`;
+    // Compare or write file on request branch.
+    const yamlText = dumpYamlDoc(candidate);
+    const commitMessage = buildCommitMessage(prOpts.commitMessageTemplate, STRUCT_ROOT, resourceName, issue.number);
 
-      const body = `${bodyHeader}
+    if (branchExisted) {
+      const fileState = await compareFileOnBranch(reconciliationContext, localRepoRef, productFile, branch, yamlText);
+      if (fileState.status === 'conflict' || fileState.status === 'unreadable') {
+        throw new Error(`[request-pr:file-conflict] ${fileState.reason}`);
+      }
+      if (fileState.status === 'absent') {
+        // File not yet written — fall through to write below.
+        const writeResult = await writeFileWithReconciliation(
+          reconciliationContext,
+          localRepoRef,
+          productFile,
+          branch,
+          yamlText,
+          commitMessage,
+          delay
+        );
+        if (writeResult.status === 'conflict') {
+          throw new Error(`[request-pr:file-conflict] ${writeResult.reason}`, { cause: writeResult.cause });
+        }
+        if (writeResult.status === 'failed') {
+          throw new Error(
+            `[request-pr:file-write] The registry file could not be written to the request branch. ${writeResult.error.message}`,
+            { cause: writeResult.error }
+          );
+        }
+      }
+      // status === 'equivalent': skip write, proceed to PR.
+    } else {
+      const writeResult = await writeFileWithReconciliation(
+        reconciliationContext,
+        localRepoRef,
+        productFile,
+        branch,
+        yamlText,
+        commitMessage,
+        delay
+      );
+      if (writeResult.status === 'conflict') {
+        throw new Error(`[request-pr:file-conflict] ${writeResult.reason}`, { cause: writeResult.cause });
+      }
+      if (writeResult.status === 'failed') {
+        throw new Error(
+          `[request-pr:file-write] The registry file could not be written to the request branch. ${writeResult.error.message}`,
+          { cause: writeResult.error }
+        );
+      }
+    }
+
+    // Build PR body.
+    const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
+    const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
+    const issueMarker = `<!-- nsreq:issue:${issue.number} -->`;
+
+    const prTitle = buildPrTitle(prOpts.prTitleTemplate, 'Product', resourceName, STRUCT_ROOT);
+    const bodyHeader = `This PR registers **${resourceName}**.`;
+
+    const prBody = `${bodyHeader}
 
   fix: #${issue.number}
 
@@ -897,17 +986,11 @@ export async function createRequestPr(
   ${issueMarker}
   ${hashComment}`;
 
-      const res = await context.octokit.rest.pulls.create({
-        owner,
-        repo,
-        title: prTitle,
-        head: branch,
-        base: baseBranch,
-        body,
-        maintainer_can_modify: true,
-      });
-      pr = res.data;
-    }
+    const pr = await createPrWithReconciliation(
+      reconciliationContext,
+      { owner, repo, title: prTitle, head: branch, base: baseBranch, body: prBody, maintainer_can_modify: true },
+      branch
+    );
 
     let enabled = false;
     if (prOpts.autoMergeEnabled) {
@@ -1062,46 +1145,103 @@ export async function createRequestPr(
     stripDefaultsBySchema(candidate, typeSub);
   }
 
-  const exists = (await existsAt(resourceFile, defaultBranch)) || (await existsAt(resourceFile, branch));
-  if (exists) throw new Error(`Resource '${resourceName}' already exists at ${STRUCT_ROOT}`);
-
-  const yamlText = dumpYamlDoc(candidate);
-  await writeFileAt(resourceFile, yamlText, null);
-
-  let pr: PullRequestLike | undefined;
+  // Check default branch (and effective base branch when different) for duplicate.
   try {
-    const { data: prs } = await context.octokit.rest.pulls.list({
-      owner,
-      repo,
-      state: 'open',
-      head: `${owner}:${branch}`,
-    });
-    pr = prs[0];
-  } catch {
-    // ignore listing errors
+    await context.octokit.rest.repos.getContent({ owner, repo, path: resourceFile, ref: defaultBranch });
+    throw new Error(
+      `[request-pr:default-file-read] Resource '${resourceName}' is already registered on '${defaultBranch}' at ${STRUCT_ROOT}.`
+    );
+  } catch (e: unknown) {
+    if (getHttpStatus(e) !== 404)
+      throw new Error('[request-pr:default-file-read] ' + (e instanceof Error ? e.message : String(e)), {
+        cause: e,
+      });
+    // 404 = not on default branch, continue.
   }
 
-  if (!pr) {
-    const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
-    const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
-
-    const prTitle = buildPrTitle(prOpts.prTitleTemplate, String(candidate.type || type), resourceName, STRUCT_ROOT);
-
-    const bodyHeader = `This PR registers **${resourceName}**.`;
-    const body = `${bodyHeader}\n\nfix: #${issue.number}\n\nType: ${String(
-      candidate.type || type
-    )}\n${prOpts.bodyFooter}\n\n${hashComment}`;
-
-    const res = await context.octokit.rest.pulls.create({
-      owner,
-      repo,
-      head: branch,
-      base: baseBranch,
-      title: prTitle,
-      body,
-    });
-    pr = res.data;
+  // When baseBranch differs from defaultBranch, also check baseBranch for duplicate.
+  if (baseBranch !== defaultBranch) {
+    try {
+      await context.octokit.rest.repos.getContent({ owner, repo, path: resourceFile, ref: baseBranch });
+      throw new Error(
+        `[request-pr:base-file-read] Resource '${resourceName}' is already registered on '${baseBranch}' at ${STRUCT_ROOT}.`
+      );
+    } catch (e: unknown) {
+      if (getHttpStatus(e) !== 404)
+        throw new Error('[request-pr:base-file-read] ' + (e instanceof Error ? e.message : String(e)), {
+          cause: e,
+        });
+      // 404 = not on base branch, continue.
+    }
   }
+
+  // Compare or write file on request branch.
+  const nsYamlText = dumpYamlDoc(candidate);
+  const nsCommitMessage = buildCommitMessage(prOpts.commitMessageTemplate, STRUCT_ROOT, resourceName, issue.number);
+
+  if (branchExisted) {
+    const fileState = await compareFileOnBranch(reconciliationContext, localRepoRef, resourceFile, branch, nsYamlText);
+    if (fileState.status === 'conflict' || fileState.status === 'unreadable') {
+      throw new Error(`[request-pr:file-conflict] ${fileState.reason}`);
+    }
+    if (fileState.status === 'absent') {
+      const writeResult = await writeFileWithReconciliation(
+        reconciliationContext,
+        localRepoRef,
+        resourceFile,
+        branch,
+        nsYamlText,
+        nsCommitMessage,
+        delay
+      );
+      if (writeResult.status === 'conflict') {
+        throw new Error(`[request-pr:file-conflict] ${writeResult.reason}`, { cause: writeResult.cause });
+      }
+      if (writeResult.status === 'failed') {
+        throw new Error(
+          `[request-pr:file-write] The registry file could not be written to the request branch. ${writeResult.error.message}`,
+          { cause: writeResult.error }
+        );
+      }
+    }
+    // status === 'equivalent': skip write, proceed to PR.
+  } else {
+    const writeResult = await writeFileWithReconciliation(
+      reconciliationContext,
+      localRepoRef,
+      resourceFile,
+      branch,
+      nsYamlText,
+      nsCommitMessage,
+      delay
+    );
+    if (writeResult.status === 'conflict') {
+      throw new Error(`[request-pr:file-conflict] ${writeResult.reason}`, { cause: writeResult.cause });
+    }
+    if (writeResult.status === 'failed') {
+      throw new Error(
+        `[request-pr:file-write] The registry file could not be written to the request branch. ${writeResult.error.message}`,
+        { cause: writeResult.error }
+      );
+    }
+  }
+
+  // Build PR body.
+  const nsHash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
+  const nsHashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${nsHash} -->`;
+
+  const prTitle = buildPrTitle(prOpts.prTitleTemplate, String(candidate.type || type), resourceName, STRUCT_ROOT);
+
+  const bodyHeader = `This PR registers **${resourceName}**.`;
+  const prBody = `${bodyHeader}\n\nfix: #${issue.number}\n\nType: ${String(
+    candidate.type || type
+  )}\n${prOpts.bodyFooter}\n\n${nsHashComment}`;
+
+  const pr = await createPrWithReconciliation(
+    reconciliationContext,
+    { owner, repo, title: prTitle, head: branch, base: baseBranch, body: prBody },
+    branch
+  );
 
   let enabled = false;
   if (prOpts.autoMergeEnabled) {
