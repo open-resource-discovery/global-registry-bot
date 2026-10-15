@@ -122,7 +122,20 @@ export async function finalizeApprovedRequest<
   );
 
   const repoInfo = { owner: params.owner, repo: params.repo };
-  const existing = await callbacks.findOpenIssuePrs(context, repoInfo, issue.number);
+
+  let existing: PullRequestType[];
+  try {
+    existing = await callbacks.findOpenIssuePrs(context, repoInfo, issue.number);
+  } catch (e: unknown) {
+    const raw = (e instanceof Error ? e.message : String(e)).trim();
+    const stripped = raw.replace(/https?:\/\/\S+/gi, '').trim();
+    const msg = stripped || 'GitHub could not be checked for an existing pull request.';
+    await callbacks.postOnce(context, params, `Failed to create Pull Request: ${msg}`, {
+      minimizeTag: 'nsreq:approval-info',
+    });
+    return;
+  }
+
   if (existing.length) {
     await callbacks.applyApprovedRequestState(context, params, eff);
 
@@ -174,9 +187,14 @@ export async function finalizeApprovedRequest<
       minimizeTag: 'nsreq:approval-info',
     });
   } catch (e: unknown) {
+    // request-pr-creation-recovery.ts already formats the user-facing message as
+    // "Failed to create Pull Request: <stage-aware detail>". Surface it directly
+    // to avoid a double "Failed to create Pull Request: Failed to create Pull Request:" prefix.
     const msg = e instanceof Error ? e.message : String(e);
+    const prefix = 'Failed to create Pull Request:';
+    const body = msg.startsWith(prefix) ? msg : `${prefix} ${msg}`;
 
-    await callbacks.postOnce(context, params, `Failed to create Pull Request: ${msg}`, {
+    await callbacks.postOnce(context, params, body, {
       minimizeTag: 'nsreq:approval-info',
     });
   }
