@@ -1,5 +1,6 @@
 import * as jsYamlModule from 'js-yaml';
 import { calcSnapshotHash as calcSnapshotHashRaw, SNAPSHOT_HASH_MARKER_KEY } from './snapshot.js';
+import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
 import { tryEnableAutoMerge as tryEnableAutoMergeRaw } from '../../../lib/auto-merge.js';
 import { loadTemplate as loadTemplateRaw } from '../template.js';
 import { loadStaticConfig as loadStaticConfigRaw } from '../../../config.js';
@@ -202,16 +203,6 @@ function getHttpStatus(err: unknown): number | undefined {
 
 function isRepoContentFile(data: unknown): data is RepoContentFile {
   return isPlainObject(data) && typeof data.content === 'string';
-}
-
-const ROUTING_LOCK_STRIP_RE = /<!--\s*nsreq:routing-lock\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-const PARENT_APPROVAL_STRIP_RE = /<!--\s*nsreq:parent-approval\s*=\s*{[\s\S]*?}\s*-->\s*/gi;
-
-function readIssueBodyForSnapshot(issueBody: unknown): string {
-  return String(issueBody || '')
-    .replace(PARENT_APPROVAL_STRIP_RE, '')
-    .replace(ROUTING_LOCK_STRIP_RE, '')
-    .trimEnd();
 }
 
 type JsYamlApi = {
@@ -880,7 +871,7 @@ export async function createRequestPr(
     }
 
     if (!pr) {
-      const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
+      const hash = calcSnapshotHash(formData, template, readIssueBodyForProcessing(issue.body));
       const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
       const issueMarker = `<!-- nsreq:issue:${issue.number} -->`;
 
@@ -1082,7 +1073,7 @@ export async function createRequestPr(
   }
 
   if (!pr) {
-    const hash = calcSnapshotHash(formData, template, readIssueBodyForSnapshot(issue.body));
+    const hash = calcSnapshotHash(formData, template, readIssueBodyForProcessing(issue.body));
     const hashComment = `<!-- ${SNAPSHOT_HASH_MARKER_KEY}:${hash} -->`;
 
     const prTitle = buildPrTitle(prOpts.prTitleTemplate, String(candidate.type || type), resourceName, STRUCT_ROOT);
