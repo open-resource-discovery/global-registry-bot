@@ -11,14 +11,21 @@ on:
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: write
+      statuses: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Create GitHub Release
-        uses: open-resource-discovery/github-release@abf072feb82b9ae657a5d918f615aa75ed558e28 # main
+        uses: open-resource-discovery/github-release@4ac7738d23ca85aed71916025fba275c0197b3c0 # main
         with:
           tag-template: 'v<version>'
           version: ${{ inputs.version }}
+          ci-workflows: ci-check.yml
