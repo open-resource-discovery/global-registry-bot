@@ -177,7 +177,7 @@ import {
   type ContactApprovalMeta,
   type ParentApprovalMeta,
 } from './domain/approval-markers.js';
-import { readIssueBodyForProcessing } from './domain/issue-body-processing.js';
+import { readIssueBodyForProcessing, readIssueBodyForSnapshotLegacy } from './domain/issue-body-processing.js';
 import { type RegistryValidationMachineReadableSource } from './domain/registry-validation-annotations.js';
 import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
@@ -2766,10 +2766,16 @@ function buildCompatibleRequestSnapshotHashes(
 ): string[] {
   const processedBody = readIssueBodyForProcessing(issueBody);
   const rawBody = String(issueBody || '');
+  // Legacy body: strips RL+PA but not CA — reproduces old create.ts hash for backwards compat
+  const legacyBody = readIssueBodyForSnapshotLegacy(issueBody);
 
   return Array.from(
     new Set(
-      [calcSnapshotHash(parsedFormData, template, processedBody), calcSnapshotHash(parsedFormData, template, rawBody)]
+      [
+        calcSnapshotHash(parsedFormData, template, processedBody),
+        calcSnapshotHash(parsedFormData, template, rawBody),
+        calcSnapshotHash(parsedFormData, template, legacyBody),
+      ]
         .map((value) => toStringTrim(value))
         .filter(Boolean)
     )
