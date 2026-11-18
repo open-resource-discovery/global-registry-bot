@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+### Fixed
+
+- Made request PR creation idempotent and resumable after partial GitHub failures.
+- Reuse safe request branches, matching YAML files, and existing pull requests.
+- Prevent duplicate concurrent PR creation and unsafe branch deletion.
+- Improve conflict handling, error reporting, and sensitive URL sanitization.
+
 ## [[0.1.9](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.9)] - 2026-06-09
 
 ## Request Bot Core Refactor and Webhook Reliability

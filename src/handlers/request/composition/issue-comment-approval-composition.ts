@@ -11,6 +11,7 @@ type IssueParamsBase = {
 
 type PullRequestLikeBase = {
   number: number;
+  base?: { ref?: string | null } | null;
 };
 
 type ContactApprovalMetaBase = {
@@ -130,6 +131,7 @@ export function composeApprovedRequestFinalizationCallbacks<
 > {
   return {
     resolveEffectiveConstants: dependencies.resolveEffectiveConstants,
+    resolveExpectedBaseBranch: dependencies.resolveExpectedBaseBranch,
     extractResourceNameFromForm: dependencies.extractResourceNameFromForm,
     resolveEffectiveRequestType: dependencies.resolveEffectiveRequestType,
     resolveAdditionalIssueApproversFromApprovalHook: dependencies.resolveAdditionalIssueApproversFromApprovalHook,
