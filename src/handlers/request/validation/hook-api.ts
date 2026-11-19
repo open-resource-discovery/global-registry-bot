@@ -4,7 +4,7 @@
  * - Host allowlist
  * - Timeout + max response size
  * - Redirects blocked
- * - Secrets never exposed to the hook (auth via secret key only)
+ * - This API applies authentication by secret name without returning secret values
  *
  * Uses Node.js built-in fetch (Node 18+ / undici).
  */
@@ -42,8 +42,10 @@ export interface HookApi {
   assertAllowedUrl(url: string): URL;
 }
 
-// NOTE: '*' means allow any public HTTPS host
-const DEFAULT_ALLOWED_HOSTS: readonly string[] = ['*'];
+// Deny-by-default: no external hosts are allowed unless explicitly configured.
+// Repo admins must add hosts to hooks.allowedHosts in .github/registry-bot/config.yaml.
+// Use ['*'] only in fully trusted self-hosted deployments.
+const DEFAULT_ALLOWED_HOSTS: readonly string[] = [];
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -69,7 +71,7 @@ function canonicalizeHost(hostname: string): string {
   const h = String(hostname ?? '')
     .trim()
     .toLowerCase();
-  return h.replace(/\.+$/g, '');
+  return h.replace(/^\[|\]$/g, '').replace(/\.+$/g, '');
 }
 
 function normalizeHostInput(input: string): string {
@@ -123,9 +125,17 @@ function isPrivateOrLinkLocalIpv6(host: string): boolean {
   const h = canonicalizeHost(host);
   if (!isIpv6Literal(h)) return false;
 
-  if (h === '::1') return true;
-  if (h.startsWith('fe80:')) return true;
+  if (h === '::' || h === '::1') return true;
+  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
   if (h.startsWith('fc') || h.startsWith('fd')) return true;
+
+  // WHATWG URL canonicalizes IPv4-mapped literals to hexadecimal IPv6 hextets.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1], 16);
+    const low = Number.parseInt(mapped[2], 16);
+    return isPrivateOrLinkLocalIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+  }
 
   return false;
 }
@@ -300,7 +310,10 @@ export function createHookApi(
     if (!host) throw new Error('Invalid host');
 
     if (isLoopbackLikeHost(host)) throw new Error(`Host not allowed: ${host}`);
-    if (!allowAllHosts && !allow.has(host)) throw new Error(`Host not allowed: ${host}`);
+    if (!allowAllHosts && !allow.has(host))
+      throw new Error(
+        `Host not allowed: ${host}. Add the host to hooks.allowedHosts in .github/registry-bot/config.yaml`
+      );
 
     return u;
   }

@@ -71,7 +71,10 @@ function getGlobalFetch(): typeof fetch {
 
 type HookApi = ReturnType<typeof createHookApi>;
 
-function installSafeFetch(allowedHosts: string[], secrets: Record<string, string>): HookApi {
+function installSafeFetch(
+  allowedHosts: string[],
+  secrets: Record<string, string>
+): { api: HookApi; restore: () => void } {
   const api = createHookApi({}, { secrets: secrets ?? {}, allowedHosts: allowedHosts ?? [] });
   const baseFetch = getGlobalFetch();
 
@@ -89,7 +92,12 @@ function installSafeFetch(allowedHosts: string[], secrets: Record<string, string
     return baseFetch(url, { ...(init ?? {}), redirect: 'manual' });
   };
 
-  return api;
+  return {
+    api,
+    restore: (): void => {
+      g.fetch = baseFetch;
+    },
+  };
 }
 
 function normalizeHookSecretName(value: unknown): string {
@@ -172,11 +180,19 @@ function disableProcessExitAndKill(): void {
 }
 
 export default async function hookWorker(task: Task): Promise<HookWorkerResult> {
+  // Fail-closed: JS hooks are disabled unless explicitly opted in.
+  // Only enable in fully trusted self-hosted environments where repo admins are trusted.
+  // A proper isolated sandbox (separate process, container) is required before enabling
+  // this in multi-tenant or public deployments.
+  if (process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] !== 'true') {
+    return { found: false, value: undefined, logs: [] };
+  }
+
   disableProcessExitAndKill();
 
   const { log, logs } = makeCapturingLog();
 
-  const api = installSafeFetch(task.allowedHosts ?? ['*'], task.secrets ?? {});
+  const { api, restore } = installSafeFetch(task.allowedHosts ?? [], task.secrets ?? {});
 
   try {
     const mod = await loadModule(task);
@@ -212,5 +228,8 @@ export default async function hookWorker(task: Task): Promise<HookWorkerResult> 
     const msg = e instanceof Error ? e.message : String(e);
     logs.push({ level: 'error', obj: { err: msg }, msg: 'hook-worker:failed' });
     return { found: true, value: { __hookError: msg }, logs };
+  } finally {
+    // Piscina reuses each worker sequentially; never carry a task's allowlist into the next one.
+    restore();
   }
 }

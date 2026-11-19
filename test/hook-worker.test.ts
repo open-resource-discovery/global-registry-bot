@@ -23,6 +23,7 @@ let hookWorker: (task: Task) => Promise<HookWorkerResult>;
 let originalFetch: unknown;
 let originalExit: NodeJS.Process['exit'];
 let originalKill: NodeJS.Process['kill'];
+let originalEnableFlag: string | undefined;
 
 let seq = 0;
 
@@ -62,12 +63,21 @@ beforeEach((): void => {
   originalFetch = getGlobalFetch();
   originalExit = process.exit;
   originalKill = process.kill;
+  originalEnableFlag = process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  // Enable JS hooks for all existing happy-path tests by default.
+  // Security regression tests below explicitly unset the flag.
+  process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = 'true';
 });
 
 afterEach((): void => {
   setGlobalFetch(originalFetch);
   process.exit = originalExit;
   process.kill = originalKill;
+  if (originalEnableFlag === undefined) {
+    delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  } else {
+    process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = originalEnableFlag;
+  }
 });
 
 test('returns found=false when function does not exist', async (): Promise<void> => {
@@ -236,4 +246,152 @@ test('process.exit is disabled; calling it becomes __hookError', async (): Promi
       __hookError: expect.stringContaining('process.exit is disabled'),
     })
   );
+});
+
+// --- Security: REGISTRY_BOT_ENABLE_JS_HOOKS fail-closed ---
+
+test.each([
+  ['omitted', undefined],
+  ['empty', []],
+] as const)('worker blocks outbound fetch with an %s host allowlist', async (_name, allowedHosts): Promise<void> => {
+  const baseFetch = jest.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response('ok')));
+  setGlobalFetch(baseFetch);
+
+  const task = mkTask({
+    code: `
+      export async function onValidate() {
+        await fetch('https://unlisted.example/path');
+        return [];
+      }
+    `,
+    fn: 'onValidate',
+    ...(allowedHosts === undefined ? {} : { allowedHosts: [...allowedHosts] }),
+  });
+  const res = await hookWorker(task);
+
+  expect(res.found).toBe(true);
+  expect(res.value).toEqual({ __hookError: expect.stringContaining('Host not allowed: unlisted.example') });
+  expect(baseFetch).not.toHaveBeenCalled();
+});
+
+test.each([undefined, '', 'false', '1', 'TRUE'])(
+  'does not evaluate hook modules when the deployment flag is %s',
+  async (flag): Promise<void> => {
+    if (flag === undefined) delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+    else process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = flag;
+    const task = mkTask({
+      code: `
+      throw new Error('Hook module must not be evaluated');
+      export default {
+        onValidate() {
+          return ['EXECUTED'];
+        }
+      };
+    `,
+      fn: 'onValidate',
+      args: { requestType: 'product' },
+    });
+
+    const res = await hookWorker(task);
+
+    expect(res.found).toBe(false);
+    expect(res.value).toBeUndefined();
+    expect(res.logs).toEqual([]);
+  }
+);
+
+test('does not retain a previous task allowlist when a worker is reused', async (): Promise<void> => {
+  const baseFetch = jest.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response('ok')));
+  setGlobalFetch(baseFetch);
+
+  const first = await hookWorker(mkTask({ code: 'export function onValidate() { return []; }', fn: 'onValidate' }));
+  expect(first.value).toEqual([]);
+
+  const second = await hookWorker(
+    mkTask({
+      code: `export async function onValidate() { await fetch('https://allowed.example/path'); return []; }`,
+      fn: 'onValidate',
+      allowedHosts: ['allowed.example'],
+    })
+  );
+  expect(second.value).toEqual([]);
+  expect(baseFetch).toHaveBeenCalledTimes(1);
+  expect(getGlobalFetch()).toBe(baseFetch);
+});
+
+test('restores fetch after a failed task and applies the next task allowlist', async (): Promise<void> => {
+  const baseFetch = jest.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response('ok')));
+  setGlobalFetch(baseFetch);
+
+  const task = (host: string, allowedHosts: string[]): Task =>
+    mkTask({
+      code: `export async function onValidate() { await fetch('https://${host}/path'); return []; }`,
+      fn: 'onValidate',
+      allowedHosts,
+    });
+  const first = await hookWorker(task('blocked.example', []));
+  expect(first.value).toEqual({ __hookError: expect.stringContaining('Host not allowed') });
+  expect(getGlobalFetch()).toBe(baseFetch);
+
+  const second = await hookWorker(task('allowed.example', ['allowed.example']));
+  expect(second.value).toEqual([]);
+  expect(baseFetch).toHaveBeenCalledTimes(1);
+
+  const third = await hookWorker(task('allowed.example', []));
+  expect(third.value).toEqual({ __hookError: expect.stringContaining('Host not allowed') });
+  expect(baseFetch).toHaveBeenCalledTimes(1);
+  expect(getGlobalFetch()).toBe(baseFetch);
+});
+
+test('JS hooks disabled: malicious dynamic import(node:child_process) never executes', async (): Promise<void> => {
+  delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+
+  const task = mkTask({
+    code: `
+      export default {
+        async onValidate() {
+          const cp = await import('node:child_process');
+          cp.execSync('echo pwned');
+          return [];
+        }
+      };
+    `,
+    fn: 'onValidate',
+    args: {},
+  });
+
+  const res = await hookWorker(task);
+
+  // Worker must return early without executing — never reach the import()
+  expect(res.found).toBe(false);
+  expect(res.value).toBeUndefined();
+});
+
+test('JS hooks disabled: code accessing process.env.PRIVATE_KEY never executes', async (): Promise<void> => {
+  const prev = process.env['PRIVATE_KEY'];
+  process.env['PRIVATE_KEY'] = 'super-secret-value';
+  delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+
+  try {
+    const task = mkTask({
+      code: `
+        export default {
+          onValidate() {
+            return [process.env.PRIVATE_KEY ?? 'not-leaked'];
+          }
+        };
+      `,
+      fn: 'onValidate',
+      args: {},
+    });
+
+    const res = await hookWorker(task);
+
+    // Worker returns early; code never ran so PRIVATE_KEY was never read
+    expect(res.found).toBe(false);
+    expect(res.value).toBeUndefined();
+  } finally {
+    if (prev === undefined) delete process.env['PRIVATE_KEY'];
+    else process.env['PRIVATE_KEY'] = prev;
+  }
 });

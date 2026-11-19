@@ -512,4 +512,428 @@ describe('pr-reviewers', () => {
     const out = await readOutputs(outPath);
     expect(JSON.parse(out.reviewers_json)).toEqual(['alice']);
   });
+
+  it('REGISTRY_VALIDATE_OK=false skips reviewer computation and outputs empty reviewers (L305-309, L58 arm=0)', async () => {
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_EVENT_ACTION: 'opened',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: 'deadbeef',
+      PR_HEAD_SHA: 'cafebabe',
+
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+
+      // 'false' => readRegistryValidateOkEnv returns false => L305: registryValidateOk===false => early return
+      REGISTRY_VALIDATE_OK: 'false',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+    expect(JSON.parse(out.reviewers_json)).toEqual([]);
+  });
+
+  it('REGISTRY_VALIDATE_OK=true continues past the gate (L55 arm=0) and throws on missing config', async () => {
+    setEnv({
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_EVENT_ACTION: 'opened',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: 'deadbeef',
+      PR_HEAD_SHA: 'cafebabe',
+
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+
+      // 'true' => readRegistryValidateOkEnv L55 arm=0: returns true => L305 not triggered => continues
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    // No config in tmpDir => throws "Missing registry-bot config"
+    await expect(main()).rejects.toThrow('Missing registry-bot config');
+  });
+
+  it('REGISTRY_VALIDATE_OK unknown value returns null and continues (L55 arm=1, L58 arm=1, L62)', async () => {
+    setEnv({
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_EVENT_ACTION: 'opened',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: 'deadbeef',
+      PR_HEAD_SHA: 'cafebabe',
+
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+
+      // 'unknown-value' => not truthy, not falsy => L55 arm=1, L58 arm=1, L62: return null
+      // null => L305: registryValidateOk===false is false => continues => throws on missing config
+      REGISTRY_VALIDATE_OK: 'unknown-value',
+    });
+
+    // No config in tmpDir => throws "Missing registry-bot config"
+    await expect(main()).rejects.toThrow('Missing registry-bot config');
+  });
+
+  it('loadConfig throws when YAML root is not a plain object (L113)', async () => {
+    await writeText(path.join(tmpDir, '.github/registry-bot/config.yaml'), '42\n');
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    setEnv({
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).rejects.toThrow('Invalid YAML in');
+  });
+
+  it('loadConfig skips workflow block when workflow is not a plain object (L118 false arm)', async () => {
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({ workflow: 'not-an-object', requests: {} })
+    );
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+
+  it('loadConfig skips defaultApprovers when workflow.approvers is null (L120 false arm)', async () => {
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({ workflow: { approvers: null }, requests: {} })
+    );
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+
+  it('loadConfig returns early when requests is not a plain object (L126 early return)', async () => {
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({ requests: 'not-an-object' })
+    );
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+
+  it('loadConfig skips non-plain request entries (L129 continue)', async () => {
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({ requests: { myType: 'not-an-object' } })
+    );
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+
+  it('loadConfig skips request entry with non-string folderName (L134 continue)', async () => {
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({ requests: { myType: { folderName: 123, schema: 'schema.json' } } })
+    );
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+
+  it('loadConfig sets request entry approvers to null when explicitly null in config (L146 arm)', async () => {
+    await writeText(
+      path.join(tmpDir, '.github/registry-bot/config.yaml'),
+      YAML.stringify({
+        workflow: { approvers: ['default-approver'] },
+        requests: { myType: { folderName: 'data/stuff', schema: 'stuff.json', approvers: null } },
+      })
+    );
+    await writeText(path.join(tmpDir, 'README.md'), 'base\n');
+    const baseSha = commitAll(tmpDir, 'base');
+    await writeText(path.join(tmpDir, 'README.md'), 'head\n');
+    const headSha = commitAll(tmpDir, 'head');
+
+    const outPath = path.join(tmpDir, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_IS_FORK: 'false',
+      PR_BASE_SHA: baseSha,
+      PR_HEAD_SHA: headSha,
+      PR_AUTHOR: 'alice',
+      PR_SENDER_LOGIN: 'alice',
+      PR_SENDER_TYPE: 'User',
+      PR_CREATOR_LOGIN: 'alice',
+      PR_CREATOR_TYPE: 'User',
+      PR_HUMAN_TOUCHED: 'false',
+      REGISTRY_VALIDATE_OK: 'true',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+});
+
+describe('TEST_UTILS pure functions', () => {
+  it('isBotSender returns false for null and undefined (L26-27 optional chain null arm)', () => {
+    expect(TEST_UTILS.isBotSender(null)).toBe(false);
+    expect(TEST_UTILS.isBotSender(undefined)).toBe(false);
+  });
+
+  it('normalizeRepoPath coerces null/undefined via ?? to empty string (L66 nullish arm)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(TEST_UTILS.normalizeRepoPath(null as any)).toBe('');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(TEST_UTILS.normalizeRepoPath(undefined as any)).toBe('');
+  });
+
+  it('matchRequestTypesForFile matches exact folder path fp===folder (L166 arm=0)', () => {
+    const requests = { ns: { folderName: 'data/ns', schema: 's.json' } };
+    const result = TEST_UTILS.matchRequestTypesForFile('data/ns', requests);
+    expect(result).toHaveLength(1);
+    expect(result[0].requestType).toBe('ns');
+  });
+
+  it('matchRequestTypesForFile matches sub-path via startsWith (L166 arm=1)', () => {
+    const requests = { ns: { folderName: 'data/ns', schema: 's.json' } };
+    const result = TEST_UTILS.matchRequestTypesForFile('data/ns/file.yaml', requests);
+    expect(result).toHaveLength(1);
+    expect(result[0].requestType).toBe('ns');
+  });
+
+  it('matchRequestTypesForFile returns empty when path does not match any folder', () => {
+    const requests = { ns: { folderName: 'data/ns', schema: 's.json' } };
+    const result = TEST_UTILS.matchRequestTypesForFile('other/path.yaml', requests);
+    expect(result).toHaveLength(0);
+  });
+
+  it('matchRequestTypesForFile skips entry with empty folderName (L164 continue arm)', () => {
+    const requests = {
+      emptyFolder: { folderName: '', schema: 's.json' },
+      realFolder: { folderName: 'data/real', schema: 's.json' },
+    };
+    const result = TEST_UTILS.matchRequestTypesForFile('data/real/file.yaml', requests);
+    expect(result).toHaveLength(1);
+    expect(result[0].requestType).toBe('realFolder');
+  });
+});
+
+describe('main() env-var ?? arms + mode coverage', () => {
+  const originalCwd2: string = process.cwd();
+  const originalEnv2: NodeJS.ProcessEnv = { ...process.env };
+  let tmpDir2 = '';
+
+  beforeEach(async () => {
+    tmpDir2 = await mkdtemp(path.join(os.tmpdir(), 'registry-pr-mode-test-'));
+    initRepo(tmpDir2);
+    process.chdir(tmpDir2);
+  });
+
+  afterEach(async () => {
+    restoreEnvSnapshot(originalEnv2);
+    process.chdir(originalCwd2);
+    if (tmpDir2) await rm(tmpDir2, { recursive: true, force: true });
+  });
+
+  it('returns empty reviewers when mode is not pr (L88 main arm, L239-257 ?? arms)', async () => {
+    const outPath = path.join(tmpDir2, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: undefined,
+      GITHUB_EVENT_NAME: undefined,
+      PR_SENDER_TYPE: undefined,
+      PR_SENDER_LOGIN: undefined,
+      PR_CREATOR_TYPE: undefined,
+      PR_CREATOR_LOGIN: undefined,
+      PR_HUMAN_TOUCHED: undefined,
+      PR_IS_FORK: undefined,
+      PR_BASE_SHA: undefined,
+      PR_HEAD_SHA: undefined,
+      PR_AUTHOR: undefined,
+      PR_EVENT_ACTION: undefined,
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
+
+  it('returns empty reviewers when PR_IS_FORK/BASE_SHA/HEAD_SHA are unset (L274/L282/L283 ?? arms)', async () => {
+    const outPath = path.join(tmpDir2, 'gh_out.txt');
+    await rm(outPath, { force: true });
+
+    setEnv({
+      GITHUB_OUTPUT: outPath,
+      REGISTRY_VALIDATE_MODE: 'pr',
+      GITHUB_EVENT_NAME: 'pull_request',
+      PR_SENDER_TYPE: undefined,
+      PR_SENDER_LOGIN: undefined,
+      PR_CREATOR_TYPE: undefined,
+      PR_CREATOR_LOGIN: undefined,
+      PR_HUMAN_TOUCHED: undefined,
+      PR_IS_FORK: undefined,
+      PR_BASE_SHA: undefined,
+      PR_HEAD_SHA: undefined,
+      PR_AUTHOR: undefined,
+      PR_EVENT_ACTION: undefined,
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    const out = await readOutputs(outPath);
+    expect(out.reviewers_count).toBe('0');
+  });
 });

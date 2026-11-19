@@ -135,6 +135,44 @@ Target repositories can provide optional runtime logic in:
 .github/registry-bot/config.js
 ```
 
+Repository JavaScript hooks are disabled by default. A deployment administrator must set
+`REGISTRY_BOT_ENABLE_JS_HOOKS=true` to load and execute them. Only the exact value `true`
+enables hooks; repository configuration cannot enable them. YAML configuration and the
+bot's built-in validation remain available when JavaScript hooks are disabled.
+
+Hooks execute as Node.js modules in a worker thread. They are trusted code and can access
+Node.js APIs and the worker's environment. A worker thread is not a security sandbox.
+Enable repository hooks only in a self-hosted deployment whose repository administrators
+are trusted. Untrusted code requires a separate isolation design with restricted
+credentials and network access.
+
+The provided hook HTTP API and worker `fetch` deny external hosts unless they are listed
+in the target repository's YAML configuration:
+
+```yaml
+hooks:
+  allowedHosts:
+    - api.example.com
+```
+
+An omitted or empty allowlist permits no outbound hook HTTP requests. An explicit `'*'`
+disables hostname matching while retaining URL checks, including local IP literal checks.
+Reserve it for deployments that deliberately accept broader access. Hostname matching does
+not validate DNS resolution or isolate arbitrary Node.js network APIs.
+
+### Migrating deployments that already use hooks
+
+Before upgrading a deployment that uses repository or organization-level `config.js`:
+
+1. Review the existing hooks and the external hostnames they require.
+2. Configure those hostnames under `hooks.allowedHosts` in the target YAML configuration.
+3. For a trusted deployment, set `REGISTRY_BOT_ENABLE_JS_HOOKS=true` in its runtime environment.
+4. Restart the application and verify hook-dependent validation and approval behavior in development.
+
+Without this opt-in, existing hook-based normalization, custom validation, and approval
+decisions are skipped. A running HTTP server alone does not verify that these hooks work.
+Keep hook credentials in the deployment's secret storage; the allowlist contains hostnames only.
+
 Supported hooks:
 
 | Hook                                        | Purpose                                                                |

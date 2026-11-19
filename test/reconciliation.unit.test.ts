@@ -14,6 +14,9 @@ import {
   writeFileWithReconciliation,
   inspectExistingBranch,
   createPrWithReconciliation,
+  isAmbiguousWriteError,
+  lookupOpenPrForBranch,
+  parseIssueNumberFromPrBody,
 } from '../src/handlers/request/pr/reconciliation.js';
 
 // ─── Minimal context factory ────────────────────────────────────────────────
@@ -1567,5 +1570,257 @@ describe('createPrWithReconciliation – conflicting issue references rejected',
     // Must NOT reuse #42 — args.body has conflicting refs, so expectedIssueNumber=null → reject all
     expect(result.number).toBe(99);
     expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Keep transient network failures distinct from authentication and validation failures.
+describe('reconciliation error classification', () => {
+  const networkError = (code: string): NodeJS.ErrnoException => Object.assign(new Error('connection failed'), { code });
+  const writeCases: [string, unknown, boolean][] = [
+    ['string rejection', 'connection failed', false],
+    ['null rejection', null, false],
+    ['object without a message', { status: 422 }, false],
+    ['non-string message', { status: 422, message: 42 }, false],
+    ['unauthorized', { status: 401, message: 'Bad credentials' }, false],
+    ['forbidden', { status: 403, message: 'Resource not accessible' }, false],
+    ['unrelated validation failure', { status: 422, message: 'Invalid path' }, false],
+    ['missing blob SHA', { status: 422, message: "sha wasn't supplied" }, true],
+    ['connection reset code', networkError('ECONNRESET'), true],
+    ['timeout code', networkError('ETIMEDOUT'), true],
+    ['connection aborted code', networkError('ECONNABORTED'), true],
+    ['reset message', new Error('ECONNRESET'), true],
+    ['socket message', new Error('socket hang up'), true],
+    ['timeout message', new Error('request timeout'), true],
+    ['ordinary application error', new Error('Invalid registration'), false],
+  ];
+  it.each(writeCases)('classifies file write failure: %s', (_name, error, ambiguous) => {
+    expect(isAmbiguousWriteError(error)).toBe(ambiguous);
+  });
+
+  const prCases: [string, unknown, boolean][] = [
+    ['string rejection', 'connection failed', false],
+    ['null rejection', null, false],
+    ['ordinary application error', new Error('Invalid registration'), false],
+    ['connection reset code', networkError('ECONNRESET'), true],
+    ['timeout code', networkError('ETIMEDOUT'), true],
+    ['connection aborted code', networkError('ECONNABORTED'), true],
+    ['reset message', new Error('ECONNRESET'), true],
+    ['socket message', new Error('socket hang up'), true],
+    ['timeout message', new Error('request timeout'), true],
+    ['already exists', { status: 422, message: 'A pull request already exists for o:branch' }, true],
+    ['non-string validation message', { status: 422, message: 42 }, false],
+    ['unrelated validation failure', { status: 422, message: 'Invalid base branch' }, false],
+    ['forbidden', { status: 403, message: 'Resource not accessible' }, false],
+  ];
+  it.each(prCases)(
+    'never retries PR creation after %s and re-lists only ambiguous failures',
+    async (_name, error, ambiguous) => {
+      const ctx = mkContext(mkMock());
+      ctx.octokit.rest.pulls.list.mockResolvedValue({ data: [] });
+      ctx.octokit.rest.pulls.create.mockRejectedValue(error);
+      await expect(createPrWithReconciliation(ctx, ARGS_BASE, ARGS_BASE.head)).rejects.toMatchObject({ cause: error });
+      expect(ctx.octokit.rest.pulls.create).toHaveBeenCalledTimes(1);
+      expect(ctx.octokit.rest.pulls.list).toHaveBeenCalledTimes(ambiguous ? 2 : 1);
+    }
+  );
+});
+
+describe('issue reference parsing and optional lookup constraints', () => {
+  it.each([undefined, null, '', 'No linked issue', `fix: #${'9'.repeat(400)}`])(
+    'rejects absent or unrepresentable issue reference %s',
+    (body) => {
+      expect(parseIssueNumberFromPrBody(body)).toBeNull();
+    }
+  );
+
+  it('rejects conflicting repetitions of the same reference pattern', () => {
+    expect(parseIssueNumberFromPrBody('fix: #1\nfix: #2')).toBeNull();
+    expect(parseIssueNumberFromPrBody('fix: #1\nfix: #1')).toBe(1);
+  });
+
+  const lookupCases: [string, string | undefined, number | null | undefined, boolean][] = [
+    ['head branch only', undefined, undefined, true],
+    ['base only', 'main', undefined, true],
+    ['matching base and issue', 'main', 1640, true],
+    ['unresolved base with an issue constraint', undefined, 1640, false],
+    ['conflicting expected issue', 'main', null, false],
+  ];
+  it.each(lookupCases)('honors %s lookup constraints', async (_name, base, issueNumber, matches) => {
+    const pr = {
+      number: 42,
+      node_id: 'PR42',
+      head: { ref: BRANCH, sha: 'HEAD' },
+      base: { ref: 'main' },
+      body: 'fix: #1640',
+    };
+    const ctx = mkContext(mkMock());
+    ctx.octokit.rest.pulls.list.mockResolvedValue({ data: [pr] });
+    const result = await lookupOpenPrForBranch(ctx, REPO, BRANCH, base, issueNumber);
+    expect(result).toBe(matches ? pr : null);
+    expect(ctx.octokit.rest.pulls.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('branch file comparison preserves exact YAML meaning', () => {
+  const cases: [string, string, string, 'equivalent' | 'conflict'][] = [
+    ['nested null vs mapping', 'value: null\n', 'value: {}\n', 'conflict'],
+    ['nested mapping vs null', 'value: {}\n', 'value: null\n', 'conflict'],
+    ['array length change', 'value: [a, b]\n', 'value: [a]\n', 'conflict'],
+    ['matching array', 'value: [a, b]\n', 'value: [a, b]\n', 'equivalent'],
+    ['array vs mapping', 'value: []\n', 'value: {}\n', 'conflict'],
+    ['mapping vs array', 'value: {}\n', 'value: []\n', 'conflict'],
+    ['different key names with equal counts', 'value: {a: 1}\n', 'value: {b: 1}\n', 'conflict'],
+    ['recursive array aliases', 'value: &cycle [*cycle]\n', 'value: &cycle [*cycle]\n', 'conflict'],
+    ['recursive mapping aliases', 'value: &cycle {self: *cycle}\n', 'value: &cycle {self: *cycle}\n', 'conflict'],
+    ['invalid expected YAML', 'value: 1\n', 'value: [\n', 'conflict'],
+    ['non-object expected YAML', 'value: 1\n', 'null\n', 'conflict'],
+  ];
+  it.each(cases)('handles %s without overwriting existing content', async (_name, branchYaml, expectedYaml, status) => {
+    const ctx = mkContext(mkGetContent(() => fileResponse(branchYaml)));
+    await expect(compareFileOnBranch(ctx, REPO, FILE_PATH, BRANCH, expectedYaml)).resolves.toMatchObject({ status });
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it('accepts base64 contents when GitHub omits the encoding field', async () => {
+    const yaml = 'name: sap.test\n';
+    const ctx = mkContext(mkGetContent(() => ({ data: { content: b64(yaml) } })));
+    await expect(compareFileOnBranch(ctx, REPO, FILE_PATH, BRANCH, yaml)).resolves.toEqual({ status: 'equivalent' });
+  });
+});
+
+describe('branch inspection rejects incomplete or unverified state', () => {
+  it.each([{ data: {} }, { data: { commit: {} } }, { data: { commit: { sha: '  ' } } }])(
+    'rejects a branch response without a usable commit: %j',
+    async (response) => {
+      const ctx = mkContext(mkMock());
+      ctx.octokit.rest.repos.getBranch.mockResolvedValue(response);
+      await expect(inspectExistingBranch(ctx, REPO, BRANCH, 'BASE', FILE_PATH)).resolves.toMatchObject({ safe: false });
+      expect(ctx.octokit.rest.repos.compareCommitsWithBasehead).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([{ status: 404 }, 'network unavailable'])('rejects a branch that cannot be read: %j', async (error) => {
+    const ctx = mkContext(mkMock());
+    ctx.octokit.rest.repos.getBranch.mockRejectedValue(error);
+    await expect(inspectExistingBranch(ctx, REPO, BRANCH, 'BASE', FILE_PATH)).resolves.toMatchObject({ safe: false });
+    expect(ctx.octokit.rest.repos.compareCommitsWithBasehead).not.toHaveBeenCalled();
+  });
+
+  it('rejects a diverged branch when comparison is unavailable', async () => {
+    const ctx = mkContext(mkMock());
+    delete ctx.octokit.rest.repos.compareCommitsWithBasehead;
+    await expect(inspectExistingBranch(ctx, REPO, BRANCH, 'BASE', FILE_PATH)).resolves.toMatchObject({
+      safe: false,
+      reason: expect.stringContaining('Cannot verify branch safety'),
+    });
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed changed-file entry', async () => {
+    const ctx = mkContext(mkMock());
+    ctx.octokit.rest.repos.compareCommitsWithBasehead.mockResolvedValue({
+      data: { files: [{ filename: null, status: 'added' }] },
+    });
+    await expect(inspectExistingBranch(ctx, REPO, BRANCH, 'BASE', FILE_PATH)).resolves.toMatchObject({ safe: false });
+  });
+
+  it('rejects a rename even when its previous filename is absent', async () => {
+    const ctx = mkContext(mkMock());
+    ctx.octokit.rest.repos.compareCommitsWithBasehead.mockResolvedValue({
+      data: { files: [{ filename: FILE_PATH, status: 'renamed' }] },
+    });
+    await expect(inspectExistingBranch(ctx, REPO, BRANCH, 'BASE', FILE_PATH)).resolves.toMatchObject({
+      safe: false,
+      reason: expect.stringContaining('arrived via rename'),
+    });
+  });
+
+  it('summarizes additional unrelated files without treating the branch as reusable', async () => {
+    const ctx = mkContext(mkMock());
+    const files = Array.from({ length: 5 }, (_, i) => ({ filename: `unrelated-${i}.yaml`, status: 'added' }));
+    ctx.octokit.rest.repos.compareCommitsWithBasehead.mockResolvedValue({ data: { files } });
+    await expect(inspectExistingBranch(ctx, REPO, BRANCH, 'BASE', FILE_PATH)).resolves.toMatchObject({
+      safe: false,
+      reason: expect.stringContaining('and 2 more'),
+    });
+  });
+});
+
+describe('file writes stay bounded when reconciliation itself fails', () => {
+  it.each([
+    ['first delay, Error cause', 1, httpErr(500), new Error('delay interrupted')],
+    ['first delay, structured cause', 1, { status: 503 }, 'delay interrupted'],
+    ['second delay, Error cause', 2, httpErr(500), new Error('delay interrupted')],
+    ['second delay, structured cause', 2, { status: 503 }, 'delay interrupted'],
+  ] as const)('stops after %s', async (_name, failedDelay, originalError, delayError) => {
+    const ctx = mkContext(mkMock().mockRejectedValue({ status: 404 }));
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValue(originalError);
+    const delay = mkMock();
+    if (failedDelay === 2) delay.mockResolvedValueOnce(undefined);
+    delay.mockRejectedValueOnce(delayError);
+    const result = await writeFileWithReconciliation(
+      ctx,
+      REPO,
+      FILE_PATH,
+      BRANCH,
+      'name: sap.test\n',
+      'register',
+      delay
+    );
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringContaining('Reconciliation delay failed: delay interrupted') },
+    });
+    if (result.status === 'failed')
+      expect(result.error.cause).toBe(originalError instanceof Error ? originalError : undefined);
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(failedDelay);
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledTimes(failedDelay - 1);
+  });
+
+  it.each(['retry rejection', null])('reports a still-absent file after retry outcome %j', async (retryError) => {
+    const ctx = mkContext(mkMock().mockRejectedValue({ status: 404 }));
+    const write = ctx.octokit.rest.repos.createOrUpdateFileContents;
+    write.mockRejectedValueOnce({ status: 503 });
+    if (retryError === null) write.mockResolvedValueOnce(undefined);
+    else write.mockRejectedValueOnce(retryError);
+    const result = await writeFileWithReconciliation(ctx, REPO, FILE_PATH, BRANCH, 'name: sap.test\n', 'register', () =>
+      Promise.resolve()
+    );
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringContaining(retryError ?? 'no error (write appeared to succeed)') },
+    });
+    if (result.status === 'failed') expect(result.error.cause).toBeUndefined();
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not read or retry after a definitive non-Error write rejection', async () => {
+    const ctx = mkContext(mkMock());
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValue('permission denied');
+    const delay = mkMock();
+    const result = await writeFileWithReconciliation(
+      ctx,
+      REPO,
+      FILE_PATH,
+      BRANCH,
+      'name: sap.test\n',
+      'register',
+      delay
+    );
+    expect(result).toMatchObject({ status: 'failed', error: { message: 'permission denied' } });
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(1);
+    expect(ctx.octokit.rest.repos.getContent).not.toHaveBeenCalled();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflicting file without retrying a write with a structured original error', async () => {
+    const ctx = mkContext(mkGetContent(() => fileResponse('name: different\n')));
+    ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValue({ status: 503 });
+    const result = await writeFileWithReconciliation(ctx, REPO, FILE_PATH, BRANCH, 'name: sap.test\n', 'register', () =>
+      Promise.resolve()
+    );
+    expect(result).toMatchObject({ status: 'conflict', cause: undefined });
+    expect(ctx.octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(1);
   });
 });
