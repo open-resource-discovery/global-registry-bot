@@ -65,6 +65,7 @@ type PullRequestLikeBase = {
   number: number;
   body?: string | null;
   head: { ref: string; sha?: string | null };
+  base?: { ref?: string | null } | null;
 };
 
 type EffectiveConstantsBase = {
