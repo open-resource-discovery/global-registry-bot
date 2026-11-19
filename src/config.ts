@@ -1,20 +1,12 @@
+import YAML from 'yaml';
+import Ajv2020 from 'ajv/dist/2020.js';
+import ajvErrors from 'ajv-errors';
+import { createHash } from 'node:crypto';
+import type { ErrorObject, ValidateFunction } from 'ajv';
+import { DEFAULT_CONFIG as DEFAULT_CONFIG_RAW, STATIC_CONFIG_SCHEMA } from './handlers/request/constants.js';
+import { asError, getHttpStatus, isPlainObject } from './handlers/request/infrastructure/errors.js';
+
 const DBG = process.env.DEBUG_NS === '1';
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
-}
-
-function getHttpStatus(err: unknown): number | undefined {
-  if (err && typeof err === 'object' && 'status' in (err as Record<string, unknown>)) {
-    const s = (err as { status?: unknown }).status;
-    return typeof s === 'number' ? s : undefined;
-  }
-  return undefined;
-}
 
 function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -47,13 +39,6 @@ function normalizeMethod(value: unknown): string | null | undefined {
   if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
   return null;
 }
-import YAML from 'yaml';
-import Ajv2020 from 'ajv/dist/2020.js';
-import ajvErrors from 'ajv-errors';
-import { createHash } from 'node:crypto';
-import type { ErrorObject, ValidateFunction } from 'ajv';
-import { DEFAULT_CONFIG as DEFAULT_CONFIG_RAW, STATIC_CONFIG_SCHEMA } from './handlers/request/constants.js';
-
 type WorkflowLabelsConfig = {
   routingLabelPrefixes?: string | string[];
   routingLabelPrefix?: string | string[];
@@ -182,7 +167,7 @@ type LoadStaticConfigResult = {
 const CONFIG_LOCATIONS = ['.github/registry-bot/config.yaml', '.github/registry-bot/config.yml'] as const;
 const JS_CONFIG_LOCATIONS = ['.github/registry-bot/config.js'] as const;
 
-const CONFIG_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CONFIG_TTL_MS = 5 * 60 * 1000;
 const CONFIG_CACHE = new Map<string, { ts: number; value: LoadStaticConfigResult }>();
 
 const MINIMAL_CONFIG_EXAMPLE_YAML = `
@@ -233,7 +218,7 @@ const CONFIG_VALIDATOR: ValidateFunction<unknown> = ((): ValidateFunction<unknow
     const addErrors = ajvErrors as unknown as (a: unknown) => void;
     addErrors(ajv);
   } catch {
-    // ignore optional errors plugin failures
+    // The optional AJV error plugin must not prevent config loading.
   }
   return ajv.compile(STATIC_CONFIG_SCHEMA);
 })();
@@ -574,8 +559,7 @@ async function loadJsConfigFromRepo(
   if (process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] !== 'true') {
     context.log?.debug?.(
       {},
-      'registry-bot: JS hooks (config.js) are disabled by default. ' +
-        'Set REGISTRY_BOT_ENABLE_JS_HOOKS=true only in trusted self-hosted environments.'
+      'registry-bot: JS hooks disabled; set REGISTRY_BOT_ENABLE_JS_HOOKS=true only in trusted deployments.'
     );
     return { hooks: null, source: null };
   }
@@ -587,7 +571,6 @@ async function loadJsConfigFromRepo(
     try {
       const hash = createHash('sha256').update(raw).digest('hex').slice(0, 16);
 
-      // Only return the raw ESM source + metadata
       const hooksDescriptor: RegistryBotHooks = {
         __type: 'registry-bot-hooks:esm',
         __path: filePath,
@@ -833,8 +816,6 @@ export async function loadStaticConfig(
     else if (source.startsWith('repo:')) origin = 'repo';
     context.log.debug({ owner, repo, source }, `static-config:load:${origin}-config-detected`);
   }
-
-  // note: hasUserConfig can be derived from source when needed
 
   const validated = await validateOrFallbackAndReport(context, config, source, {
     validate,

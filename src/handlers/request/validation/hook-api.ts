@@ -1,14 +1,3 @@
-/**
- * Safe API surface for repo hooks:
- * - HTTPS only
- * - Host allowlist
- * - Timeout + max response size
- * - Redirects blocked
- * - This API applies authentication by secret name without returning secret values
- *
- * Uses Node.js built-in fetch (Node 18+ / undici).
- */
-
 export type HookSecrets = Readonly<Record<string, string | undefined>>;
 
 export interface BearerAuth {
@@ -41,11 +30,6 @@ export interface HookApi {
   httpGetJson<T = unknown>(url: string, opts?: HttpGetJsonOptions): Promise<T>;
   assertAllowedUrl(url: string): URL;
 }
-
-// Deny-by-default: no external hosts are allowed unless explicitly configured.
-// Repo admins must add hosts to hooks.allowedHosts in .github/registry-bot/config.yaml.
-// Use ['*'] only in fully trusted self-hosted deployments.
-const DEFAULT_ALLOWED_HOSTS: readonly string[] = [];
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -147,7 +131,7 @@ function isAbortError(err: unknown): boolean {
 }
 
 function isSafeHeaderName(name: string): boolean {
-  // RFC 7230 token-ish
+  // Header names must be HTTP tokens.
   return /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name);
 }
 
@@ -274,11 +258,6 @@ export function createHookApi(
   const allow = new Set<string>();
   let allowAllHosts = false;
 
-  for (const h of DEFAULT_ALLOWED_HOSTS) {
-    if (String(h).trim() === '*') allowAllHosts = true;
-    else allow.add(canonicalizeHost(h));
-  }
-
   for (const h of allowedHosts) {
     const raw = String(h ?? '').trim();
     if (raw === '*') {
@@ -338,7 +317,7 @@ export function createHookApi(
         redirect: 'manual',
       });
 
-      // Fetch redirect modes: follow|error|manual. Manual may produce an opaque-redirect response.
+      // Manual redirects can use status 0 with an opaque response type.
       const resAny = res as unknown as { type?: unknown };
       const resType = typeof resAny.type === 'string' ? resAny.type : '';
       const isOpaqueRedirect = resType === 'opaqueredirect';
@@ -355,7 +334,7 @@ export function createHookApi(
         try {
           body = await readBodyLimited(res, { maxBytes: errMax, controller });
         } catch {
-          // ignore
+          // Preserve the HTTP failure when the error body cannot be read.
         }
         const snippet = compactSnippet(body, 400);
         throw new Error(snippet ? `HTTP ${res.status}: ${snippet}` : `HTTP ${res.status}`);

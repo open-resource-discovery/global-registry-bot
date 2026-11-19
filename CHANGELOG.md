@@ -16,11 +16,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
-- Require an explicit deployment opt-in before loading or executing repository JavaScript hooks.
-- Deny outbound requests through the hook HTTP API and worker `fetch` unless a host allowlist is configured.
-- Apply each hook task's host allowlist independently when worker threads are reused.
-- Reject local IPv6 and private IPv4-mapped IPv6 literals even when a wildcard host allowlist is enabled.
-- Document the trust boundary and migration steps for deployments that already use `config.js` hooks.
+- Require `REGISTRY_BOT_ENABLE_JS_HOOKS=true` for repository JavaScript hooks and document migration for existing deployments.
+- Require explicit host allowlists for hook HTTP requests and apply each task's allowlist independently in reused workers.
+- Reject local IPv6 and private IPv4-mapped IPv6 literals even with a wildcard host allowlist.
 
 ## [[0.1.9](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.9)] - 2026-06-09
 
