@@ -7,18 +7,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
+## [[0.1.11-dev.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.11-dev.1)] - 2026-11-20
+
 ### Fixed
 
-- Made request PR creation idempotent and resumable after partial GitHub failures.
-- Reuse safe request branches, matching YAML files, and existing pull requests.
-- Prevent duplicate concurrent PR creation and unsafe branch deletion.
-- Improve conflict handling, error reporting, and sensitive URL sanitization.
+- Ignore contact-approval metadata in request snapshots so an approval alone no longer marks a new PR as outdated (#220). An older PR whose contact metadata changed after creation may be recreated once.
+- Resume interrupted PR creation using the existing request branch, matching YAML files and a PR for the same issue and base branch (#161). Concurrent requests in the same process share one attempt. Recovery preserves existing branches and redacts sensitive URLs in error messages.
 
 ### Security
 
-- Require `REGISTRY_BOT_ENABLE_JS_HOOKS=true` for repository JavaScript hooks and document migration for existing deployments.
-- Require explicit host allowlists for hook HTTP requests and apply each task's allowlist independently in reused workers.
-- Reject local IPv6 and private IPv4-mapped IPv6 literals even with a wildcard host allowlist.
+- Repository JavaScript hooks now require `REGISTRY_BOT_ENABLE_JS_HOOKS=true`. Deployments that use these hooks must explicitly allow the hosts they call under `hooks.allowedHosts` (#119).
+- Reused workers apply the current task's host allowlist. Hook HTTP requests reject local IPv6 and private IPv4-mapped IPv6 literals even with a wildcard allowlist (#119).
+
+### Changed
+
+- Test HTTP mocks use Nock 15 (#211). Builds and type checks use TypeScript 7, while Jest and ESLint use the TypeScript 6 compiler API (#142).
 
 ## [[0.1.9](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.9)] - 2026-06-09
 
