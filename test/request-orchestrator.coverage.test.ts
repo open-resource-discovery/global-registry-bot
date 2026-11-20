@@ -44,7 +44,7 @@ type IssuesUpdate = (args: IssueParams & { title: string }) => Promise<void>;
 type IssuesAddLabels = (args: IssueParams & { labels: string[] }) => Promise<void>;
 type IssuesRemoveLabel = (args: IssueParams & { name: string }) => Promise<void>;
 
-type PullRequest = { number: number; body?: string | null; head: { sha: string; ref: string } };
+type PullRequest = { number: number; body?: string | null; head: { sha: string; ref: string }; base?: { ref: string } };
 type PullsList = (args: {
   owner: string;
   repo: string;
@@ -91,6 +91,7 @@ type Octokit = {
     };
     repos: {
       getContent: jest.MockedFunction<ReposGetContent>;
+      get: jest.Mock;
     };
   };
 };
@@ -269,6 +270,7 @@ function mkOctokit(): Octokit {
       },
       repos: {
         getContent: jest.fn<ReposGetContent>(),
+        get: jest.fn(() => Promise.resolve({ data: { default_branch: 'main' } })),
       },
     },
   };
@@ -297,6 +299,7 @@ type Ctx = {
   octokit: Octokit;
   log: Logger;
   issue: () => IssueParams;
+  repo: () => { owner: string; repo: string };
   resourceBotConfig?: StaticConfig;
   resourceBotHooks?: Record<string, unknown>;
   resourceBotHooksSource?: string | null;
@@ -322,6 +325,7 @@ function mkCtx(args: {
     octokit: args.octokit ?? mkOctokit(),
     log: args.log ?? mkLogger(),
     issue: () => mkIssueParams(owner, repo, issueNumber),
+    repo: () => ({ owner, repo }),
     resourceBotConfig: args.config ? withWorkflowLabels(args.config) : undefined,
     resourceBotHooks: {},
     resourceBotHooksSource: 'mock',
@@ -1335,6 +1339,7 @@ describe('request-orchestrator additional coverage', () => {
       number: 88,
       body: 'source: #22',
       head: { sha: 'sha-direct', ref: 'manual-pr' },
+      base: { ref: 'main' },
     };
 
     findOpenIssuePrs.mockResolvedValue([directPr]);
