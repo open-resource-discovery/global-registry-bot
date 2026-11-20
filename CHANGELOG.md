@@ -7,28 +7,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [unreleased]
 
-## [[0.1.11-dev.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.11-dev.1)] - 2026-11-11
+## [[0.1.11-dev.1](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.11-dev.1)] - 2026-11-20
 
 ### Fixed
 
-- Prevent false outdated-PR detection when `contact-approval` metadata
-  changes after PR creation (PR #220). A legacy-hash compatibility layer
-  (`readIssueBodyForSnapshotLegacy`) preserves existing PRs created before
-  this fix; they are not re-created when the request body is otherwise
-  unchanged.
+- Ignore contact-approval metadata in request snapshots so an approval alone no longer marks a new PR as outdated (#220). An older PR whose contact metadata changed after creation may be recreated once.
+- Resume interrupted PR creation using the existing request branch, matching YAML files and a PR for the same issue and base branch (#161). Concurrent requests in the same process share one attempt. Recovery preserves existing branches and redacts sensitive URLs in error messages.
 
-### Known limitation
+### Security
 
-- Existing PRs whose contact-approval metadata was modified after PR
-  creation will be re-created once on the next evaluation. After
-  re-creation the hash stabilises.
+- Repository JavaScript hooks now require `REGISTRY_BOT_ENABLE_JS_HOOKS=true`. Deployments that use these hooks must explicitly allow the hosts they call under `hooks.allowedHosts` (#119).
+- Reused workers apply the current task's host allowlist. Hook HTTP requests reject local IPv6 and private IPv4-mapped IPv6 literals even with a wildcard allowlist (#119).
 
-### Not included in this release
+### Changed
 
-- Nock v15 dependency upgrade (#211) — deferred
-- TypeScript v7 migration (#142) — deferred (ts-jest incompatible)
-- JS hook security hardening (#119) — requires policy decision
-- Safe/resumable PR creation (#161) — requires rebase + reconciliation
+- Test HTTP mocks use Nock 15 (#211). Builds and type checks use TypeScript 7, while Jest and ESLint use the TypeScript 6 compiler API (#142).
 
 ## [[0.1.9](https://github.com/open-resource-discovery/global-registry-bot/releases/tag/v0.1.9)] - 2026-06-09
 

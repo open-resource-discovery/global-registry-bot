@@ -2,40 +2,10 @@ import { tmpdir } from 'node:os';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createHookApi } from './hook-api.js';
+import { getErrorMessage, isPlainObject } from '../infrastructure/errors.js';
+import { createHookApi, type HookApi } from './hook-api.js';
+import type { HookWorkerResult, HookWorkerTask } from './hook-pool.js';
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-type Task = {
-  owner: string;
-  repo: string;
-
-  // Stable identity for caching in worker
-  path: string;
-  hash: string;
-
-  // Raw ESM module source code from repo
-  code: string;
-
-  // Function to call
-  fn: string;
-
-  // Plain JSON args
-  args: unknown;
-
-  allowedHosts?: string[];
-  secrets?: Record<string, string>;
-};
-
-type HookWorkerResult = {
-  found: boolean;
-  value: unknown;
-  logs: { level: 'debug' | 'info' | 'warn' | 'error'; obj: unknown; msg?: string }[];
-};
-
-// Per-worker cache
 const MODULE_CACHE = new Map<string, Record<string, unknown>>();
 
 function makeCapturingLog(): {
@@ -63,33 +33,23 @@ function makeCapturingLog(): {
   return { log, logs };
 }
 
-function getGlobalFetch(): typeof fetch {
-  const f = (globalThis as { fetch?: unknown }).fetch;
-  if (typeof f !== 'function') throw new Error('fetch is not available in this runtime');
-  return f as typeof fetch;
-}
+function installSafeFetch(
+  allowedHosts: string[],
+  secrets: Record<string, string>
+): { api: HookApi; restore: () => void } {
+  const api = createHookApi({}, { secrets, allowedHosts });
+  const baseFetch = globalThis.fetch;
+  if (typeof baseFetch !== 'function') throw new Error('fetch is not available in this runtime');
 
-type HookApi = ReturnType<typeof createHookApi>;
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+    baseFetch(api.assertAllowedUrl(String(input)).toString(), { ...init, redirect: 'manual' });
 
-function installSafeFetch(allowedHosts: string[], secrets: Record<string, string>): HookApi {
-  const api = createHookApi({}, { secrets: secrets ?? {}, allowedHosts: allowedHosts ?? [] });
-  const baseFetch = getGlobalFetch();
-
-  const g = globalThis as typeof globalThis & {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  return {
+    api,
+    restore: (): void => {
+      globalThis.fetch = baseFetch;
+    },
   };
-
-  // Override only inside worker thread
-  g.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    // Only allow URLs approved by hook-api
-    const urlObj = api.assertAllowedUrl(String(input));
-    const url = typeof urlObj === 'string' ? urlObj : urlObj.toString();
-
-    // Force redirect blocking
-    return baseFetch(url, { ...(init ?? {}), redirect: 'manual' });
-  };
-
-  return api;
 }
 
 function normalizeHookSecretName(value: unknown): string {
@@ -98,34 +58,13 @@ function normalizeHookSecretName(value: unknown): string {
     .trim();
 }
 
-function collectHookConfigValues(configValue: unknown, secrets: Record<string, string>): Record<string, string> {
-  const values: Record<string, string> = {};
-
-  const add = (key: unknown, value: unknown): void => {
-    const normalizedKey = normalizeHookSecretName(key);
-    const normalizedValue = typeof value === 'string' ? value.trim() : '';
-
-    if (!normalizedKey || !normalizedValue) return;
-
-    values[normalizedKey] = normalizedValue;
-  };
-
-  for (const [key, value] of Object.entries(secrets || {})) {
-    add(key, value);
-  }
-
-  if (isPlainObject(configValue)) {
-    for (const [key, value] of Object.entries(configValue)) {
-      add(key, value);
-    }
-  }
-
-  return values;
-}
-
 function withHookGetSecret(configValue: unknown, secrets: Record<string, string>): Record<string, unknown> {
   const config: Record<string, unknown> = isPlainObject(configValue) ? { ...configValue } : {};
-  const values = collectHookConfigValues(config, secrets);
+  const values: Record<string, string> = {};
+  for (const [key, value] of [...Object.entries(secrets), ...Object.entries(config)]) {
+    const name = normalizeHookSecretName(key);
+    if (name && typeof value === 'string' && value.trim()) values[name] = value.trim();
+  }
 
   Object.defineProperty(config, 'getSecret', {
     enumerable: false,
@@ -137,7 +76,7 @@ function withHookGetSecret(configValue: unknown, secrets: Record<string, string>
   return config;
 }
 
-async function loadModule(task: Task): Promise<Record<string, unknown>> {
+async function loadModule(task: HookWorkerTask): Promise<Record<string, unknown>> {
   const key = `${task.owner}/${task.repo}:${task.path}#${task.hash}`;
   const cached = MODULE_CACHE.get(key);
   if (cached) return cached;
@@ -145,7 +84,7 @@ async function loadModule(task: Task): Promise<Record<string, unknown>> {
   const dir = join(tmpdir(), 'registry-bot-hooks');
   await mkdir(dir, { recursive: true });
 
-  // Stable filename per hash. New hash => new file => safe cache bust.
+  // A changed source hash gives Node a new module URL.
   const file = join(dir, `${task.owner}__${task.repo}__${task.hash}.mjs`);
   await writeFile(file, task.code, 'utf8');
 
@@ -171,12 +110,16 @@ function disableProcessExitAndKill(): void {
   };
 }
 
-export default async function hookWorker(task: Task): Promise<HookWorkerResult> {
+export default async function hookWorker(task: HookWorkerTask): Promise<HookWorkerResult> {
+  if (process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] !== 'true') {
+    return { found: false, value: undefined, logs: [] };
+  }
+
   disableProcessExitAndKill();
 
   const { log, logs } = makeCapturingLog();
 
-  const api = installSafeFetch(task.allowedHosts ?? ['*'], task.secrets ?? {});
+  const { api, restore } = installSafeFetch(task.allowedHosts ?? [], task.secrets ?? {});
 
   try {
     const mod = await loadModule(task);
@@ -199,7 +142,7 @@ export default async function hookWorker(task: Task): Promise<HookWorkerResult> 
     const fn = fnValue as (a: unknown) => unknown;
     const ret = await fn(argsObj);
 
-    // beforeValidate may mutate args.form -> return it so main can re-apply
+    // Return worker-side form changes to the main thread.
     if (task.fn === 'beforeValidate') {
       const formVal = argsObj.form;
       if (isPlainObject(formVal)) {
@@ -209,8 +152,11 @@ export default async function hookWorker(task: Task): Promise<HookWorkerResult> 
 
     return { found: true, value: ret, logs };
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = getErrorMessage(e);
     logs.push({ level: 'error', obj: { err: msg }, msg: 'hook-worker:failed' });
     return { found: true, value: { __hookError: msg }, logs };
+  } finally {
+    // Reused workers must not retain another task's allowlist.
+    restore();
   }
 }

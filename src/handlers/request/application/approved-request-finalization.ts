@@ -1,4 +1,5 @@
 import { toStringTrim } from '../domain/login-utils.js';
+import { parseIssueNumberFromPrBody } from '../pr/reconciliation.js';
 
 type IssueParamsBase = { owner: string; repo: string; issue_number: number };
 
@@ -10,7 +11,11 @@ type TemplateLikeBase = {
 
 type FormDataBase = Record<string, string>;
 
-type PullRequestLikeBase = { number: number };
+type PullRequestLikeBase = {
+  number: number;
+  body?: string | null;
+  base?: { ref?: string | null } | null;
+};
 
 type FinalizeApprovedRequestOptions = {
   approvalPrefix?: string;
@@ -28,6 +33,8 @@ export type ApprovedRequestFinalizationCallbacks<
   PullRequestType extends PullRequestLikeBase,
 > = {
   resolveEffectiveConstants: (context: ContextType) => EffectiveConstantsType;
+  /** Return the configured or repository-default base branch, or null when not determinable. */
+  resolveExpectedBaseBranch: (context: ContextType) => Promise<string | null>;
   extractResourceNameFromForm: (formData: FormDataType, template: TemplateType) => string;
   resolveEffectiveRequestType: (template: TemplateType, formData: FormDataType) => string;
   resolveAdditionalIssueApproversFromApprovalHook: (
@@ -100,7 +107,7 @@ export async function finalizeApprovedRequest<
   const approvalComment = toStringTrim(options.approvalComment);
   const autoApproved = options.autoApproved === true;
 
-  const resourceName = callbacks.extractResourceNameFromForm(parsedFormData, template).replaceAll('\u00a0', ' ').trim();
+  const resourceName = callbacks.extractResourceNameFromForm(parsedFormData, template).replaceAll(' ', ' ').trim();
   if (!resourceName) {
     await callbacks.postOnce(
       context,
@@ -122,22 +129,78 @@ export async function finalizeApprovedRequest<
   );
 
   const repoInfo = { owner: params.owner, repo: params.repo };
-  const existing = await callbacks.findOpenIssuePrs(context, repoInfo, issue.number);
+
+  let existing: PullRequestType[];
+  try {
+    existing = await callbacks.findOpenIssuePrs(context, repoInfo, issue.number);
+  } catch (e: unknown) {
+    const raw = (e instanceof Error ? e.message : String(e)).trim();
+    const stripped = raw.replace(/https?:\/\/\S+/gi, '').trim();
+    const msg = stripped || 'GitHub could not be checked for an existing pull request.';
+    await callbacks.postOnce(context, params, `Failed to create Pull Request: ${msg}`, {
+      minimizeTag: 'nsreq:approval-info',
+    });
+    return;
+  }
+
   if (existing.length) {
+    // Verify the found PR targets the expected base branch before accepting the shortcut.
+    const expectedBase = await callbacks.resolveExpectedBaseBranch(context);
+    if (expectedBase === null) {
+      await callbacks.postOnce(
+        context,
+        params,
+        'Cannot finalize: the target base branch could not be determined (missing configuration and repository API unavailable). Please check the bot configuration or try again.',
+        { minimizeTag: 'nsreq:approval-info' }
+      );
+      return;
+    }
+    const pr = existing[0];
+    const actualBase = toStringTrim(pr.base?.ref);
+
+    if (!actualBase || actualBase !== expectedBase) {
+      await callbacks.postOnce(
+        context,
+        params,
+        actualBase
+          ? `Cannot finalize: found PR #${pr.number} targets branch '${actualBase}' but expected '${expectedBase}'. Please check the open PR and reapprove after correcting the base branch.`
+          : `Cannot finalize: found PR #${pr.number} has no base branch recorded. Please check the open PR and reapprove.`,
+        { minimizeTag: 'nsreq:approval-info' }
+      );
+      return;
+    }
+
+    // Validate PR body independently using the reconciliation-path parser.
+    // findOpenIssuePrs uses first-match logic and may accept a PR whose body contains
+    // conflicting issue references (e.g. source:#1640 and fix:#999). Parsing with the
+    // same function used in reconciliation.ts ensures consistent conflict detection.
+    const prBodyIssue = parseIssueNumberFromPrBody(pr.body);
+    if (prBodyIssue !== issue.number) {
+      await callbacks.postOnce(
+        context,
+        params,
+        prBodyIssue === null
+          ? `Cannot finalize: found PR #${pr.number} has conflicting or missing issue references in its body. Please check the open PR and reapprove.`
+          : `Cannot finalize: found PR #${pr.number} references issue #${prBodyIssue} but expected #${issue.number}. Please check the open PR and reapprove.`,
+        { minimizeTag: 'nsreq:approval-info' }
+      );
+      return;
+    }
+
     await callbacks.applyApprovedRequestState(context, params, eff);
 
     if (autoApproved) {
-      await callbacks.addApprovedLabelToPr(context, repoInfo, existing[0].number);
+      await callbacks.addApprovedLabelToPr(context, repoInfo, pr.number);
     }
 
     await callbacks.ensureAssigneesPresent(
       context,
-      { owner: params.owner, repo: params.repo, issue_number: existing[0].number },
+      { owner: params.owner, repo: params.repo, issue_number: pr.number },
       hookApprovers
     );
 
     const lead = [toStringTrim(approvalPrefix), toStringTrim(approvalComment)].filter(Boolean).join('. ');
-    const body = lead ? `${lead}. PR already open: #${existing[0].number}` : `PR already open: #${existing[0].number}`;
+    const body = lead ? `${lead}. PR already open: #${pr.number}` : `PR already open: #${pr.number}`;
 
     await callbacks.postOnce(context, params, body, {
       minimizeTag: 'nsreq:approval-info',
@@ -174,9 +237,14 @@ export async function finalizeApprovedRequest<
       minimizeTag: 'nsreq:approval-info',
     });
   } catch (e: unknown) {
+    // request-pr-creation-recovery.ts already formats the user-facing message as
+    // "Failed to create Pull Request: <stage-aware detail>". Surface it directly
+    // to avoid a double "Failed to create Pull Request: Failed to create Pull Request:" prefix.
     const msg = e instanceof Error ? e.message : String(e);
+    const prefix = 'Failed to create Pull Request:';
+    const body = msg.startsWith(prefix) ? msg : `${prefix} ${msg}`;
 
-    await callbacks.postOnce(context, params, `Failed to create Pull Request: ${msg}`, {
+    await callbacks.postOnce(context, params, body, {
       minimizeTag: 'nsreq:approval-info',
     });
   }

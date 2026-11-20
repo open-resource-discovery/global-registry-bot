@@ -1,14 +1,3 @@
-/**
- * Safe API surface for repo hooks:
- * - HTTPS only
- * - Host allowlist
- * - Timeout + max response size
- * - Redirects blocked
- * - Secrets never exposed to the hook (auth via secret key only)
- *
- * Uses Node.js built-in fetch (Node 18+ / undici).
- */
-
 export type HookSecrets = Readonly<Record<string, string | undefined>>;
 
 export interface BearerAuth {
@@ -42,9 +31,6 @@ export interface HookApi {
   assertAllowedUrl(url: string): URL;
 }
 
-// NOTE: '*' means allow any public HTTPS host
-const DEFAULT_ALLOWED_HOSTS: readonly string[] = ['*'];
-
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 
@@ -69,7 +55,7 @@ function canonicalizeHost(hostname: string): string {
   const h = String(hostname ?? '')
     .trim()
     .toLowerCase();
-  return h.replace(/\.+$/g, '');
+  return h.replace(/^\[|\]$/g, '').replace(/\.+$/g, '');
 }
 
 function normalizeHostInput(input: string): string {
@@ -123,9 +109,17 @@ function isPrivateOrLinkLocalIpv6(host: string): boolean {
   const h = canonicalizeHost(host);
   if (!isIpv6Literal(h)) return false;
 
-  if (h === '::1') return true;
-  if (h.startsWith('fe80:')) return true;
+  if (h === '::' || h === '::1') return true;
+  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
   if (h.startsWith('fc') || h.startsWith('fd')) return true;
+
+  // WHATWG URL canonicalizes IPv4-mapped literals to hexadecimal IPv6 hextets.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1], 16);
+    const low = Number.parseInt(mapped[2], 16);
+    return isPrivateOrLinkLocalIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+  }
 
   return false;
 }
@@ -137,7 +131,7 @@ function isAbortError(err: unknown): boolean {
 }
 
 function isSafeHeaderName(name: string): boolean {
-  // RFC 7230 token-ish
+  // Header names must be HTTP tokens.
   return /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name);
 }
 
@@ -264,11 +258,6 @@ export function createHookApi(
   const allow = new Set<string>();
   let allowAllHosts = false;
 
-  for (const h of DEFAULT_ALLOWED_HOSTS) {
-    if (String(h).trim() === '*') allowAllHosts = true;
-    else allow.add(canonicalizeHost(h));
-  }
-
   for (const h of allowedHosts) {
     const raw = String(h ?? '').trim();
     if (raw === '*') {
@@ -300,7 +289,10 @@ export function createHookApi(
     if (!host) throw new Error('Invalid host');
 
     if (isLoopbackLikeHost(host)) throw new Error(`Host not allowed: ${host}`);
-    if (!allowAllHosts && !allow.has(host)) throw new Error(`Host not allowed: ${host}`);
+    if (!allowAllHosts && !allow.has(host))
+      throw new Error(
+        `Host not allowed: ${host}. Add the host to hooks.allowedHosts in .github/registry-bot/config.yaml`
+      );
 
     return u;
   }
@@ -325,7 +317,7 @@ export function createHookApi(
         redirect: 'manual',
       });
 
-      // Fetch redirect modes: follow|error|manual. Manual may produce an opaque-redirect response.
+      // Manual redirects can use status 0 with an opaque response type.
       const resAny = res as unknown as { type?: unknown };
       const resType = typeof resAny.type === 'string' ? resAny.type : '';
       const isOpaqueRedirect = resType === 'opaqueredirect';
@@ -342,7 +334,7 @@ export function createHookApi(
         try {
           body = await readBodyLimited(res, { maxBytes: errMax, controller });
         } catch {
-          // ignore
+          // Preserve the HTTP failure when the error body cannot be read.
         }
         const snippet = compactSnippet(body, 400);
         throw new Error(snippet ? `HTTP ${res.status}: ${snippet}` : `HTTP ${res.status}`);
