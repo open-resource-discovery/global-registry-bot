@@ -135,6 +135,36 @@ Target repositories can provide optional runtime logic in:
 .github/registry-bot/config.js
 ```
 
+JavaScript hooks require the deployment environment variable `REGISTRY_BOT_ENABLE_JS_HOOKS=true`.
+Only the exact value `true` enables loading and execution; repository configuration cannot enable them.
+YAML configuration and built-in validation remain available without hooks.
+
+Enabled hooks are trusted Node.js code with access to Node.js APIs and the worker environment.
+A worker thread is not a security sandbox. Enable hooks only for trusted repository administrators;
+untrusted code requires separate isolation with restricted credentials and network access.
+
+The provided hook HTTP API and worker `fetch` deny outbound hosts unless configured in YAML:
+
+```yaml
+hooks:
+  allowedHosts:
+    - api.example.com
+```
+
+An omitted or empty allowlist denies outbound hook HTTP requests. An explicit `'*'` disables hostname
+matching while retaining URL checks, including local IP literal checks. The allowlist does not validate
+DNS resolution or restrict arbitrary Node.js network APIs. Keep credentials in deployment secret storage.
+
+### Migrating deployments that already use hooks
+
+Before upgrading a deployment that uses repository or organization-level `config.js`:
+
+1. Review the hooks and configure their required hostnames under `hooks.allowedHosts`.
+2. Set `REGISTRY_BOT_ENABLE_JS_HOOKS=true` in the trusted deployment's runtime environment.
+3. Restart and verify hook-dependent normalization, validation, and approval behavior in development.
+
+Without the opt-in, hook-based normalization, custom validation, and approval decisions are skipped.
+
 Supported hooks:
 
 | Hook                                        | Purpose                                                                |

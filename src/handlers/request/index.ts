@@ -177,7 +177,7 @@ import {
   type ContactApprovalMeta,
   type ParentApprovalMeta,
 } from './domain/approval-markers.js';
-import { readIssueBodyForProcessing } from './domain/issue-body-processing.js';
+import { readIssueBodyForProcessing, readIssueBodyForSnapshotLegacy } from './domain/issue-body-processing.js';
 import { type RegistryValidationMachineReadableSource } from './domain/registry-validation-annotations.js';
 import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
 import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
@@ -633,10 +633,28 @@ const resolveEffectiveConstants = (context: BotContext<RequestEvents>): Effectiv
   };
 };
 
+const resolveExpectedBaseBranch = async (context: BotContext<RequestEvents>): Promise<string | null> => {
+  const cfg = (context.resourceBotConfig ?? DEFAULT_CONFIG) as NormalizedStaticConfig & {
+    pr?: { baseBranch?: unknown };
+  };
+  const configured = toStringTrim(cfg?.pr?.baseBranch);
+  if (configured) return configured;
+
+  // No baseBranch configured — fetch the repository default branch from the API.
+  try {
+    const { owner, repo } = context.repo();
+    if (!owner || !repo) return null;
+    const { data } = await context.octokit.rest.repos.get({ owner, repo });
+    const b = toStringTrim(data.default_branch);
+    return b || null;
+  } catch {
+    return null;
+  }
+};
+
 function resolveLockedWorkflowLabelKeys(context: BotContext<RequestEvents>): Set<string> {
   const cfg: NormalizedStaticConfig = context.resourceBotConfig ?? DEFAULT_CONFIG;
   const wf = cfg?.workflow ?? {};
-
   let labelsCfg: Record<string, unknown> = {};
   if (isPlainObject(wf)) {
     const raw = (wf as Record<string, unknown>)['labels'];
@@ -2426,6 +2444,7 @@ function buildApprovedRequestFinalizationCallbacks(): ApprovedRequestFinalizatio
     PullRequestLike
   >({
     resolveEffectiveConstants,
+    resolveExpectedBaseBranch,
     extractResourceNameFromForm,
     resolveEffectiveRequestType,
     resolveAdditionalIssueApproversFromApprovalHook,
@@ -2766,10 +2785,16 @@ function buildCompatibleRequestSnapshotHashes(
 ): string[] {
   const processedBody = readIssueBodyForProcessing(issueBody);
   const rawBody = String(issueBody || '');
+  // Legacy body: strips RL+PA but not CA — reproduces old create.ts hash for backwards compat
+  const legacyBody = readIssueBodyForSnapshotLegacy(issueBody);
 
   return Array.from(
     new Set(
-      [calcSnapshotHash(parsedFormData, template, processedBody), calcSnapshotHash(parsedFormData, template, rawBody)]
+      [
+        calcSnapshotHash(parsedFormData, template, processedBody),
+        calcSnapshotHash(parsedFormData, template, rawBody),
+        calcSnapshotHash(parsedFormData, template, legacyBody),
+      ]
         .map((value) => toStringTrim(value))
         .filter(Boolean)
     )

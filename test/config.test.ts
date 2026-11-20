@@ -5,6 +5,14 @@ const CFG_YAML = '.github/registry-bot/config.yaml';
 const CFG_YML = '.github/registry-bot/config.yml';
 const CFG_JS = '.github/registry-bot/config.js';
 
+beforeEach(() => {
+  jest.replaceProperty(process, 'env', { ...process.env, REGISTRY_BOT_ENABLE_JS_HOOKS: 'true' });
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 type FileEntry = { kind: 'file'; text: string } | { kind: 'dir' } | { kind: 'bad' } | { kind: 'err'; status: number };
 
 function b64(s: string): string {
@@ -24,33 +32,30 @@ function mkContext(args: {
   files: Record<string, FileEntry>;
   openIssues?: { number: number; title: string }[];
 }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, require-await
-  const getContent = jest.fn(async ({ owner, repo, path }: any) => {
-    const key = `${owner}/${repo}:${path}`;
-    const entry = args.files[key];
-    if (!entry) throw httpErr(404);
+  const getContent = jest.fn(
+    ({ owner, repo, path }: { owner: string; repo: string; path: string }): Promise<{ data: unknown }> => {
+      const key = `${owner}/${repo}:${path}`;
+      const entry = args.files[key];
+      if (!entry) throw httpErr(404);
 
-    if (entry.kind === 'dir') return { data: [] };
-    if (entry.kind === 'bad') return { data: { foo: 'bar' } };
-    if (entry.kind === 'err') throw httpErr(entry.status);
+      if (entry.kind === 'dir') return Promise.resolve({ data: [] });
+      if (entry.kind === 'bad') return Promise.resolve({ data: { foo: 'bar' } });
+      if (entry.kind === 'err') throw httpErr(entry.status);
 
-    return { data: { content: b64(entry.text), encoding: 'base64' } };
-  });
+      return Promise.resolve({ data: { content: b64(entry.text), encoding: 'base64' } });
+    }
+  );
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, require-await
-  const listForRepo = jest.fn(async (_p: any) => ({
-    data: args.openIssues ?? [],
-  }));
+  const listForRepo = jest.fn(() =>
+    Promise.resolve({
+      data: args.openIssues ?? [],
+    })
+  );
+  const update = jest.fn(() => Promise.resolve({}));
+  const create = jest.fn(() => Promise.resolve({}));
+  const createComment = jest.fn(() => Promise.resolve({}));
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, require-await
-  const update = jest.fn(async (_p: any) => ({}));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, require-await
-  const create = jest.fn(async (_p: any) => ({}));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, require-await
-  const createComment = jest.fn(async (_p: any) => ({}));
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const context: any = {
+  const context = {
     octokit: {
       rest: {
         repos: { getContent },
@@ -58,7 +63,7 @@ function mkContext(args: {
       },
     },
     log: { debug: jest.fn(), warn: jest.fn(), info: jest.fn() },
-    repo: () => ({ owner: args.owner, repo: args.repo }),
+    repo: (): { owner: string; repo: string } => ({ owner: args.owner, repo: args.repo }),
   };
 
   return { context, getContent, listForRepo, update, create, createComment };
@@ -383,7 +388,7 @@ test('invalid config reporting tolerates non-Error failures while listing and cr
   expect(context.log.warn).toHaveBeenCalledWith({ err: 'create failed' }, 'failed to create static config error issue');
 });
 
-test('normalizeEnabled handles string false/unknown and non-boolean values; normalizeMethod handles non-primitive — covers lines 36-37,40,48', async () => {
+test('normalizeEnabled handles string false/unknown and non-boolean values; normalizeMethod handles non-primitive', async () => {
   const owner = 'o_norm_edge';
   const repo = 'r_norm_edge';
 
@@ -403,12 +408,10 @@ pr:
   });
 
   const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
-  // 'false' (string) → normalizeEnabled returns false (line 36)
   expect(res.config.pr?.autoMerge?.enabled).toBe(false);
-  // null from YAML ~ → normalizeMethod returns null (line 45 fast-path, not 48)
 });
 
-test('normalizeEnabled returns null for unrecognized string — covers line 37', async () => {
+test('normalizeEnabled returns null for unrecognized string', async () => {
   const owner = 'o_norm_unk';
   const repo = 'r_norm_unk';
 
@@ -428,15 +431,13 @@ pr:
   });
 
   const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
-  // 'maybe'.toLowerCase() is not 'true'/'false' → normalizeEnabled returns null (line 37)
   expect(res.config.pr?.autoMerge?.enabled).toBeNull();
 });
 
-test('normalizeEnabled returns null for number; normalizeMethod returns null for object — covers lines 40,48', async () => {
+test('normalizeEnabled returns null for number; normalizeMethod returns null for object', async () => {
   const owner = 'o_norm_num';
   const repo = 'r_norm_num';
 
-  // YAML: enabled as integer 42, method as a mapping (object)
   const cfg = `
 pr:
   autoMerge:
@@ -454,13 +455,11 @@ pr:
   });
 
   const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
-  // 42 is not string/boolean → normalizeEnabled returns null (line 40)
   expect(res.config.pr?.autoMerge?.enabled).toBeNull();
-  // {} object → normalizeMethod returns null (line 48)
   expect(res.config.pr?.autoMerge?.method).toBeNull();
 });
 
-test('buildRequests normalizes approvers array — covers line 319', async () => {
+test('buildRequests normalizes approvers array', async () => {
   const owner = 'o_approvers';
   const repo = 'r_approvers';
 
@@ -484,11 +483,10 @@ requests:
   });
 
   const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
-  // approversRaw is ['alice', 'bob'] → normalizeStringArray (line 319)
   expect(res.config.requests?.mytype?.approvers).toEqual(['alice', 'bob']);
 });
 
-test('loads config from org repo when repo config is missing — covers lines 645-646', async () => {
+test('loads config from org repo when repo config is missing', async () => {
   const owner = 'o_orgcfg';
   const repo = 'r_orgcfg';
 
@@ -512,12 +510,11 @@ requests:
   });
 
   const res = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
-  // repo config missing → falls back to org config → lines 645-646 hit
   expect(res.source).toMatch(/^org:/);
   expect(res.config.requests?.orgtype?.folderName).toBe('data/org');
 });
 
-test('issues.update failure is logged when updating existing invalid-config issue — covers line 491', async () => {
+test('issues.update failure is logged when updating existing invalid-config issue', async () => {
   const owner = 'o_update_fail';
   const repo = 'r_update_fail';
 
@@ -535,14 +532,13 @@ test('issues.update failure is logged when updating existing invalid-config issu
 
   await loadStaticConfig(context, { validate: true, updateIssue: true, forceReload: true });
 
-  // Line 491: catch block when issues.update throws
   expect(context.log.warn).toHaveBeenCalledWith(
     { err: 'update api failed', issue_number: 5 },
     'failed to update static config error issue'
   );
 });
 
-test('createComment failure is logged when closing resolved config issue — covers line 561', async () => {
+test('createComment failure is logged when closing resolved config issue', async () => {
   const owner = 'o_comment_fail';
   const repo = 'r_comment_fail';
 
@@ -569,7 +565,6 @@ requests:
 
   await loadStaticConfig(context, { validate: true, updateIssue: true, forceReload: true });
 
-  // Line 561: catch block when createComment throws in closeStaticConfigIssueIfResolved
   expect(context.log.warn).toHaveBeenCalledWith(
     { err: 'comment api failed' },
     'failed to close static config error issue after successful validation'
@@ -619,4 +614,45 @@ test('default config without validation logs debug and ignores hook loading fail
     { err: 'hooks boom' },
     'failed to load JS registry-bot config; continuing without hooks'
   );
+});
+
+test.each([undefined, '', 'false', '1', 'TRUE'])(
+  'keeps YAML config available and skips hook loading with deployment flag %s',
+  async (flag) => {
+    if (flag === undefined) delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+    else process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'] = flag;
+    const owner = 'disabled-hooks';
+    const repo = 'repo';
+    const { context, getContent } = mkContext({
+      owner,
+      repo,
+      files: {
+        [`${owner}/${repo}:${CFG_YAML}`]: {
+          kind: 'file',
+          text: 'requests: {}\nREGISTRY_BOT_ENABLE_JS_HOOKS: true\n',
+        },
+        [`${owner}/${repo}:${CFG_JS}`]: { kind: 'file', text: 'throw new Error("must not load");' },
+      },
+    });
+    const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+    expect(result.source).toBe(`repo:${CFG_YAML}`);
+    expect(result.hooks).toBeNull();
+    expect(result.hooksSource).toBeNull();
+    expect(getContent.mock.calls.some(([args]) => args.path === CFG_JS)).toBe(false);
+  }
+);
+
+test('does not load organization hooks without deployment opt-in', async () => {
+  delete process.env['REGISTRY_BOT_ENABLE_JS_HOOKS'];
+  const { context, getContent } = mkContext({
+    owner: 'disabled-org-hooks',
+    repo: 'repo',
+    files: {
+      [`disabled-org-hooks/.github:${CFG_JS}`]: { kind: 'file', text: 'throw new Error("must not load");' },
+    },
+  });
+  const result = await loadStaticConfig(context, { validate: false, updateIssue: false, forceReload: true });
+  expect(result.source).toBe('default');
+  expect(result.hooks).toBeNull();
+  expect(getContent.mock.calls.some(([args]) => args.path === CFG_JS)).toBe(false);
 });

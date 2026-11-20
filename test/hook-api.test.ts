@@ -3,53 +3,9 @@ import { createHookApi } from '../src/handlers/request/validation/hook-api.js';
 
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
-type MockHeaders = { get: (k: string) => string | null };
-type ReaderReadResult = { done: boolean; value?: Uint8Array };
-type MockReader = { read: () => Promise<ReaderReadResult> };
-type MockBody = { getReader: () => MockReader };
-
-type MockResponse = {
-  status: number;
-  ok: boolean;
-  redirected: boolean;
-  headers: MockHeaders;
-  body: MockBody | null;
-  type?: string;
-};
-
 const globalFetchRef = globalThis as unknown as { fetch?: unknown };
 const realFetch = globalFetchRef.fetch;
-
-import type { MockedFunction } from 'jest-mock';
-let fetchMock: MockedFunction<FetchFn>;
-
-function headersFrom(obj: Record<string, string>): MockHeaders {
-  const map: Record<string, string> = {};
-  for (const [k, v] of Object.entries(obj)) map[String(k).toLowerCase()] = String(v);
-  return {
-    get: (k: string) => map[String(k).toLowerCase()] ?? null,
-  };
-}
-
-function bodyFromText(text: string, chunkSize: number = text.length): MockBody {
-  const bytes = Buffer.from(text, 'utf8');
-  let offset = 0;
-
-  return {
-    getReader: () => ({
-      read: async (): Promise<ReaderReadResult> => {
-        await Promise.resolve(); // Ensure async method contains an await
-        if (offset >= bytes.length) return { done: true };
-
-        const end = Math.min(bytes.length, offset + chunkSize);
-        const chunk = bytes.subarray(offset, end);
-        offset = end;
-
-        return { done: false, value: chunk };
-      },
-    }),
-  };
-}
+let fetchMock: jest.MockedFunction<FetchFn>;
 
 function mockRes(opts: {
   status: number;
@@ -58,19 +14,27 @@ function mockRes(opts: {
   redirected?: boolean;
   chunkSize?: number;
   type?: string;
-}): MockResponse {
-  const status = opts.status;
-  const hdrs = opts.headers ?? {};
-  const redirected = opts.redirected ?? false;
-
-  return {
-    status,
-    ok: status >= 200 && status < 300,
-    redirected,
-    type: opts.type,
-    headers: headersFrom(hdrs),
-    body: opts.text === undefined ? null : bodyFromText(opts.text, opts.chunkSize),
-  };
+}): Response {
+  const body =
+    opts.text === undefined
+      ? null
+      : new ReadableStream<Uint8Array>({
+          start(controller): void {
+            const bytes = new TextEncoder().encode(opts.text);
+            const chunkSize = opts.chunkSize ?? Math.max(1, bytes.length);
+            for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+              controller.enqueue(bytes.subarray(offset, offset + chunkSize));
+            }
+            controller.close();
+          },
+        });
+  const response =
+    opts.status === 0 ? Response.error() : new Response(body, { status: opts.status, headers: opts.headers });
+  Object.defineProperties(response, {
+    redirected: { value: opts.redirected ?? false },
+    type: { value: opts.type ?? response.type },
+  });
+  return response;
 }
 
 afterAll(() => {
@@ -86,17 +50,16 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-test('assertAllowedUrl allows default host api.sap.com', () => {
+test('assertAllowedUrl allows an explicitly configured host', () => {
   const api = createHookApi({}, { allowedHosts: ['api.sap.com'] });
   const u = api.assertAllowedUrl('https://api.sap.com/path?a=1');
   expect(u.hostname).toBe('api.sap.com');
 });
 
-test('assertAllowedUrl rejects invalid url / non-https / non-allowed host', () => {
+test('assertAllowedUrl rejects invalid URLs and non-HTTPS schemes', () => {
   const api = createHookApi({}, {});
   expect(() => api.assertAllowedUrl('not a url')).toThrow('Invalid URL');
   expect(() => api.assertAllowedUrl('http://api.sap.com/x')).toThrow('Only HTTPS is allowed');
-  expect(() => api.assertAllowedUrl('https://example.com/x')).not.toThrow();
 });
 
 test('assertAllowedUrl rejects credentials in URL', () => {
@@ -123,26 +86,50 @@ test('assertAllowedUrl allows trailing-dot host via canonicalization', () => {
   expect(u.hostname).toBe('api.sap.com.');
 });
 
-test('assertAllowedUrl allows public hosts by default', () => {
-  const api = createHookApi({}, {});
-  expect(() => api.assertAllowedUrl('https://api.sap.com/x')).not.toThrow();
-  expect(() => api.assertAllowedUrl('https://example.com/x')).not.toThrow();
+test.each([undefined, {}, { allowedHosts: [] }])('denies outbound HTTP by default with options %j', async (options) => {
+  const api = createHookApi({}, options);
+  await expect(api.httpGetJson('https://example.com/x')).rejects.toThrow('hooks.allowedHosts');
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
-test('allowedHosts supports host:port, host/path and full urls; ignores invalid entries', () => {
+test('allows public hosts only with an explicit wildcard', () => {
+  const api = createHookApi({}, { allowedHosts: ['*'] });
+  expect(api.assertAllowedUrl('https://example.com/x').hostname).toBe('example.com');
+});
+
+test.each([
+  '[::1]',
+  '[::]',
+  '[fe80::1]',
+  '[febf::1]',
+  '[fc00::1]',
+  '[fd00::1]',
+  '[::ffff:127.0.0.1]',
+  '[::ffff:192.168.1.1]',
+])('rejects local IPv6 literal %s even with a wildcard', (host) => {
+  const api = createHookApi({}, { allowedHosts: ['*'] });
+  expect(() => api.assertAllowedUrl(`https://${host}/x`)).toThrow('Host not allowed');
+});
+
+test.each(['[2001:4860:4860::8888]', '[::ffff:8.8.8.8]'])('accepts public IPv6 literal %s with a wildcard', (host) => {
+  const api = createHookApi({}, { allowedHosts: ['*'] });
+  expect(() => api.assertAllowedUrl(`https://${host}/x`)).not.toThrow();
+});
+
+test('normalizes configured hosts and rejects unlisted hosts', () => {
   const api = createHookApi({}, { allowedHosts: ['Example.com:443', 'foo.bar/baz', 'https://a.b/x', 'https://'] });
 
   expect(api.assertAllowedUrl('https://example.com/x').hostname).toBe('example.com');
   expect(api.assertAllowedUrl('https://foo.bar/x').hostname).toBe('foo.bar');
   expect(api.assertAllowedUrl('https://a.b/y').hostname).toBe('a.b');
 
-  expect(() => api.assertAllowedUrl('https://ignored.invalid/x')).not.toThrow();
+  expect(() => api.assertAllowedUrl('https://ignored.invalid/x')).toThrow('Host not allowed');
 });
 
 test('httpGetJson sends accept header, normalizes custom headers, strips Authorization/Cookie and applies bearer auth', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'], secrets: { TOKEN: 't123' } });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 200, text: JSON.stringify({ ok: true }) }) as unknown as Response);
+  fetchMock.mockResolvedValue(mockRes({ status: 200, text: JSON.stringify({ ok: true }) }));
 
   const out = await api.httpGetJson<{ ok: boolean }>('https://example.com/test', {
     headers: {
@@ -177,7 +164,7 @@ test('httpGetJson sends accept header, normalizes custom headers, strips Authori
 test('httpGetJson supports header auth with optional prefix', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'], secrets: { TOKEN: 't123' } });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 200, text: JSON.stringify({ ok: true }) }) as unknown as Response);
+  fetchMock.mockResolvedValue(mockRes({ status: 200, text: JSON.stringify({ ok: true }) }));
 
   await api.httpGetJson('https://example.com/test', {
     auth: { type: 'header', header: ' X-Api-Key ', secret: 'TOKEN', prefix: 'Token ' },
@@ -234,7 +221,7 @@ test('httpGetJson fails if bearer secret is missing', async () => {
 test('httpGetJson blocks redirects (3xx)', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'] });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 302, text: '' }) as unknown as Response);
+  fetchMock.mockResolvedValue(mockRes({ status: 302, text: '' }));
 
   await expect(api.httpGetJson('https://example.com/test')).rejects.toThrow('Redirect blocked (HTTP 302)');
 });
@@ -247,7 +234,7 @@ test('httpGetJson blocks redirects (redirected=true)', async () => {
       status: 200,
       text: JSON.stringify({ ok: true }),
       redirected: true,
-    }) as unknown as Response
+    })
   );
 
   await expect(api.httpGetJson('https://example.com/test')).rejects.toThrow('Redirect blocked (HTTP 200)');
@@ -256,7 +243,7 @@ test('httpGetJson blocks redirects (redirected=true)', async () => {
 test('httpGetJson blocks redirects (opaqueredirect response type)', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'] });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 0, type: 'opaqueredirect', text: undefined }) as unknown as Response);
+  fetchMock.mockResolvedValue(mockRes({ status: 0, type: 'opaqueredirect', text: undefined }));
 
   await expect(api.httpGetJson('https://example.com/test')).rejects.toThrow('Redirect blocked (HTTP 0)');
 });
@@ -264,7 +251,7 @@ test('httpGetJson blocks redirects (opaqueredirect response type)', async () => 
 test('httpGetJson returns HTTP <status>: <snippet> for non-ok responses with body', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'] });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 400, text: 'bad\n\nrequest' }) as unknown as Response);
+  fetchMock.mockResolvedValue(mockRes({ status: 400, text: 'bad\n\nrequest' }));
 
   await expect(api.httpGetJson('https://example.com/test')).rejects.toThrow('HTTP 400: bad request');
 });
@@ -272,7 +259,7 @@ test('httpGetJson returns HTTP <status>: <snippet> for non-ok responses with bod
 test('httpGetJson returns null for empty response body', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'] });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 200, text: '   \n\t  ' }) as unknown as Response);
+  fetchMock.mockResolvedValue(mockRes({ status: 200, text: '   \n\t  ' }));
 
   await expect(api.httpGetJson('https://example.com/test')).resolves.toBeNull();
 });
@@ -285,7 +272,7 @@ test('httpGetJson rejects invalid JSON response and includes content-type + snip
       status: 200,
       text: 'not-json',
       headers: { 'content-type': 'application/json' },
-    }) as unknown as Response
+    })
   );
 
   const p = api.httpGetJson('https://example.com/test');
@@ -307,7 +294,7 @@ test('httpGetJson rejects if content-length exceeds maxBytes (min clamp to 1024)
       status: 200,
       text: undefined,
       headers: { 'content-length': '2048' },
-    }) as unknown as Response
+    })
   );
 
   await expect(api.httpGetJson('https://example.com/test', { maxBytes: 1 })).rejects.toThrow(
@@ -323,7 +310,7 @@ test('httpGetJson rejects if content-length exceeds maxBytes (max clamp to 5MB)'
       status: 200,
       text: undefined,
       headers: { 'content-length': String(6 * 1024 * 1024) },
-    }) as unknown as Response
+    })
   );
 
   await expect(api.httpGetJson('https://example.com/test', { maxBytes: 999_999_999 })).rejects.toThrow(
@@ -339,7 +326,7 @@ test('httpGetJson rejects if streamed body exceeds maxBytes', async () => {
       status: 200,
       text: 'x'.repeat(1200),
       chunkSize: 600,
-    }) as unknown as Response
+    })
   );
 
   await expect(api.httpGetJson('https://example.com/test', { maxBytes: 1024 })).rejects.toThrow(
@@ -392,7 +379,7 @@ test('httpGetJson propagates fetch/network errors', async () => {
 test('httpGetJson clamps timeoutMs to [1..30000] (via setTimeout argument)', async () => {
   const api = createHookApi({}, { allowedHosts: ['example.com'] });
 
-  fetchMock.mockResolvedValue(mockRes({ status: 200, text: JSON.stringify({ ok: true }) }) as unknown as Response);
+  fetchMock.mockImplementation(() => Promise.resolve(mockRes({ status: 200, text: JSON.stringify({ ok: true }) })));
 
   const spy = jest.spyOn(globalThis, 'setTimeout');
 

@@ -209,6 +209,7 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
         },
         repos: {
           getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
+          get: jest.fn(() => Promise.resolve({ data: { default_branch: 'main' } })),
         },
         checks: {
           listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
@@ -700,7 +701,9 @@ test('issue_comment: approval fails when resource name missing', async () => {
 });
 
 test('issue_comment: approval short-circuits when PR already exists', async () => {
-  findOpenIssuePrs.mockResolvedValueOnce([{ number: 9, body: 'x', head: { ref: 'r', sha: 's' } }]);
+  findOpenIssuePrs.mockResolvedValueOnce([
+    { number: 9, body: 'fix: #1\n<!-- nsreq:issue:1 -->', head: { ref: 'r', sha: 's' }, base: { ref: 'main' } },
+  ]);
 
   const { app, handlers } = mkApp();
   requestHandler(app);
@@ -722,7 +725,9 @@ test('issue_comment: approval short-circuits when PR already exists', async () =
 });
 
 test('issue_comment: approval with existing PR only adds hook approvers missing from current assignees', async () => {
-  findOpenIssuePrs.mockResolvedValueOnce([{ number: 9, body: 'x', head: { ref: 'r', sha: 's' } }]);
+  findOpenIssuePrs.mockResolvedValueOnce([
+    { number: 9, body: 'fix: #1\n<!-- nsreq:issue:1 -->', head: { ref: 'r', sha: 's' }, base: { ref: 'main' } },
+  ]);
 
   const cfg = {
     requests: {
@@ -807,7 +812,7 @@ test('issue_comment: approval create PR failure -> posts error', async () => {
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalled();
-  expect(String(postOnce.mock.calls[0][2])).toContain('Failed to create PR automatically: boom');
+  expect(String(postOnce.mock.calls[0][2])).toContain('Failed to create Pull Request');
 });
 
 test('issue_comment: author update comment triggers revalidation errors -> posts + author state', async () => {
@@ -1078,7 +1083,9 @@ test('check_suite.success closes outdated when hashes mismatch', async () => {
   calcSnapshotHash.mockReturnValue('h1');
   extractHashFromPrBody.mockReturnValue('old');
 
-  findOpenIssuePrs.mockResolvedValueOnce([{ number: 9, body: 'old', head: { ref: 'ref-old', sha: 'x' } }]);
+  findOpenIssuePrs.mockResolvedValueOnce([
+    { number: 9, body: 'old', head: { ref: 'ref-old', sha: 'x' }, base: { ref: 'main' } },
+  ]);
 
   await handler(ctx);
   expect(ctx.octokit.rest.pulls.update).toHaveBeenCalled();
@@ -4169,7 +4176,7 @@ describe('parent owner approval gating', () => {
     expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Detected issues'))).toBe(true);
     expect(setStateLabel).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'author');
   });
-  test('issue_comment: approval recovers from stale request branch when PR creation fails with no commits between', async () => {
+  test('issue_comment: approval succeeds when createRequestPr resolves on first attempt', async () => {
     const cfg = {
       workflow: {
         labels: {
@@ -4252,13 +4259,8 @@ describe('parent owner approval gating', () => {
       },
     });
 
-    createRequestPr
-      .mockRejectedValueOnce(
-        new Error(
-          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
-        )
-      )
-      .mockResolvedValueOnce({ number: 999 });
+    // createRequestPr succeeds directly (reconciliation happens inside it, not in the wrapper)
+    createRequestPr.mockResolvedValueOnce({ number: 999 });
 
     const ctx = mkCommentContext({
       event: 'issue_comment.created',
@@ -4270,24 +4272,14 @@ describe('parent owner approval gating', () => {
 
     await handler(ctx);
 
-    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith({
-      owner: 'o',
-      repo: 'r',
-      ref: 'heads/feat/resource-sap.aiadm-issue-176',
-    });
-
-    expect(createRequestPr).toHaveBeenCalledTimes(2);
+    expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
+    expect(createRequestPr).toHaveBeenCalledTimes(1);
     expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #999'))).toBe(
       true
     );
-    expect(
-      postOnce.mock.calls.some((c) =>
-        String(c[2] ?? '').includes('No commits between main and feat/resource-sap.aiadm-issue-176')
-      )
-    ).toBe(false);
   });
 
-  test('issue_comment: approval recovers from stale branch when PR creation reports resource already exists only on request branch', async () => {
+  test('issue_comment: approval when createRequestPr fails with user-facing error — branch NOT deleted', async () => {
     const cfg = {
       workflow: {
         labels: {
@@ -4370,9 +4362,10 @@ public
       },
     });
 
-    createRequestPr
-      .mockRejectedValueOnce(new Error("Resource 'sap.aiadm' already exists at data/namespaces"))
-      .mockResolvedValueOnce({ number: 1001 });
+    // createRequestPr throws a conflict/file-write error — the wrapper surfaces it as a failure comment
+    createRequestPr.mockRejectedValueOnce(
+      new Error('[request-pr:file-conflict] The request branch already contains a different registry file.')
+    );
 
     const ctx = mkCommentContext({
       event: 'issue_comment.created',
@@ -4386,11 +4379,6 @@ public
       if (String(path) === 'data/vendors/sap.yaml') {
         return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
       }
-      if (String(path) === 'data/namespaces/sap.aiadm.yaml') {
-        const err: any = new Error('Not Found');
-        err.status = 404;
-        throw err;
-      }
       const err: any = new Error('Not Found');
       err.status = 404;
       throw err;
@@ -4398,16 +4386,12 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith({
-      owner: 'o',
-      repo: 'r',
-      ref: 'heads/feat/resource-sap.aiadm-issue-176',
-    });
-
-    expect(createRequestPr).toHaveBeenCalledTimes(2);
-    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Approved by @alice. Opened PR: #1001'))).toBe(
-      true
-    );
+    // Branch must NOT be deleted
+    expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
+    // createRequestPr called only once
+    expect(createRequestPr).toHaveBeenCalledTimes(1);
+    // User-facing failure comment is posted
+    expect(postOnce.mock.calls.some((c) => String(c[2] ?? '').includes('Failed to create Pull Request'))).toBe(true);
   });
 
   test('issue_comment: approval shows human-readable exists message when resource already exists on default branch', async () => {
@@ -4493,7 +4477,11 @@ public
       },
     });
 
-    createRequestPr.mockRejectedValueOnce(new Error("Resource 'sap.aiadm' already exists at data/namespaces"));
+    createRequestPr.mockRejectedValueOnce(
+      new Error(
+        "[request-pr:default-file-read] Resource 'sap.aiadm' is already registered on 'main' at data/namespaces."
+      )
+    );
 
     const ctx = mkCommentContext({
       event: 'issue_comment.created',
@@ -4503,18 +4491,17 @@ public
       config: cfg,
     });
 
-    ctx.octokit.rest.repos.getContent.mockResolvedValueOnce({ data: { content: 'x', encoding: 'base64' } });
-
     await handler(ctx);
 
     expect(createRequestPr).toHaveBeenCalledTimes(1);
     expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
 
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
-    expect(bodies).toContain("Failed to create PR automatically: Resource 'sap.aiadm' already exists in the registry.");
+    expect(bodies).toContain('Failed to create Pull Request');
+    expect(bodies).toContain('already registered');
   });
 
-  test('issue_comment: approval shows human-readable stale branch message when retry after no-commits also fails', async () => {
+  test('issue_comment: approval posts failure comment when createRequestPr fails — no branch deletion', async () => {
     const cfg = {
       workflow: {
         labels: {
@@ -4597,17 +4584,10 @@ public
       },
     });
 
-    createRequestPr
-      .mockRejectedValueOnce(
-        new Error(
-          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
-        )
-      )
-      .mockRejectedValueOnce(
-        new Error(
-          'Validation Failed: {"resource":"PullRequest","code":"custom","message":"No commits between main and feat/resource-sap.aiadm-issue-176"} - https://docs.github.com/enterprise-server@3.17/rest/pulls/pulls#create-a-pull-request'
-        )
-      );
+    // createRequestPr fails (e.g. branch-unsafe error from inside the new state machine)
+    createRequestPr.mockRejectedValueOnce(
+      new Error('[request-pr:branch-unsafe] The request branch contains unrelated changes.')
+    );
 
     const ctx = mkCommentContext({
       event: 'issue_comment.created',
@@ -4619,17 +4599,14 @@ public
 
     await handler(ctx);
 
-    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith({
-      owner: 'o',
-      repo: 'r',
-      ref: 'heads/feat/resource-sap.aiadm-issue-176',
-    });
-
+    // Branch must NOT be deleted
+    expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
+    // createRequestPr called exactly once — no retry in wrapper
+    expect(createRequestPr).toHaveBeenCalledTimes(1);
+    // A failure comment is posted with the error message
     const bodies = postOnce.mock.calls.map((c) => String(c[2] ?? '')).join('\n');
-    expect(bodies).toContain(
-      "Failed to create PR automatically: stale request branch 'feat/resource-sap.aiadm-issue-176' blocked PR creation. Please retry approval."
-    );
-    expect(bodies).not.toContain('Validation Failed: {"resource":"PullRequest"');
+    expect(bodies).toContain('Failed to create Pull Request');
+    // Raw GitHub API URLs must not be exposed to users
     expect(bodies).not.toContain('https://docs.github.com/');
   });
 
@@ -14033,7 +14010,7 @@ test('issue_comment: approval tolerates approved-label refresh failures after ap
   );
 });
 
-test('issue_comment: already-existing resource retry failure reports stale branch contains resource name', async () => {
+test('issue_comment: createRequestPr failure posts user-facing failure comment', async () => {
   const { app, handlers } = mkApp();
   requestHandler(app);
 
@@ -14058,15 +14035,17 @@ test('issue_comment: already-existing resource retry failure reports stale branc
 
   parseForm.mockReturnValueOnce({ 'product-id': 'product-stale' });
 
-  createRequestPr
-    .mockRejectedValueOnce(new Error("Resource 'product-stale' already exists at resources/product-stale.yaml"))
-    .mockRejectedValueOnce(new Error("Resource 'product-stale' already exists at resources/product-stale.yaml"));
-
-  ctx.octokit.rest.repos.getContent.mockRejectedValueOnce(httpErr(404)).mockRejectedValueOnce(httpErr(404));
+  // createRequestPr throws once — the wrapper surfaces this as a failure comment
+  createRequestPr.mockRejectedValueOnce(
+    new Error("[request-pr:default-file-read] Resource 'product-stale' is already registered on 'main'.")
+  );
 
   await handler(ctx);
 
-  expect(postedBodies()).toContain("a stale request branch already contains 'product-stale'");
+  // No branch deletion
+  expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
+  // Failure comment is posted
+  expect(postedBodies()).toContain('Failed to create Pull Request');
 });
 
 test('check_suite.success: direct PR request author pagination falls back to last known committer on later page failure', async () => {
@@ -15327,7 +15306,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     expect(postedBodies()).toContain('Opened PR: #77');
   });
 
-  test('issue_comment: stale branch cleanup ignores missing ref and reports non-json validation failure tail', async () => {
+  test('issue_comment: failure comment strips raw API URLs, no branch deletion', async () => {
     const { app, handlers } = mkApp();
     requestHandler(app);
 
@@ -15340,11 +15319,10 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       state: 'open',
     };
 
-    createRequestPr
-      .mockRejectedValueOnce(
-        new Error('Validation Failed: {"message":"No commits between main and refs/heads/feat/resource-abc-issue-908"}')
-      )
-      .mockRejectedValueOnce(new Error('Validation Failed: retry tail is not json - https://api.github.test/docs'));
+    // createRequestPr fails with a message containing a raw URL
+    createRequestPr.mockRejectedValueOnce(
+      new Error('[request-pr:file-write] write failed - https://api.github.test/docs')
+    );
 
     const ctx = mkCommentContext({
       event: 'issue_comment.created',
@@ -15354,18 +15332,20 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       withCachedConfig: true,
       config: productCfg(),
     });
-    ctx.octokit.rest.git.deleteRef.mockRejectedValueOnce(Object.assign(new Error('already gone'), { status: 404 }));
 
     await handlers['issue_comment.created'][0](ctx);
 
-    expect(ctx.octokit.rest.git.deleteRef).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'o', repo: 'r', ref: 'heads/feat/resource-abc-issue-908' })
-    );
-    expect(postedBodies()).toContain('retry tail is not json');
+    // No branch deletion
+    expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
+    // createRequestPr called exactly once
+    expect(createRequestPr).toHaveBeenCalledTimes(1);
+    // A failure comment is posted
+    expect(postedBodies()).toContain('Failed to create Pull Request');
+    // Raw API URL stripped from user-facing message
     expect(postedBodies()).not.toContain('https://api.github.test');
   });
 
-  test('issue_comment: resource-exists recovery surfaces non-404 default-branch lookup errors', async () => {
+  test('issue_comment: createRequestPr failure message is surfaced in user-facing comment', async () => {
     const { app, handlers } = mkApp();
     requestHandler(app);
 
@@ -15387,8 +15367,9 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     loadTemplate.mockResolvedValue(tpl);
     parseForm.mockReturnValue({ 'product-id': 'ABC' });
+    // createRequestPr now owns all state inspection; when it surfaces an error it is user-facing
     createRequestPr.mockRejectedValueOnce(
-      new Error("Validation Failed: Resource 'ABC' already exists at resources/ABC.yaml")
+      new Error("[request-pr:default-file-read] Resource 'ABC' is already registered on 'main'.")
     );
 
     const ctx = mkCommentContext({
@@ -15399,16 +15380,14 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       withCachedConfig: true,
       config: productCfg(),
     });
-    ctx.octokit.rest.repos.getContent.mockRejectedValueOnce(
-      Object.assign(new Error('server exploded'), { status: 500 })
-    );
 
     await handlers['issue_comment.created'][0](ctx);
 
-    expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'o', repo: 'r', path: 'resources/ABC.yaml' })
-    );
-    expect(postedBodies()).toContain('server exploded');
+    // No branch deletion
+    expect(ctx.octokit.rest.git.deleteRef).not.toHaveBeenCalled();
+    // Failure comment is posted containing the error context
+    expect(postedBodies()).toContain('Failed to create Pull Request');
+    expect(postedBodies()).toContain('already registered');
   });
 
   test('issue_comment: author update validation issues default missing paths to details', async () => {
