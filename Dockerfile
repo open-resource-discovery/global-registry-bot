@@ -1,5 +1,5 @@
 # Stage 1: install prod deps
-FROM node:26.13.1-alpine AS deps
+FROM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS deps
 WORKDIR /app
 
 RUN apk add --no-cache bash
@@ -10,7 +10,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
 # Stage 2: build
-FROM node:26.13.1-alpine AS build
+FROM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS build
 WORKDIR /app
 
 RUN apk add --no-cache bash
@@ -21,7 +21,7 @@ COPY . .
 RUN npm run build
 
 # Stage 3: runtime
-FROM node:26.13.1-alpine
+FROM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000

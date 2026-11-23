@@ -8,6 +8,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   create-release:
     runs-on: ubuntu-latest
@@ -22,7 +25,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
           persist-credentials: true # Needed by the release/push step
       - name: Create GitHub Release
         uses: open-resource-discovery/github-release@4ac7738d23ca85aed71916025fba275c0197b3c0 # main
@@ -31,5 +33,3 @@ jobs:
           version: ${{ inputs.version }}
           ci-workflows: ci-check.yml
     if: github.ref == 'refs/heads/main'
-permissions:
-  contents: read

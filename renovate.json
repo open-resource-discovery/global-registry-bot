@@ -6,7 +6,8 @@
     ":semanticCommits",
     "helpers:pinGitHubActionDigests",
     "docker:enableMajor",
-    ":pinAllExceptPeerDependencies"
+    ":pinAllExceptPeerDependencies",
+    "docker:pinDigests"
   ],
   "enabledManagers": ["npm", "dockerfile", "github-actions"],
   "branchPrefix": "deps/",
