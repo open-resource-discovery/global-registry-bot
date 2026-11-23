@@ -16,5 +16,4 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
     permissions:
-      contents: read
       pull-requests: write
