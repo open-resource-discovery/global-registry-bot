@@ -20,9 +20,9 @@
   "packageRules": [
     {
       "description": "Security fixes: fast path",
-      "matchUpdateTypes": ["security"],
       "semanticCommitType": "fix",
-      "automerge": true
+      "automerge": true,
+      "matchJsonata": ["isVulnerabilityAlert = true"]
     },
     {
       "groupName": "GitHub Actions",
@@ -49,8 +49,7 @@
       "groupName": "Dev toolchain (TypeScript/Babel)",
       "matchManagers": ["npm"],
       "matchDepTypes": ["devDependencies"],
-      "matchPackagePatterns": ["^@babel/"],
-      "matchPackageNames": ["typescript", "ts-jest", "babel-jest"],
+      "matchPackageNames": ["typescript", "ts-jest", "babel-jest", "/^@babel//"],
       "semanticCommitType": "chore",
       "automerge": true,
       "matchUpdateTypes": ["minor", "patch"]
