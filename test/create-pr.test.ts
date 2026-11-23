@@ -1,10 +1,11 @@
+import type { Mock } from 'vitest';
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
 
-import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Pre-import the real reconciliation module BEFORE any jest.resetModules() calls so
-// we can forward its exports through jest.unstable_mockModule inside loadSubject.
+// Pre-import the real reconciliation module BEFORE any vi.resetModules() calls so
+// we can forward its exports through vi.unstable_mockModule inside loadSubject.
 // create.ts now depends on reconciliation.js, so it must be mocked in the ESM mock
 // registry before create.js is dynamically imported.
 import * as reconciliationModule from '../src/handlers/request/pr/reconciliation.js';
@@ -30,29 +31,29 @@ const mkContext = () => {
     octokit: {
       rest: {
         repos: {
-          get: jest.fn(),
-          getBranch: jest.fn(),
-          getContent: jest.fn(),
-          createOrUpdateFileContents: jest.fn(),
-          compareCommitsWithBasehead: jest.fn(),
+          get: vi.fn(),
+          getBranch: vi.fn(),
+          getContent: vi.fn(),
+          createOrUpdateFileContents: vi.fn(),
+          compareCommitsWithBasehead: vi.fn(),
         },
         git: {
-          createRef: jest.fn(),
+          createRef: vi.fn(),
         },
         pulls: {
-          list: jest.fn(),
-          create: jest.fn(),
+          list: vi.fn(),
+          create: vi.fn(),
         },
         issues: {
-          addLabels: jest.fn(),
+          addLabels: vi.fn(),
         },
       },
     },
     log: {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
     },
     resourceBotConfig: undefined,
   };
@@ -63,18 +64,18 @@ const mkContext = () => {
 type Subject = {
   createRequestPr: (ctx: any, repoRef: any, issue: any, form: any, opts?: any) => Promise<any>;
   mocks: {
-    yamlParse: jest.Mock<any>;
-    yamlStringify: jest.Mock<any>;
+    yamlParse: Mock<any>;
+    yamlStringify: Mock<any>;
 
-    calcSnapshotHash: jest.Mock<any>;
-    tryEnableAutoMerge: jest.Mock<any>;
-    tryMergeIfGreen: jest.Mock<any>;
+    calcSnapshotHash: Mock<any>;
+    tryEnableAutoMerge: Mock<any>;
+    tryMergeIfGreen: Mock<any>;
 
-    loadTemplate: jest.Mock<any>;
-    loadStaticConfig: jest.Mock<any>;
+    loadTemplate: Mock<any>;
+    loadStaticConfig: Mock<any>;
 
-    resolvePrimaryIdFromTemplate: jest.Mock<any>;
-    projectForSchema: jest.Mock<any>;
+    resolvePrimaryIdFromTemplate: Mock<any>;
+    projectForSchema: Mock<any>;
   };
 };
 
@@ -85,24 +86,24 @@ async function loadSubject(opts?: {
   jsYamlDumpImpl?: (obj: any, opts?: any) => string;
   jsYamlSchema?: unknown;
 }): Promise<Subject> {
-  jest.resetModules();
+  vi.resetModules();
 
-  const yamlParse = jest.fn(
+  const yamlParse = vi.fn(
     opts?.yamlParseImpl ??
       (() => {
         throw new Error('YAML.parse not mocked');
       })
   );
-  const yamlStringify = jest.fn(opts?.yamlStringifyImpl ?? (() => 'yaml-out'));
-  const jsYamlLoad = jest.fn(
+  const yamlStringify = vi.fn(opts?.yamlStringifyImpl ?? (() => 'yaml-out'));
+  const jsYamlLoad = vi.fn(
     opts?.jsYamlLoadImpl ??
       (() => {
         throw new Error('js-yaml.load not mocked');
       })
   );
-  const jsYamlDump = jest.fn(opts?.jsYamlDumpImpl ?? ((obj: any) => JSON.stringify(obj)));
+  const jsYamlDump = vi.fn(opts?.jsYamlDumpImpl ?? ((obj: any) => JSON.stringify(obj)));
 
-  const calcSnapshotHash = jest.fn(() => 'HASH');
+  const calcSnapshotHash = vi.fn(() => 'HASH');
   type TryEnableAutoMergeFn = (
     context: unknown,
     pr: { number: number; node_id: string },
@@ -110,25 +111,25 @@ async function loadSubject(opts?: {
   ) => Promise<boolean>;
 
   //
-  const tryEnableAutoMerge = jest.fn<TryEnableAutoMergeFn>(async () => false);
+  const tryEnableAutoMerge = vi.fn<TryEnableAutoMergeFn>(async () => false);
   type TryMergeIfGreenFn = (
     context: unknown,
     args: { prNumber: number; mergeMethod?: 'merge' | 'squash' | 'rebase' }
   ) => Promise<boolean>;
 
-  const tryMergeIfGreen = jest.fn<TryMergeIfGreenFn>(async () => true);
+  const tryMergeIfGreen = vi.fn<TryMergeIfGreenFn>(async () => true);
 
   type LoadTemplateFn = (context: unknown, args: { issueLabels?: string[] }) => Promise<unknown>;
 
-  const loadTemplate = jest.fn<LoadTemplateFn>(async () => ({}));
+  const loadTemplate = vi.fn<LoadTemplateFn>(async () => ({}));
 
-  const loadStaticConfig = jest.fn(async () => ({ config: {} }));
+  const loadStaticConfig = vi.fn(async () => ({ config: {} }));
 
-  const resolvePrimaryIdFromTemplate = jest.fn(() => '');
-  const projectForSchema = jest.fn(async () => ({}));
+  const resolvePrimaryIdFromTemplate = vi.fn(() => '');
+  const projectForSchema = vi.fn(async () => ({}));
 
   // External dependency
-  jest.unstable_mockModule('yaml', () => ({
+  vi.doMock('yaml', () => ({
     default: {
       parse: yamlParse,
       stringify: yamlStringify,
@@ -136,7 +137,7 @@ async function loadSubject(opts?: {
   }));
 
   if (opts?.jsYamlLoadImpl || opts?.jsYamlDumpImpl || typeof opts?.jsYamlSchema !== 'undefined') {
-    jest.unstable_mockModule('js-yaml', () => ({
+    vi.doMock('js-yaml', () => ({
       default: {
         load: jsYamlLoad,
         dump: jsYamlDump,
@@ -146,25 +147,25 @@ async function loadSubject(opts?: {
   }
 
   // Local deps imported by create.ts
-  jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
+  vi.doMock('../src/handlers/request/pr/snapshot.js', () => ({
     SNAPSHOT_HASH_MARKER_KEY: 'snapshot-hash',
     calcSnapshotHash,
   }));
 
-  jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
+  vi.doMock('../src/lib/auto-merge.js', () => ({
     tryEnableAutoMerge,
     tryMergeIfGreen,
   }));
 
-  jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  vi.doMock('../src/handlers/request/template.js', () => ({
     loadTemplate,
   }));
 
-  jest.unstable_mockModule('../src/config.js', () => ({
+  vi.doMock('../src/config.js', () => ({
     loadStaticConfig,
   }));
 
-  jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
+  vi.doMock('../src/handlers/request/validation/run.js', () => ({
     resolvePrimaryIdFromTemplate,
     projectForSchema,
   }));
@@ -172,7 +173,7 @@ async function loadSubject(opts?: {
   // create.ts imports reconciliation.js — forward the real module so both the
   // JSON-yaml first-describe tests and the real-yaml integration tests use the
   // actual reconciliation functions without Jest trying to re-transform the file.
-  jest.unstable_mockModule('../src/handlers/request/pr/reconciliation.js', () => ({
+  vi.doMock('../src/handlers/request/pr/reconciliation.js', () => ({
     ...reconciliationModule,
   }));
 
@@ -771,11 +772,11 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
     mocks.tryMergeIfGreen.mockResolvedValueOnce(true);
 
     const formData = {
-      'correlationIds': 'id1\nid2,id1',
+      correlationIds: 'id1\nid2,id1',
       'cld-system-role': 'sr',
       'stc-service-id': 'stc',
       'ppms-product-object-number': 'pp',
-      'correlationIdTypes': '- kind: a\n  value: b\n',
+      correlationIdTypes: '- kind: a\n  value: b\n',
     };
 
     const pr = await createRequestPr(
@@ -1249,7 +1250,7 @@ describe('handlers/request/pr/create.ts – full coverage via createRequestPr()'
       ctx,
       { owner: 'o', repo: 'r' },
       { number: 2, title: '', labels: [], body: '' },
-      { 'cld-system-role': 'sr', 'correlationIdTypes': '- kind: a\n  value: b\n' },
+      { 'cld-system-role': 'sr', correlationIdTypes: '- kind: a\n  value: b\n' },
       { template }
     );
 
@@ -1327,7 +1328,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     candidateObj: Record<string, unknown>;
     schemaObj?: unknown;
   }) {
-    // We can't use jest.mock hoisting inside a nested describe, so we use a dynamic import
+    // We can't use vi.mock hoisting inside a nested describe, so we use a dynamic import
     // approach compatible with the existing test harness by calling loadSubject() directly.
     // The existing `loadSubject` is defined in the outer describe and already set up all mocks.
     // Here we re-use a fresh invocation:
@@ -1349,8 +1350,8 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     return { createRequestPr, mocks };
   }
 
-  function mkMock(): jest.Mock<any> {
-    return jest.fn() as jest.Mock<any>;
+  function mkMock(): Mock<any> {
+    return vi.fn() as Mock<any>;
   }
 
   function makeCtx(overrides: Partial<AnyObj> = {}): AnyObj {
@@ -1384,7 +1385,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
           issues: { addLabels },
         },
       },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       resourceBotConfig: {
         pr: { branchNameTemplate: 'feat/resource-{resource}-issue-{issue}' },
       },
@@ -1405,7 +1406,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
   const RESOURCE_FILE = 'data/namespaces/sap.test.yaml';
 
   function setSchema(ctx: AnyObj, path: string, schemaObj: unknown) {
-    const original = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const original = ctx.octokit.rest.repos.getContent as Mock;
     original.mockImplementation(async (args: unknown) => {
       const { path: p, ref } = args as AnyObj;
       if (!ref && p === path) return schemaFileResponse(schemaObj);
@@ -2017,7 +2018,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     );
     // reconcile read: getContent returns equivalent file
     // After the 422, reconciliation reads the file from the branch
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     let getContentCallCount = 0;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
@@ -2057,7 +2058,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
 
     ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValueOnce(httpErr(500));
 
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2089,7 +2090,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     const ctx = makeCleanCtx();
 
     ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValueOnce(httpErr(status));
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2121,7 +2122,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
 
     const resetErr = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
     ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValueOnce(resetErr);
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2158,7 +2159,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
       .mockResolvedValueOnce({ ok: true });
 
     let branchReadCount = 0;
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2200,7 +2201,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
       .mockRejectedValueOnce(httpErr(503)); // retry also fails
 
     let branchReadCount = 0;
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2241,7 +2242,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
       .mockRejectedValueOnce(httpErr(503, 'still down'));
 
     // All branch reads return 404 (file never appears)
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2274,7 +2275,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
 
     ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValueOnce(httpErr(500, 'original write error'));
 
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2558,7 +2559,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     const ctx = makeCleanCtx();
 
     const lookupErr = httpErr(500, 'default branch lookup failed');
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2599,7 +2600,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     ctx.octokit.rest.repos.getBranch.mockResolvedValue({ data: { commit: { sha: 'BASE_SHA' } } });
 
     const baseErr = httpErr(503, 'base branch lookup failed');
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -2648,7 +2649,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
       { template: TEMPLATE, _delay: noDelay }
     );
 
-    const writeCall = (ctx.octokit.rest.repos.createOrUpdateFileContents as jest.Mock).mock.calls[0][0] as AnyObj;
+    const writeCall = (ctx.octokit.rest.repos.createOrUpdateFileContents as Mock).mock.calls[0][0] as AnyObj;
     expect(writeCall.message).toMatch(/\(#42\)/);
     expect(writeCall.message).not.toMatch(/\(#\$42\)/);
   });
@@ -2679,7 +2680,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
       { template: TEMPLATE, _delay: noDelay }
     );
 
-    const writeCall = (ctx.octokit.rest.repos.createOrUpdateFileContents as jest.Mock).mock.calls[0][0] as AnyObj;
+    const writeCall = (ctx.octokit.rest.repos.createOrUpdateFileContents as Mock).mock.calls[0][0] as AnyObj;
     expect(writeCall.message).toBe('custom: add sap.test for issue 7');
   });
 
@@ -2718,7 +2719,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
       { template: productTemplate, _delay: noDelay }
     );
 
-    const createCall = (ctx.octokit.rest.pulls.create as jest.Mock).mock.calls[0][0] as AnyObj;
+    const createCall = (ctx.octokit.rest.pulls.create as Mock).mock.calls[0][0] as AnyObj;
     expect(String(createCall.body)).toContain('<!-- nsreq:issue:5 -->');
     expect(String(createCall.body)).toContain('<!-- snapshot-hash:');
     expect(createCall.maintainer_can_modify).toBe(true);
@@ -2916,7 +2917,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     ).rejects.toThrow(/unrelated|unsafe/i);
 
     // Structured log emitted
-    const warnCalls = (ctx.log.warn as jest.Mock).mock.calls as any[][];
+    const warnCalls = (ctx.log.warn as Mock).mock.calls as any[][];
     const unsafeLog = warnCalls.find(
       (c) => typeof c[0] === 'object' && c[0] !== null && c[0].stage === 'request-pr:branch-unsafe'
     );
@@ -3091,7 +3092,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     const originalWriteError = Object.assign(new Error('original write 500'), { status: 500 });
     ctx.octokit.rest.repos.createOrUpdateFileContents.mockRejectedValueOnce(originalWriteError);
 
-    const originalGetContent = ctx.octokit.rest.repos.getContent as jest.Mock;
+    const originalGetContent = ctx.octokit.rest.repos.getContent as Mock;
     originalGetContent.mockImplementation(async (args: unknown) => {
       const { path, ref } = args as AnyObj;
       if (!ref && path === 'ns.schema.json') return schemaFileResponse(NS_SCHEMA);
@@ -3167,7 +3168,7 @@ describe('createRequestPr – idempotency, reconciliation, and branch safety', (
     expect(ctx.octokit.rest.pulls.create).not.toHaveBeenCalled();
 
     // branch-unsafe structured log must be emitted
-    const warnCalls = (ctx.log.warn as jest.Mock).mock.calls as any[][];
+    const warnCalls = (ctx.log.warn as Mock).mock.calls as any[][];
     const unsafeLog = warnCalls.find(
       (c) => typeof c[0] === 'object' && c[0] !== null && c[0].stage === 'request-pr:branch-unsafe'
     );

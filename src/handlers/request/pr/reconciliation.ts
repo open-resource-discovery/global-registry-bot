@@ -382,7 +382,8 @@ export async function compareFileOnBranch(
 // ─── Branch safety ─────────────────────────────────────────────────────────────
 
 export type BranchSafetyResult =
-  { safe: true; branchExisted: boolean; headSha: string } | { safe: false; reason: string };
+  | { safe: true; branchExisted: boolean; headSha: string }
+  | { safe: false; reason: string };
 
 /**
  * After a createRef 422, verify the branch actually exists and is safe to reuse.

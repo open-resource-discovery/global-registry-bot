@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
+import { beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
 process.env.DEBUG_NS = '1';
 
@@ -29,16 +29,16 @@ type LoadStaticConfigFn = (...args: any[]) => Promise<{
 
 type LoadTemplateFn = (...args: any[]) => Promise<any>;
 
-const loadStaticConfig = jest.fn<LoadStaticConfigFn>();
-const loadTemplate = jest.fn<LoadTemplateFn>();
+const loadStaticConfig = vi.fn<LoadStaticConfigFn>();
+const loadTemplate = vi.fn<LoadTemplateFn>();
 
-const loadSecrets = jest.fn();
-const createHookApi = jest.fn();
+const loadSecrets = vi.fn();
+const createHookApi = vi.fn();
 
-const parseForm = jest.fn();
+const parseForm = vi.fn();
 
 type ReadFileFn = (...args: any[]) => Promise<string>;
-const readFile = jest.fn<ReadFileFn>();
+const readFile = vi.fn<ReadFileFn>();
 
 /* module under test (lazy) */
 
@@ -47,10 +47,10 @@ let projectForSchema: any;
 let resolvePrimaryIdFromTemplate: any;
 
 beforeAll(async () => {
-  jest.resetModules();
+  vi.resetModules();
 
   // ../../../config.js
-  await jest.unstable_mockModule('../src/config.js', () => ({
+  await vi.doMock('../src/config.js', () => ({
     loadStaticConfig,
   }));
 
@@ -65,24 +65,24 @@ beforeAll(async () => {
     },
   });
 
-  await jest.unstable_mockModule('../src/utils/secrets.js', () => ({
+  await vi.doMock('../src/utils/secrets.js', () => ({
     loadSecrets,
   }));
 
   // ../template.js
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     loadTemplate,
     parseForm,
   }));
 
   // ./hook-api.js
   createHookApi.mockReturnValue({ ok: true });
-  await jest.unstable_mockModule('../src/handlers/request/validation/hook-api.js', () => ({
+  await vi.doMock('../src/handlers/request/validation/hook-api.js', () => ({
     createHookApi,
   }));
 
   // node:fs/promises
-  await jest.unstable_mockModule('node:fs/promises', () => ({
+  await vi.doMock('node:fs/promises', () => ({
     readFile,
   }));
 
@@ -93,7 +93,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  vi.clearAllMocks();
 
   // default: config load ok
   loadStaticConfig.mockResolvedValue({
@@ -131,7 +131,7 @@ function mkContext(args: {
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const issue_number = args.issue_number ?? 1;
 
-  const getContent = jest.fn(async ({ owner, repo, path }: any) => {
+  const getContent = vi.fn(async ({ owner, repo, path }: any) => {
     const key = `${owner}/${repo}:${path}`;
     const entry = args.files?.[key];
     if (!entry) throw httpErr(404);
@@ -152,21 +152,21 @@ function mkContext(args: {
       rest: {
         repos: { getContent },
         issues: {
-          get: jest.fn(),
-          listForRepo: jest.fn(),
-          update: jest.fn(),
-          create: jest.fn(),
-          createComment: jest.fn(),
-          addLabels: jest.fn(),
-          removeLabel: jest.fn(),
+          get: vi.fn(),
+          listForRepo: vi.fn(),
+          update: vi.fn(),
+          create: vi.fn(),
+          createComment: vi.fn(),
+          addLabels: vi.fn(),
+          removeLabel: vi.fn(),
         },
       },
     },
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     repo: (): RepoRef => ({ owner: args.owner, repo: args.repo }),
     issue: (): IssueRef => ({ owner: args.owner, repo: args.repo, issue_number }),
@@ -311,18 +311,18 @@ test('projectForSchema builds candidate with coercions (arrays/objects/visibilit
       contacts: { type: 'array', items: { type: 'string' } },
       correlationIds: { type: 'array', items: { type: 'string' } },
       correlationIdTypes: { type: 'array', items: { type: 'object' } },
-      tags: { 'type': 'array', 'items': { type: 'string' }, 'x-form-field': 'tags' },
+      tags: { type: 'array', items: { type: 'string' }, 'x-form-field': 'tags' },
     },
   };
 
   const form: any = {
-    'identifier': 'sys.one',
-    'description': '  hello  ',
+    identifier: 'sys.one',
+    description: '  hello  ',
     'open-system': 'yes',
-    'contact': ' a@x \n b@y \n',
-    'correlationIds': ' c1\nc1\nc2, c3 ',
-    'correlationIdTypes': '[{"k":"v"},{"k":"v2"}]',
-    'tags': 'tag1',
+    contact: ' a@x \n b@y \n',
+    correlationIds: ' c1\nc1\nc2, c3 ',
+    correlationIdTypes: '[{"k":"v"},{"k":"v2"}]',
+    tags: 'tag1',
   };
 
   const cand = await projectForSchema('system', form, schemaObj);
@@ -354,8 +354,8 @@ test('full flow: valid schema + hooks.customValidate + registry-exists adds buck
   };
 
   const hooks = {
-    beforeValidate: jest.fn(),
-    customValidate: jest.fn(async () => ['identifier contains spaces']),
+    beforeValidate: vi.fn(),
+    customValidate: vi.fn(async () => ['identifier contains spaces']),
   };
 
   loadStaticConfig.mockResolvedValueOnce({
@@ -395,11 +395,11 @@ test('full flow: valid schema + hooks.customValidate + registry-exists adds buck
   };
 
   const formData: any = {
-    'identifier': 'sys.one',
-    'description': '  desc  ',
+    identifier: 'sys.one',
+    description: '  desc  ',
     'open-system': 'yes',
-    'contact': 'a@x',
-    'correlationIds': 'c1',
+    contact: 'a@x',
+    correlationIds: 'c1',
   };
 
   const res = await validateRequestIssue(
@@ -442,10 +442,10 @@ test('schema invalid: filters noisy type errors for arrays and still runs custom
       type: { const: 'system' },
       name: { type: 'string', minLength: 3 },
       tags: {
-        'type': 'array',
-        'items': { type: 'string' },
-        'minItems': 1,
-        'oneOf': [{ type: 'string' }, { type: 'array', minItems: 2 }],
+        type: 'array',
+        items: { type: 'string' },
+        minItems: 1,
+        oneOf: [{ type: 'string' }, { type: 'array', minItems: 2 }],
         'x-form-field': 'tags',
       },
     },
@@ -457,7 +457,7 @@ test('schema invalid: filters noisy type errors for arrays and still runs custom
   };
 
   const hooks = {
-    customValidate: jest.fn(async () => ['identifier must be lowercase']),
+    customValidate: vi.fn(async () => ['identifier must be lowercase']),
   };
 
   loadStaticConfig.mockResolvedValueOnce({

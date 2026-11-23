@@ -144,17 +144,17 @@ test('returned objects are frozen', () => {
   expect(Object.isFrozen(s.HOOK_SECRETS)).toBe(true);
 
   expect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
     (s as any).APP_ID = 'y';
   }).toThrow();
 
   expect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
     (s.HOOK_SECRETS as any).BASIC_AUTH = 'changed';
   }).toThrow();
 
   expect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
     (s.HOOK_SECRETS as any).NEW_SECRET = 'new';
   }).toThrow();
 });

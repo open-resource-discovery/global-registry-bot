@@ -1,11 +1,10 @@
-import path from 'node:path';
-import os from 'node:os';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type { ErrorObject } from 'ajv';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import YAML from 'yaml';
-
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { main, TEST_UTILS } from '../src/ci/validate-registry.js';
 
 type ValidateOneFileFn = typeof TEST_UTILS.validateOneFile;
@@ -105,16 +104,16 @@ describe('validate-registry', () => {
   const originalEnv: NodeJS.ProcessEnv = { ...process.env };
 
   let tmpDir = '';
-  let logSpy: ReturnType<typeof jest.spyOn> | null = null;
-  let errorSpy: ReturnType<typeof jest.spyOn> | null = null;
+  let logSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let errorSpy: ReturnType<typeof vi.spyOn> | null = null;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'registry-validate-test-'));
     initRepo(tmpDir);
     process.chdir(tmpDir);
 
-    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(async () => {
@@ -756,7 +755,7 @@ describe('validate-registry', () => {
       properties: {
         type: { type: 'string', const: 'system' },
         name: { type: 'string' },
-        legacyField: { 'type': 'string', 'x-sap-main-disable-validation': true },
+        legacyField: { type: 'string', 'x-sap-main-disable-validation': true },
       },
     });
 
@@ -1241,7 +1240,7 @@ describe('validate-registry', () => {
       type: 'object',
       required: ['legacyField'],
       properties: {
-        legacyField: { 'type': 'string', 'x-sap-main-disable-validation': true },
+        legacyField: { type: 'string', 'x-sap-main-disable-validation': true },
       },
     });
 

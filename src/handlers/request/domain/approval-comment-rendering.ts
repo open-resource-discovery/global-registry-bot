@@ -1,10 +1,10 @@
-import { type ApprovalDecision } from './approval-decision.js';
-import { buildAutoApprovalReviewMarker } from './auto-approval-review-marker.js';
+import type { ApprovalDecision } from './approval-decision.js';
 import { getVisibleApprovalText } from './approval-policy.js';
+import { buildAutoApprovalReviewMarker } from './auto-approval-review-marker.js';
 import {
   buildDetectedIssuesBody,
-  normalizeMachineReadableIssues,
   type MachineReadableIssue,
+  normalizeMachineReadableIssues,
 } from './machine-readable.js';
 
 function toStringTrim(value: unknown): string {

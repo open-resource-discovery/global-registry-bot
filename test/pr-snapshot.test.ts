@@ -1,13 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 
 async function loadSubject(opts?: { category?: string }) {
-  jest.resetModules();
+  vi.resetModules();
 
-  const categoryFromTemplate = jest.fn().mockReturnValue(opts?.category ?? 'system');
+  const categoryFromTemplate = vi.fn().mockReturnValue(opts?.category ?? 'system');
 
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     categoryFromTemplate,
   }));
 
@@ -55,9 +55,9 @@ describe('src/handlers/request/pr/snapshot.ts', () => {
       });
 
       // explizit: markdown + object + empty dürfen NICHT drin sein
-      expect(Object.prototype.hasOwnProperty.call(snap, 'md')).toBe(false);
-      expect(Object.prototype.hasOwnProperty.call(snap, 'obj')).toBe(false);
-      expect(Object.prototype.hasOwnProperty.call(snap, 'empty')).toBe(false);
+      expect(Object.hasOwn(snap, 'md')).toBe(false);
+      expect(Object.hasOwn(snap, 'obj')).toBe(false);
+      expect(Object.hasOwn(snap, 'empty')).toBe(false);
     });
 
     it('template-driven: does not include _category when categoryFromTemplate returns empty', async () => {
@@ -71,7 +71,7 @@ describe('src/handlers/request/pr/snapshot.ts', () => {
       const snap = mod.pickSnapshot({ identifier: 'x' }, template);
 
       expect(snap._template).toBe('Req');
-      expect(Object.prototype.hasOwnProperty.call(snap, '_category')).toBe(false);
+      expect(Object.hasOwn(snap, '_category')).toBe(false);
       expect(snap.identifier).toBe('x');
     });
 
@@ -168,7 +168,7 @@ World
         octokit: {
           rest: {
             pulls: {
-              list: jest.fn(),
+              list: vi.fn(),
             },
           },
         },

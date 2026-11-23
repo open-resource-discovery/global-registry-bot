@@ -1,33 +1,33 @@
+import { isAuthorizedApprover } from '../domain/approval-authorization.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
+import { getUnknownManualApprovers, isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
+import { buildAutoApprovalReviewMarker } from '../domain/auto-approval-review-marker.js';
 import {
   extractApprovedByLoginFromReviewBody,
   isApprovalReviewForCurrentHead,
   resolveEffectiveReviewApproverLogin,
   reviewTargetsCurrentHead,
 } from '../domain/current-head-approval.js';
+import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
 import {
   getLatestActionableReviewStates,
   isActionableReviewState,
   sortPullRequestReviewsChronologically,
 } from '../domain/pull-request-review-state.js';
-import type { ApprovalDecision } from '../domain/approval-decision.js';
-import { getUnknownManualApprovers, isApprovalDecisionAuthorizedByHookApprovers } from '../domain/approval-policy.js';
-import { buildAutoApprovalReviewMarker } from '../domain/auto-approval-review-marker.js';
-import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
 import {
-  resolveAllowedApproversForRequestTypes,
   type DirectPrApproverResolutionCallbacks,
+  resolveAllowedApproversForRequestTypes,
 } from './direct-pr-approver-resolution.js';
 import {
-  resolvePullRequestRequestAuthorId,
-  type PullRequestAuthorResolutionContext,
+  type DirectPrRequestTypeResolutionCallbacks,
+  resolveDirectPrRequestTypes,
+} from './direct-pr-request-type-resolution.js';
+import {
   type PullRequestAuthorResolutionCallbacks,
+  type PullRequestAuthorResolutionContext,
+  resolvePullRequestRequestAuthorId,
 } from './pull-request-author-resolution.js';
 import { listPullRequestReviews, type PullRequestReviewReadingContext } from './pull-request-review-reading.js';
-import {
-  resolveDirectPrRequestTypes,
-  type DirectPrRequestTypeResolutionCallbacks,
-} from './direct-pr-request-type-resolution.js';
-import { isAuthorizedApprover } from '../domain/approval-authorization.js';
 
 type RepoInfo = { owner: string; repo: string };
 

@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 import { DEFAULT_CONFIG, loadStaticConfig } from '../src/config.js';
 
 const CFG_YAML = '.github/registry-bot/config.yaml';
@@ -6,11 +6,11 @@ const CFG_YML = '.github/registry-bot/config.yml';
 const CFG_JS = '.github/registry-bot/config.js';
 
 beforeEach(() => {
-  jest.replaceProperty(process, 'env', { ...process.env, REGISTRY_BOT_ENABLE_JS_HOOKS: 'true' });
+  vi.stubEnv('REGISTRY_BOT_ENABLE_JS_HOOKS', 'true');
 });
 
 afterEach(() => {
-  jest.restoreAllMocks();
+  vi.restoreAllMocks();
 });
 
 type FileEntry = { kind: 'file'; text: string } | { kind: 'dir' } | { kind: 'bad' } | { kind: 'err'; status: number };
@@ -32,7 +32,7 @@ function mkContext(args: {
   files: Record<string, FileEntry>;
   openIssues?: { number: number; title: string }[];
 }) {
-  const getContent = jest.fn(
+  const getContent = vi.fn(
     ({ owner, repo, path }: { owner: string; repo: string; path: string }): Promise<{ data: unknown }> => {
       const key = `${owner}/${repo}:${path}`;
       const entry = args.files[key];
@@ -46,14 +46,14 @@ function mkContext(args: {
     }
   );
 
-  const listForRepo = jest.fn(() =>
+  const listForRepo = vi.fn(() =>
     Promise.resolve({
       data: args.openIssues ?? [],
     })
   );
-  const update = jest.fn(() => Promise.resolve({}));
-  const create = jest.fn(() => Promise.resolve({}));
-  const createComment = jest.fn(() => Promise.resolve({}));
+  const update = vi.fn(() => Promise.resolve({}));
+  const create = vi.fn(() => Promise.resolve({}));
+  const createComment = vi.fn(() => Promise.resolve({}));
 
   const context = {
     octokit: {
@@ -62,7 +62,7 @@ function mkContext(args: {
         issues: { listForRepo, update, create, createComment },
       },
     },
-    log: { debug: jest.fn(), warn: jest.fn(), info: jest.fn() },
+    log: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() },
     repo: (): { owner: string; repo: string } => ({ owner: args.owner, repo: args.repo }),
   };
 

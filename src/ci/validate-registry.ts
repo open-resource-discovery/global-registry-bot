@@ -1,20 +1,21 @@
 /* eslint-disable no-console */
-import YAML from 'yaml';
-import { readFile, access, readdir, stat } from 'node:fs/promises';
+
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import Ajv2020Module from 'ajv/dist/2020.js';
-import addFormatsModule from 'ajv-formats';
-import ajvErrorsModule from 'ajv-errors';
-import type { ErrorObject, ValidateFunction } from 'ajv';
-import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { RegistryBotHooks, NormalizedStaticConfig } from '../config.js';
+import { access, readdir, readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import type { ErrorObject, ValidateFunction } from 'ajv';
+import Ajv2020Module from 'ajv/dist/2020.js';
+import ajvErrorsModule from 'ajv-errors';
+import addFormatsModule from 'ajv-formats';
+import YAML from 'yaml';
+import type { NormalizedStaticConfig, RegistryBotHooks } from '../config.js';
 import {
-  runCustomValidateForRegistryCandidate,
-  resolvePrimaryIdFromCandidate,
-  type OctokitLike,
   type IssueListItem,
+  type OctokitLike,
+  resolvePrimaryIdFromCandidate,
+  runCustomValidateForRegistryCandidate,
 } from '../handlers/request/validation/run.js';
 
 const CONFIG_BASE_DIR = '.github/registry-bot';
@@ -850,7 +851,6 @@ async function checkFlatParentChain(filePath: string): Promise<string[]> {
 
     try {
       await access(ymlPath);
-      continue;
     } catch {
       errors.push(`Parent resource '${parent}' is not present in flat structure. Please register the parent first.`);
     }

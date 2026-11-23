@@ -1,4 +1,4 @@
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
 
 type WorkflowRunPullRequestRef = { number?: number | null };
 

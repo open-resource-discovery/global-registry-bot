@@ -1,7 +1,7 @@
 import {
+  type ApprovalDecision,
   normalizeApprovalDecision,
   promoteUnknownApprovalDecisionForDirectPrRequester,
-  type ApprovalDecision,
 } from '../domain/approval-decision.js';
 import { buildFormDataFromRegistryDoc, resolveRegistryDocResourceName } from '../domain/direct-pr-resource-mapping.js';
 

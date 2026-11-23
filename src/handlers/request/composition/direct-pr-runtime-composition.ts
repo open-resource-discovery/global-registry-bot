@@ -1,35 +1,35 @@
-import { type LogLevel } from '../infrastructure/logger.js';
-import { isPlainObject } from '../infrastructure/errors.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
-import { getUnknownManualApprovers, getVisibleApprovalText } from '../domain/approval-policy.js';
-import { rejectRequestFromApprovalHook } from '../application/approval-rejection.js';
 import { postApprovalRejectedOnce, postApprovalUnknownOnce } from '../application/approval-outcome-posting.js';
-import { handoverStandaloneDirectPrToReview } from '../application/pr-review-handover.js';
-import { setStateLabel, ensureAssigneesOnce } from '../state.js';
+import { rejectRequestFromApprovalHook } from '../application/approval-rejection.js';
 import {
-  ensureAutomatedApprovalReviewForCurrentHead as ensureAutomatedApprovalReviewForCurrentHeadApplication,
+  type AutoApprovalReviewDetectionCallbacks,
+  hasAutoApprovalReviewForHead as hasAutoApprovalReviewForHeadApplication,
+} from '../application/auto-approval-review-detection.js';
+import {
   type AutomatedApprovalReviewCallbacks,
   type AutomatedApprovalReviewOptions,
+  ensureAutomatedApprovalReviewForCurrentHead as ensureAutomatedApprovalReviewForCurrentHeadApplication,
 } from '../application/automated-approval-review.js';
 import {
-  hasAutoApprovalReviewForHead as hasAutoApprovalReviewForHeadApplication,
-  type AutoApprovalReviewDetectionCallbacks,
-} from '../application/auto-approval-review-detection.js';
+  type DirectPrApprovalCommentHandlingCallbacks,
+  handleDirectPrApprovalComment as handleDirectPrApprovalCommentApplication,
+} from '../application/direct-pr-approval-comment-handling.js';
+import {
+  type DirectPrLinkedIssueApprovalCallbacks,
+  maybeHandleDirectPrApprovalForMerge as maybeHandleDirectPrApprovalForMergeApplication,
+} from '../application/direct-pr-linked-issue-approval.js';
 import {
   maybeHandleStandaloneDirectPrApproval as maybeHandleStandaloneDirectPrApprovalApplication,
   type StandaloneDirectPrApprovalCallbacks,
 } from '../application/direct-pr-standalone-approval.js';
+import { handoverStandaloneDirectPrToReview } from '../application/pr-review-handover.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
+import { getUnknownManualApprovers, getVisibleApprovalText } from '../domain/approval-policy.js';
+import { isPlainObject } from '../infrastructure/errors.js';
+import type { LogLevel } from '../infrastructure/logger.js';
+import type { ensureAssigneesOnce, setStateLabel } from '../state.js';
 import {
-  maybeHandleDirectPrApprovalForMerge as maybeHandleDirectPrApprovalForMergeApplication,
-  type DirectPrLinkedIssueApprovalCallbacks,
-} from '../application/direct-pr-linked-issue-approval.js';
-import {
-  handleDirectPrApprovalComment as handleDirectPrApprovalCommentApplication,
-  type DirectPrApprovalCommentHandlingCallbacks,
-} from '../application/direct-pr-approval-comment-handling.js';
-import {
-  composeStandaloneDirectPrApprovalCallbacks,
   composeDirectPrApprovalCommentHandlingCallbacks,
+  composeStandaloneDirectPrApprovalCallbacks,
 } from './issue-comment-direct-pr-composition.js';
 
 type RepoInfoBase = {

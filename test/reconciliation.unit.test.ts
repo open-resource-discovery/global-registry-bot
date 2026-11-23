@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /**
  * Focused unit tests for reconciliation.ts using the REAL js-yaml implementation.
@@ -7,21 +8,21 @@
  * YAML parser behaviour is exercised rather than JSON-surrogate mocks.
  */
 
-import { describe, it, expect, jest } from '@jest/globals';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   compareFileOnBranch,
-  writeFileWithReconciliation,
-  inspectExistingBranch,
   createPrWithReconciliation,
+  inspectExistingBranch,
+  writeFileWithReconciliation,
 } from '../src/handlers/request/pr/reconciliation.js';
 
 // ─── Minimal context factory ────────────────────────────────────────────────
 
-// jest.Mock<any> resolves ResolveType<any> = never in jest-mock 30; use an
+// Mock<any> resolves ResolveType<any> = never in jest-mock 30; use an
 // explicit function signature so mockResolvedValue/mockRejectedValue type-check.
 type AnyFn = (...args: any[]) => any;
-type MockFn = jest.Mock<AnyFn>;
+type MockFn = Mock<AnyFn>;
 
 function b64(s: string): string {
   return Buffer.from(s, 'utf8').toString('base64');
@@ -38,11 +39,11 @@ function httpErr(status: number, msg = `HTTP ${status}`): Error & { status: numb
 }
 
 function mkMock(): MockFn {
-  return jest.fn() as MockFn;
+  return vi.fn() as MockFn;
 }
 
 function mkGetContent(impl: (args: unknown) => unknown): MockFn {
-  return jest.fn((args: unknown) => Promise.resolve(impl(args))) as MockFn;
+  return vi.fn((args: unknown) => Promise.resolve(impl(args))) as MockFn;
 }
 
 function mkContext(getContent: MockFn, log?: any) {
@@ -66,10 +67,10 @@ function mkContext(getContent: MockFn, log?: any) {
       },
     },
     log: log ?? {
-      info: jest.fn(),
-      warn: jest.fn(),
-      debug: jest.fn(),
-      error: jest.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
     },
   } as any;
 }
@@ -261,7 +262,7 @@ describe('compareFileOnBranch – real js-yaml', () => {
 
 describe('inspectExistingBranch – previous_filename and renamed target', () => {
   function mkInspectContext(compareResult: { data: { files?: any[] } }) {
-    const log = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
+    const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
     const getBranch = mkMock();
     getBranch.mockResolvedValue({ data: { commit: { sha: 'BRANCH_SHA' } } });
     const compareCommitsWithBasehead = mkMock();
@@ -381,7 +382,7 @@ describe('writeFileWithReconciliation – error preservation through reconciliat
     // getContent always throws a non-404 error
     const getContent = mkMock();
     getContent.mockRejectedValue(reconcileReadError);
-    const log = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
+    const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
 
     const ctx = mkContext(getContent, log);
     ctx.octokit.rest.repos.createOrUpdateFileContents = createOrUpdateFileContents;
@@ -591,7 +592,7 @@ describe('lookupOpenPrForBranch – stage-aware error wrapping', () => {
           pulls: { list, create: mkMock() },
         },
       },
-      log: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     } as any;
 
     let thrown: unknown = null;
@@ -636,7 +637,7 @@ describe('compareFileOnBranch – stage-aware non-404 read error', () => {
 
 describe('inspectExistingBranch – branch status fail-closed matrix', () => {
   function mkStatusCtx(files: any[]) {
-    const log = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
+    const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
     const getBranch = mkMock();
     getBranch.mockResolvedValue({ data: { commit: { sha: 'BRANCH_SHA' } } });
     const compare = mkMock();
@@ -723,12 +724,13 @@ describe('inspectExistingBranch – branch status fail-closed matrix', () => {
 
 describe('URL sanitization in error messages', () => {
   it('error containing only a credential URL produces safe fallback, no URL in output', async () => {
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
-    const postOnce = jest.fn(() => Promise.resolve());
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
+    const postOnce = vi.fn(() => Promise.resolve());
 
     const credentialUrl = 'https://user:secret@example.invalid/path?token=abc';
-    const findOpenIssuePrs = jest.fn(() => Promise.reject(new Error(credentialUrl)));
+    const findOpenIssuePrs = vi.fn(() => Promise.reject(new Error(credentialUrl)));
 
     const callbacks = {
       resolveEffectiveConstants: () => ({}),
@@ -736,10 +738,10 @@ describe('URL sanitization in error messages', () => {
       resolveEffectiveRequestType: () => 'system',
       resolveAdditionalIssueApproversFromApprovalHook: () => Promise.resolve([]),
       findOpenIssuePrs,
-      applyApprovedRequestState: jest.fn(() => Promise.resolve()),
-      addApprovedLabelToPr: jest.fn(() => Promise.resolve()),
-      ensureAssigneesPresent: jest.fn(() => Promise.resolve()),
-      createRequestPrWithRecovery: jest.fn(() => Promise.resolve({ number: 1 })),
+      applyApprovedRequestState: vi.fn(() => Promise.resolve()),
+      addApprovedLabelToPr: vi.fn(() => Promise.resolve()),
+      ensureAssigneesPresent: vi.fn(() => Promise.resolve()),
+      createRequestPrWithRecovery: vi.fn(() => Promise.resolve({ number: 1 })),
       postOnce,
     };
 
@@ -764,11 +766,12 @@ describe('URL sanitization in error messages', () => {
   });
 
   it('mixed text plus URL: harmless text retained, URL removed', async () => {
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
-    const postOnce = jest.fn(() => Promise.resolve());
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
+    const postOnce = vi.fn(() => Promise.resolve());
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.reject(new Error('resource not accessible - https://api.github.invalid/repos'))
     );
 
@@ -778,10 +781,10 @@ describe('URL sanitization in error messages', () => {
       resolveEffectiveRequestType: () => 'system',
       resolveAdditionalIssueApproversFromApprovalHook: () => Promise.resolve([]),
       findOpenIssuePrs,
-      applyApprovedRequestState: jest.fn(() => Promise.resolve()),
-      addApprovedLabelToPr: jest.fn(() => Promise.resolve()),
-      ensureAssigneesPresent: jest.fn(() => Promise.resolve()),
-      createRequestPrWithRecovery: jest.fn(() => Promise.resolve({ number: 1 })),
+      applyApprovedRequestState: vi.fn(() => Promise.resolve()),
+      addApprovedLabelToPr: vi.fn(() => Promise.resolve()),
+      ensureAssigneesPresent: vi.fn(() => Promise.resolve()),
+      createRequestPrWithRecovery: vi.fn(() => Promise.resolve({ number: 1 })),
       postOnce,
     };
 
@@ -801,12 +804,13 @@ describe('URL sanitization in error messages', () => {
   });
 
   it('fully-redacted message: fixed safe fallback used, no blank prefix', async () => {
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
-    const postOnce = jest.fn(() => Promise.resolve());
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
+    const postOnce = vi.fn(() => Promise.resolve());
 
     // Error message is nothing but a URL
-    const findOpenIssuePrs = jest.fn(() => Promise.reject(new Error('https://secret.internal/path')));
+    const findOpenIssuePrs = vi.fn(() => Promise.reject(new Error('https://secret.internal/path')));
 
     const callbacks = {
       resolveEffectiveConstants: () => ({}),
@@ -814,10 +818,10 @@ describe('URL sanitization in error messages', () => {
       resolveEffectiveRequestType: () => 'system',
       resolveAdditionalIssueApproversFromApprovalHook: () => Promise.resolve([]),
       findOpenIssuePrs,
-      applyApprovedRequestState: jest.fn(() => Promise.resolve()),
-      addApprovedLabelToPr: jest.fn(() => Promise.resolve()),
-      ensureAssigneesPresent: jest.fn(() => Promise.resolve()),
-      createRequestPrWithRecovery: jest.fn(() => Promise.resolve({ number: 1 })),
+      applyApprovedRequestState: vi.fn(() => Promise.resolve()),
+      addApprovedLabelToPr: vi.fn(() => Promise.resolve()),
+      ensureAssigneesPresent: vi.fn(() => Promise.resolve()),
+      createRequestPrWithRecovery: vi.fn(() => Promise.resolve({ number: 1 })),
       postOnce,
     };
 
@@ -854,16 +858,17 @@ describe('reconciliation exports: smoke', () => {
 type PrRecord = { number: number; head: { ref: string; sha: string }; base: { ref: string }; body?: string | null };
 
 function mkPrContext(existingPrs: PrRecord[], createResult?: PrRecord) {
-  const list = jest.fn((): Promise<{ data: PrRecord[] }> => Promise.resolve({ data: existingPrs }));
-  const create = jest.fn((): Promise<{ data: PrRecord }> =>
-    createResult
-      ? Promise.resolve({ data: createResult })
-      : Promise.reject(Object.assign(new Error('HTTP 422'), { status: 422 }))
+  const list = vi.fn((): Promise<{ data: PrRecord[] }> => Promise.resolve({ data: existingPrs }));
+  const create = vi.fn(
+    (): Promise<{ data: PrRecord }> =>
+      createResult
+        ? Promise.resolve({ data: createResult })
+        : Promise.reject(Object.assign(new Error('HTTP 422'), { status: 422 }))
   );
-  const getContent = jest.fn(() => Promise.reject(new Error('not used')));
-  const getBranch = jest.fn(() => Promise.resolve({ data: { commit: { sha: 'HEAD' } } }));
-  const createOrUpdateFileContents = jest.fn(() => Promise.resolve({}));
-  const compareCommitsWithBasehead = jest.fn(() => Promise.resolve({ data: { files: [] } }));
+  const getContent = vi.fn(() => Promise.reject(new Error('not used')));
+  const getBranch = vi.fn(() => Promise.resolve({ data: { commit: { sha: 'HEAD' } } }));
+  const createOrUpdateFileContents = vi.fn(() => Promise.resolve({}));
+  const compareCommitsWithBasehead = vi.fn(() => Promise.resolve({ data: { files: [] } }));
 
   return {
     ctx: {
@@ -873,7 +878,7 @@ function mkPrContext(existingPrs: PrRecord[], createResult?: PrRecord) {
           pulls: { list, create },
         },
       },
-      log: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     } as any,
     list,
     create,
@@ -945,11 +950,11 @@ describe('createPrWithReconciliation – PR-match validation', () => {
     };
     // First list (pre-create): empty. Create: 500. Re-list: returns wrong-base PR.
     let callCount = 0;
-    const list = jest.fn((): Promise<{ data: PrRecord[] }> => {
+    const list = vi.fn((): Promise<{ data: PrRecord[] }> => {
       callCount++;
       return Promise.resolve({ data: callCount > 1 ? [wrongBasePr] : [] });
     });
-    const create = jest.fn((): Promise<{ data: PrRecord }> => {
+    const create = vi.fn((): Promise<{ data: PrRecord }> => {
       const e = new Error('HTTP 500') as Error & { status: number };
       e.status = 500;
       return Promise.reject(e);
@@ -958,15 +963,15 @@ describe('createPrWithReconciliation – PR-match validation', () => {
       octokit: {
         rest: {
           repos: {
-            getContent: jest.fn(),
-            getBranch: jest.fn(),
-            createOrUpdateFileContents: jest.fn(),
-            compareCommitsWithBasehead: jest.fn(),
+            getContent: vi.fn(),
+            getBranch: vi.fn(),
+            createOrUpdateFileContents: vi.fn(),
+            compareCommitsWithBasehead: vi.fn(),
           },
           pulls: { list, create },
         },
       },
-      log: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     } as any;
 
     // Must throw — cannot safely return a PR with wrong base as recovery
@@ -998,13 +1003,14 @@ describe('createPrWithReconciliation – PR-match validation', () => {
 
 describe('approved-request-finalization – existing-PR shortcut', () => {
   it('shortcuts when findOpenIssuePrs returns a matching PR (configured base)', async () => {
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 99 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 99 }));
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 33,
@@ -1022,9 +1028,9 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
       resolveEffectiveRequestType: () => 'system',
       resolveAdditionalIssueApproversFromApprovalHook: () => Promise.resolve([]),
       findOpenIssuePrs,
-      applyApprovedRequestState: jest.fn(() => Promise.resolve()),
-      addApprovedLabelToPr: jest.fn(() => Promise.resolve()),
-      ensureAssigneesPresent: jest.fn(() => Promise.resolve()),
+      applyApprovedRequestState: vi.fn(() => Promise.resolve()),
+      addApprovedLabelToPr: vi.fn(() => Promise.resolve()),
+      ensureAssigneesPresent: vi.fn(() => Promise.resolve()),
       createRequestPrWithRecovery,
       postOnce,
     };
@@ -1048,14 +1054,15 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
   it('shortcuts when resolveExpectedBaseBranch resolves to repo default branch via API', async () => {
     // Regression: when cfg.pr.baseBranch is absent, the callback must call the API
     // to get default_branch and use it for base validation — not fall back to null.
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 99 }));
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
+    const postOnce = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 99 }));
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 44,
@@ -1075,8 +1082,8 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
       resolveAdditionalIssueApproversFromApprovalHook: () => Promise.resolve([]),
       findOpenIssuePrs,
       applyApprovedRequestState,
-      addApprovedLabelToPr: jest.fn(() => Promise.resolve()),
-      ensureAssigneesPresent: jest.fn(() => Promise.resolve()),
+      addApprovedLabelToPr: vi.fn(() => Promise.resolve()),
+      ensureAssigneesPresent: vi.fn(() => Promise.resolve()),
       createRequestPrWithRecovery,
       postOnce,
     };
@@ -1105,16 +1112,17 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
   it('aborts with a diagnostic when resolveExpectedBaseBranch resolves to null (API error)', async () => {
     // Regression: if the base cannot be determined (no config + API failure),
     // the shortcut must NOT proceed — doing so would approve PRs against an unknown target.
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
-    const addApprovedLabelToPr = jest.fn(() => Promise.resolve());
-    const ensureAssigneesPresent = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 99 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
+    const addApprovedLabelToPr = vi.fn(() => Promise.resolve());
+    const ensureAssigneesPresent = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 99 }));
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 55,
@@ -1165,16 +1173,17 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
 
   // ── Regression: wrong base branch must NOT shortcut ───────────────────────
   it('does NOT shortcut when found PR has wrong base branch', async () => {
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
-    const addApprovedLabelToPr = jest.fn(() => Promise.resolve());
-    const ensureAssigneesPresent = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 88 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
+    const addApprovedLabelToPr = vi.fn(() => Promise.resolve());
+    const ensureAssigneesPresent = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 88 }));
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 77,
@@ -1227,16 +1236,17 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
   it('does NOT shortcut when found PR has missing base field', async () => {
     // A PR with no base.ref at all must be rejected — we cannot verify it
     // targets the expected branch, so proceeding would be unsound.
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
-    const addApprovedLabelToPr = jest.fn(() => Promise.resolve());
-    const ensureAssigneesPresent = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 88 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
+    const addApprovedLabelToPr = vi.fn(() => Promise.resolve());
+    const ensureAssigneesPresent = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 88 }));
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 99,
@@ -1285,16 +1295,17 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
   // ── Regression: empty base.ref must NOT shortcut ─────────────────────────
   it('does NOT shortcut when found PR has empty base.ref', async () => {
     // A PR with base.ref === '' is equally unverifiable and must be rejected.
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
-    const addApprovedLabelToPr = jest.fn(() => Promise.resolve());
-    const ensureAssigneesPresent = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 88 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
+    const addApprovedLabelToPr = vi.fn(() => Promise.resolve());
+    const ensureAssigneesPresent = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 88 }));
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 100,
@@ -1346,17 +1357,18 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
     // the PR passes the snapshot filter. But the body also contains "fix: #999".
     // finalizeApprovedRequest must re-parse the body with parseIssueNumberFromPrBody
     // (which detects the conflict) and abort before any approval side-effects.
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
-    const addApprovedLabelToPr = jest.fn(() => Promise.resolve());
-    const ensureAssigneesPresent = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 88 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
+    const addApprovedLabelToPr = vi.fn(() => Promise.resolve());
+    const ensureAssigneesPresent = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 88 }));
 
     // snapshot.ts would return this PR for issue 1640 (first-match on "source: #1640")
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 77,
@@ -1408,16 +1420,17 @@ describe('approved-request-finalization – existing-PR shortcut', () => {
     // findOpenIssuePrs SHOULD NOT return this PR for issue 1640 (fix:#999 doesn't match),
     // but this test ensures finalizeApprovedRequest validates independently even if the
     // filter were to pass a mismatched PR through.
-    const { finalizeApprovedRequest } =
-      await import('../src/handlers/request/application/approved-request-finalization.js');
+    const { finalizeApprovedRequest } = await import(
+      '../src/handlers/request/application/approved-request-finalization.js'
+    );
 
-    const postOnce = jest.fn(() => Promise.resolve());
-    const applyApprovedRequestState = jest.fn(() => Promise.resolve());
-    const addApprovedLabelToPr = jest.fn(() => Promise.resolve());
-    const ensureAssigneesPresent = jest.fn(() => Promise.resolve());
-    const createRequestPrWithRecovery = jest.fn(() => Promise.resolve({ number: 88 }));
+    const postOnce = vi.fn(() => Promise.resolve());
+    const applyApprovedRequestState = vi.fn(() => Promise.resolve());
+    const addApprovedLabelToPr = vi.fn(() => Promise.resolve());
+    const ensureAssigneesPresent = vi.fn(() => Promise.resolve());
+    const createRequestPrWithRecovery = vi.fn(() => Promise.resolve({ number: 88 }));
 
-    const findOpenIssuePrs = jest.fn(() =>
+    const findOpenIssuePrs = vi.fn(() =>
       Promise.resolve([
         {
           number: 55,

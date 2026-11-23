@@ -1,12 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { afterAll, beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterAll, beforeAll, beforeEach, describe, expect, type Mock, type MockedFunction, test, vi } from 'vitest';
 
 const PREV_DEBUG_NS = process.env.DEBUG_NS;
 process.env.DEBUG_NS = '1';
 
 let currentTestNow = Date.parse('2026-04-22T09:00:00.000Z');
-const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => currentTestNow);
+const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => currentTestNow);
 
 afterAll(() => {
   process.env.DEBUG_NS = PREV_DEBUG_NS;
@@ -14,11 +14,11 @@ afterAll(() => {
 });
 
 type IssueParams = { owner: string; repo: string; issue_number: number };
-const setStateLabel = jest.fn(async (_ctx: any, _params: any, _options: any, _state: any) => {});
-const ensureAssigneesOnce = jest.fn(async () => {});
+const setStateLabel = vi.fn(async (_ctx: any, _params: any, _options: any, _state: any) => {});
+const ensureAssigneesOnce = vi.fn(async () => {});
 type PostOnceFn = (ctx: any, params: any, body: string, options?: any) => Promise<void>;
 
-const postOnce = jest.fn<PostOnceFn>(async (_ctx, _params, _body, _options) => {});
+const postOnce = vi.fn<PostOnceFn>(async (_ctx, _params, _body, _options) => {});
 
 type CollapseBotCommentsByPrefix = (
   ctx: unknown,
@@ -26,28 +26,28 @@ type CollapseBotCommentsByPrefix = (
   opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
 ) => Promise<void>;
 
-const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
+const collapseBotCommentsByPrefix = vi.fn() as unknown as MockedFunction<CollapseBotCommentsByPrefix>;
 
-const loadTemplate = jest.fn(async () => ({}));
-const parseForm = jest.fn(() => ({}));
-const validateRequestIssue = jest.fn(async () => ({}));
-const calcSnapshotHash = jest.fn(() => 'h1');
-const extractHashFromPrBody = jest.fn(() => 'h1');
+const loadTemplate = vi.fn(async () => ({}));
+const parseForm = vi.fn(() => ({}));
+const validateRequestIssue = vi.fn(async () => ({}));
+const calcSnapshotHash = vi.fn(() => 'h1');
+const extractHashFromPrBody = vi.fn(() => 'h1');
 type FindOpenIssuePrsFn = (
   context: any,
   repo: { owner: string; repo: string },
   issueNumber: number
 ) => Promise<{ number: number; body?: string | null; head: { ref: string; sha: string } }[]>;
 
-const findOpenIssuePrs = jest.fn<FindOpenIssuePrsFn>(async () => []);
+const findOpenIssuePrs = vi.fn<FindOpenIssuePrsFn>(async () => []);
 
 type RunApprovalHookFn = (ctx: any, repo: { owner: string; repo: string }, opts: any) => Promise<boolean>;
-const runApprovalHook = jest.fn<RunApprovalHookFn>(async () => false);
+const runApprovalHook = vi.fn<RunApprovalHookFn>(async () => false);
 
-const createRequestPr = jest.fn(async () => ({ number: 10 }));
-const tryMergeIfGreen = jest.fn(async (_ctx: any, _opts: any) => {});
-const loadStaticConfig = jest.fn(async () => ({}));
-const getDocLinksFromConfig = jest.fn(() => '');
+const createRequestPr = vi.fn(async () => ({ number: 10 }));
+const tryMergeIfGreen = vi.fn(async (_ctx: any, _opts: any) => {});
+const loadStaticConfig = vi.fn(async () => ({}));
+const getDocLinksFromConfig = vi.fn(() => '');
 
 type TestConfig = {
   workflow?: {
@@ -113,10 +113,10 @@ function mkApp() {
   const handlers: Record<string, any[]> = {};
   const app: any = {
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     on: (events: string | string[], fn: any) => {
       const arr = Array.isArray(events) ? events : [events];
@@ -167,24 +167,24 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
     name: 'x',
     payload: {},
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     repo: () => ({ owner, repo }),
     issue: () => ({ owner, repo, issue_number: issue.number }),
     octokit: {
       rest: {
         issues: {
-          get: jest.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
-          update: jest.fn<IssuesUpdateFn>(() => Promise.resolve({})),
-          addLabels: jest.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
-          removeLabel: jest.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
-          addAssignees: jest.fn<IssuesAddAssigneesFn>(() => Promise.resolve({})),
+          get: vi.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
+          update: vi.fn<IssuesUpdateFn>(() => Promise.resolve({})),
+          addLabels: vi.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
+          removeLabel: vi.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
+          addAssignees: vi.fn<IssuesAddAssigneesFn>(() => Promise.resolve({})),
         },
         pulls: {
-          get: jest.fn<PullsGetFn>((args: any) =>
+          get: vi.fn<PullsGetFn>((args: any) =>
             Promise.resolve({
               data: {
                 number: Number(args?.pull_number ?? 5),
@@ -196,32 +196,32 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
               },
             })
           ),
-          list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
-          listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
-          listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
-          listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
-          createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
-          update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
-          updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
+          list: vi.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
+          listFiles: vi.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
+          listCommits: vi.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
+          listReviews: vi.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
+          createReview: vi.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
+          update: vi.fn<PullsUpdateFn>(() => Promise.resolve({})),
+          updateBranch: vi.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
         },
         git: {
-          deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
+          deleteRef: vi.fn<GitDeleteRefFn>(() => Promise.resolve({})),
         },
         repos: {
-          getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
-          get: jest.fn(() => Promise.resolve({ data: { default_branch: 'main' } })),
+          getContent: vi.fn<ReposGetContentFn>(() => Promise.resolve({})),
+          get: vi.fn(() => Promise.resolve({ data: { default_branch: 'main' } })),
         },
         checks: {
-          listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
-          listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
-          listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
+          listAnnotations: vi.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
+          listForSuite: vi.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
+          listForRef: vi.fn<ChecksListForRefFn>().mockResolvedValue({
             data: {
               check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
             },
           }),
         },
       },
-      request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
+      request: vi.fn(async () => ({ data: { workflow_runs: [] } })),
     },
   };
 
@@ -398,46 +398,46 @@ async function runIssueCommentWithoutJestWorker(handler: (ctx: any) => Promise<v
 }
 
 beforeAll(async () => {
-  await jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
+  await vi.doMock('../src/handlers/request/state.js', () => ({
     setStateLabel,
     ensureAssigneesOnce,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
+  await vi.doMock('../src/handlers/request/comments.js', () => ({
     postOnce,
     collapseBotCommentsByPrefix,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     loadTemplate,
     parseForm,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
+  await vi.doMock('../src/handlers/request/validation/run.js', () => ({
     validateRequestIssue,
     runApprovalHook,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
+  await vi.doMock('../src/handlers/request/pr/snapshot.js', () => ({
     calcSnapshotHash,
     extractHashFromPrBody,
     findOpenIssuePrs,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/pr/create.js', () => ({
+  await vi.doMock('../src/handlers/request/pr/create.js', () => ({
     createRequestPr,
   }));
 
-  await jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
+  await vi.doMock('../src/lib/auto-merge.js', () => ({
     tryMergeIfGreen,
   }));
 
-  await jest.unstable_mockModule('../src/config.js', () => ({
+  await vi.doMock('../src/config.js', () => ({
     DEFAULT_CONFIG,
     loadStaticConfig,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
+  await vi.doMock('../src/handlers/request/constants.js', () => ({
     getDocLinksFromConfig,
   }));
 
@@ -447,7 +447,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   currentTestNow += 7 * 60 * 60 * 1000;
-  jest.resetAllMocks();
+  vi.resetAllMocks();
   dateNowSpy.mockImplementation(() => currentTestNow);
 
   setStateLabel.mockImplementation(async () => {});
@@ -1107,8 +1107,8 @@ test('check_suite.success treats matching default-branch head as default branch 
     withCachedConfig: true,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.payload.action = 'completed';
@@ -1117,7 +1117,7 @@ test('check_suite.success treats matching default-branch head as default branch 
   ctx.payload.check_suite.head_branch = 'feature/not-main';
   ctx.payload.check_suite.head_sha = 'sha-default-suite';
   ctx.payload.check_suite.pull_requests = [{ number: 77 }];
-  ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({
+  ctx.octokit.rest.repos.getBranch = vi.fn(async () => ({
     data: { commit: { sha: 'sha-default-suite' } },
   }));
 
@@ -1162,7 +1162,7 @@ test('check_suite.success ignores default-branch fallback when branch head looku
   ctx.payload.check_suite.head_branch = 'feature/not-main';
   ctx.payload.check_suite.head_sha = 'sha-default-suite-fail';
   ctx.payload.check_suite.pull_requests = [];
-  ctx.octokit.rest.repos.getBranch = jest.fn(async () => {
+  ctx.octokit.rest.repos.getBranch = vi.fn(async () => {
     throw httpErr(503);
   });
 
@@ -1236,7 +1236,7 @@ test('check_suite.completed failure posts PR comment when registry-validate anno
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalledTimes(1);
-  const [, params, body] = (postOnce as jest.Mock).mock.calls[0];
+  const [, params, body] = (postOnce as Mock).mock.calls[0];
   const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 42 });
@@ -1319,11 +1319,11 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
             JSON.stringify({
               properties: {
                 title: {
-                  'title': 'Product Name',
+                  title: 'Product Name',
                   'x-form-field': 'title',
                 },
                 identifier: {
-                  'title': 'Product ID',
+                  title: 'Product ID',
                   'x-form-field': 'identifier',
                 },
               },
@@ -1344,7 +1344,7 @@ test('check_suite.completed failure aggregates multi-file registry issues into o
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalledTimes(1);
-  const [, params, body, options] = (postOnce as jest.Mock).mock.calls[0];
+  const [, params, body, options] = (postOnce as Mock).mock.calls[0];
   const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 77 });
@@ -1412,7 +1412,7 @@ test('check_suite.completed failure resolves machine-readable fields from nested
                 {
                   properties: {
                     contacts: {
-                      'title': 'Contacts',
+                      title: 'Contacts',
                       'x-form-field': 'contact',
                     },
                   },
@@ -1434,7 +1434,7 @@ test('check_suite.completed failure resolves machine-readable fields from nested
                 {
                   properties: {
                     identifier: {
-                      'title': 'Product ID',
+                      title: 'Product ID',
                       'x-form-field': 'identifier',
                     },
                   },
@@ -1457,7 +1457,7 @@ test('check_suite.completed failure resolves machine-readable fields from nested
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalledTimes(1);
-  const [, params, body, options] = (postOnce as jest.Mock).mock.calls[0];
+  const [, params, body, options] = (postOnce as Mock).mock.calls[0];
   const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 78 });
@@ -1512,7 +1512,7 @@ test('check_suite.completed failure resolves machine-readable fields from schema
                 contactFields: {
                   properties: {
                     contacts: {
-                      'title': 'Contacts',
+                      title: 'Contacts',
                       'x-form-field': 'contact',
                     },
                   },
@@ -1535,7 +1535,7 @@ test('check_suite.completed failure resolves machine-readable fields from schema
   await handler(ctx);
 
   expect(postOnce).toHaveBeenCalledTimes(1);
-  const [, params, body, options] = (postOnce as jest.Mock).mock.calls[0];
+  const [, params, body, options] = (postOnce as Mock).mock.calls[0];
   const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
 
   expect(params).toEqual({ owner: 'o1', repo: 'r1', issue_number: 781 });
@@ -1595,7 +1595,7 @@ test('check_suite.completed failure falls back to the second schema candidate af
             JSON.stringify({
               properties: {
                 contacts: {
-                  'title': 'Contacts',
+                  title: 'Contacts',
                   'x-form-field': 'contact',
                 },
               },
@@ -1615,7 +1615,7 @@ test('check_suite.completed failure falls back to the second schema candidate af
 
   await handler(ctx);
 
-  const bodyText = String((postOnce as jest.Mock).mock.calls[0]?.[2] ?? '');
+  const bodyText = String((postOnce as Mock).mock.calls[0]?.[2] ?? '');
   expect(bodyText).toContain('### Contacts');
   expect(bodyText).toContain('"field": "contacts"');
   expect(ctx.octokit.rest.repos.getContent).toHaveBeenCalledWith(
@@ -1632,7 +1632,7 @@ test('check_suite.completed failure reuses cached schema alias lookup across rep
 
   const handler = handlers['check_suite.completed'][0];
   const schemaPath = '.github/registry-bot/request-schemas/cached-system-namespace.schema.json';
-  const getContent = jest.fn(async ({ path }: any) => {
+  const getContent = vi.fn(async ({ path }: any) => {
     if (path === schemaPath) {
       return {
         data: {
@@ -1640,7 +1640,7 @@ test('check_suite.completed failure reuses cached schema alias lookup across rep
             JSON.stringify({
               properties: {
                 contacts: {
-                  'title': 'Contacts',
+                  title: 'Contacts',
                   'x-form-field': 'contact',
                 },
               },
@@ -1692,8 +1692,8 @@ test('check_suite.completed failure reuses cached schema alias lookup across rep
 
   expect(postOnce).toHaveBeenCalledTimes(2);
   expect(getContent.mock.calls.filter(([args]) => args?.path === schemaPath)).toHaveLength(1);
-  expect(String((postOnce as jest.Mock).mock.calls[0]?.[2] ?? '')).toContain('"field": "contacts"');
-  expect(String((postOnce as jest.Mock).mock.calls[1]?.[2] ?? '')).toContain('"field": "contacts"');
+  expect(String((postOnce as Mock).mock.calls[0]?.[2] ?? '')).toContain('"field": "contacts"');
+  expect(String((postOnce as Mock).mock.calls[1]?.[2] ?? '')).toContain('"field": "contacts"');
 });
 
 test('check_suite.completed failure does nothing if there are no registry-validate annotations', async () => {
@@ -1752,7 +1752,7 @@ test('check_run.failure skips if check_run.id is missing', async () => {
   };
 
   ctx.octokit.rest.checks = {
-    listAnnotations: jest.fn(),
+    listAnnotations: vi.fn(),
   };
 
   await handlers['check_run.completed'][0](ctx);
@@ -2058,7 +2058,7 @@ describe('parent owner approval gating', () => {
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
-    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -2149,7 +2149,7 @@ describe('parent owner approval gating', () => {
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
 
-    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -2259,7 +2259,7 @@ describe('parent owner approval gating', () => {
       } as any),
     });
 
-    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -2319,7 +2319,7 @@ describe('parent owner approval gating', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2356,9 +2356,9 @@ describe('parent owner approval gating', () => {
       throw Object.assign(new Error('Not Found'), { status: 404 });
     });
     ctx.octokit.search = {
-      users: jest.fn(() => Promise.resolve({ data: { items: [] } })),
+      users: vi.fn(() => Promise.resolve({ data: { items: [] } })),
     };
-    ctx.octokit.graphql = jest.fn(() => Promise.resolve({ search: { nodes: [{ login: 'emailOwner' }] } }));
+    ctx.octokit.graphql = vi.fn(() => Promise.resolve({ search: { nodes: [{ login: 'emailOwner' }] } }));
 
     await h['issues.opened'][0](ctx);
 
@@ -2405,7 +2405,7 @@ describe('parent owner approval gating', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2443,9 +2443,9 @@ describe('parent owner approval gating', () => {
       throw Object.assign(new Error('Not Found'), { status: 404 });
     });
     ctx.octokit.search = {
-      users: jest.fn(() => Promise.resolve({ data: { items: [{ login: 'resolvedEmailOwner' }] } })),
+      users: vi.fn(() => Promise.resolve({ data: { items: [{ login: 'resolvedEmailOwner' }] } })),
     };
-    ctx.octokit.graphql = jest.fn(() => Promise.resolve({ search: { nodes: [{ login: 'shouldNotRun' }] } }));
+    ctx.octokit.graphql = vi.fn(() => Promise.resolve({ search: { nodes: [{ login: 'shouldNotRun' }] } }));
 
     await h['issues.opened'][0](ctx);
 
@@ -2492,7 +2492,7 @@ describe('parent owner approval gating', () => {
     });
 
     const ctx = mkIssuesContext({ issue, action: 'opened' });
-    (ctx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (ctx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2562,7 +2562,7 @@ describe('parent owner approval gating', () => {
       formData: { identifier: target, description: 'x' },
     });
 
-    const getContent = jest.fn(async ({ path }: any) => {
+    const getContent = vi.fn(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2598,8 +2598,8 @@ describe('parent owner approval gating', () => {
       throw Object.assign(new Error('Not Found'), { status: 404 });
     });
 
-    const firstSearchUsers = jest.fn(() => Promise.resolve({ data: { items: [] } }));
-    const firstGraphql = jest.fn(() => Promise.resolve({ search: { nodes: [{ login: 'emailOwner' }] } }));
+    const firstSearchUsers = vi.fn(() => Promise.resolve({ data: { items: [] } }));
+    const firstGraphql = vi.fn(() => Promise.resolve({ search: { nodes: [{ login: 'emailOwner' }] } }));
 
     const firstIssue = {
       number: 5512,
@@ -2611,14 +2611,14 @@ describe('parent owner approval gating', () => {
     };
 
     const firstCtx = mkIssuesContext({ issue: firstIssue, action: 'opened' });
-    (firstCtx.octokit.rest.repos.getContent as jest.Mock) = getContent as any;
+    (firstCtx.octokit.rest.repos.getContent as Mock) = getContent as any;
     firstCtx.octokit.search = { users: firstSearchUsers };
     firstCtx.octokit.graphql = firstGraphql;
 
     await h['issues.opened'][0](firstCtx);
 
-    const secondSearchUsers = jest.fn(() => Promise.resolve({ data: { items: [] } }));
-    const secondGraphql = jest.fn(() => Promise.resolve({ search: { nodes: [{ login: 'shouldNotBeUsed' }] } }));
+    const secondSearchUsers = vi.fn(() => Promise.resolve({ data: { items: [] } }));
+    const secondGraphql = vi.fn(() => Promise.resolve({ search: { nodes: [{ login: 'shouldNotBeUsed' }] } }));
 
     const secondIssue = {
       number: 5513,
@@ -2630,7 +2630,7 @@ describe('parent owner approval gating', () => {
     };
 
     const secondCtx = mkIssuesContext({ issue: secondIssue, action: 'opened' });
-    (secondCtx.octokit.rest.repos.getContent as jest.Mock) = getContent as any;
+    (secondCtx.octokit.rest.repos.getContent as Mock) = getContent as any;
     secondCtx.octokit.search = { users: secondSearchUsers };
     secondCtx.octokit.graphql = secondGraphql;
 
@@ -2684,7 +2684,7 @@ describe('parent owner approval gating', () => {
     const openCtx = mkIssuesContext({ issue, action: 'opened' });
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
-    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
@@ -2693,8 +2693,8 @@ describe('parent owner approval gating', () => {
     await h['issues.opened'][0](openCtx);
 
     // Now a random user tries to approve
-    (postOnce as jest.Mock).mockClear();
-    (ensureAssigneesOnce as jest.Mock).mockClear();
+    (postOnce as Mock).mockClear();
+    (ensureAssigneesOnce as Mock).mockClear();
 
     const commentCtx = mkCommentContext({
       event: 'issue_comment.created',
@@ -2762,7 +2762,7 @@ describe('parent owner approval gating', () => {
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
-    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -2782,9 +2782,9 @@ describe('parent owner approval gating', () => {
 
     await h['issues.opened'][0](openCtx);
 
-    (postOnce as jest.Mock).mockClear();
-    (setStateLabel as jest.Mock).mockClear();
-    (createRequestPr as jest.Mock).mockClear();
+    (postOnce as Mock).mockClear();
+    (setStateLabel as Mock).mockClear();
+    (createRequestPr as Mock).mockClear();
 
     const commentCtx = mkCommentContext({
       event: 'issue_comment.created',
@@ -2839,7 +2839,7 @@ describe('parent owner approval gating', () => {
     const openCtx = mkIssuesContext({ issue, action: 'opened' });
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
-    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.yaml') return { data: { content: b64(topYaml), encoding: 'base64' } };
       if (path === 'data/namespaces/sap.css.bar.yaml') return { data: { content: b64(barYaml), encoding: 'base64' } };
@@ -2848,9 +2848,9 @@ describe('parent owner approval gating', () => {
     await h['issues.opened'][0](openCtx);
 
     // Owner approves
-    (postOnce as jest.Mock).mockClear();
-    (ensureAssigneesOnce as jest.Mock).mockClear();
-    (setStateLabel as jest.Mock).mockClear();
+    (postOnce as Mock).mockClear();
+    (ensureAssigneesOnce as Mock).mockClear();
+    (setStateLabel as Mock).mockClear();
 
     const commentCtx = mkCommentContext({
       event: 'issue_comment.created',
@@ -2921,9 +2921,9 @@ describe('parent owner approval gating', () => {
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
       ctx.octokit.search = {
-        users: jest.fn(async () => ({ data: { items: [{ login: 'resolvedOwner' }] } })),
+        users: vi.fn(async () => ({ data: { items: [{ login: 'resolvedOwner' }] } })),
       };
-      ctx.octokit.graphql = jest.fn(async () => ({ search: { nodes: [] } }));
+      ctx.octokit.graphql = vi.fn(async () => ({ search: { nodes: [] } }));
       ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
         if (String(path) === 'data/vendors/sap.yaml') {
           return { data: { content: Buffer.from('name: sap\n', 'utf8').toString('base64'), encoding: 'base64' } };
@@ -3826,7 +3826,7 @@ describe('parent owner approval gating', () => {
 
       const ctx: any = mkIssuesContext({ issue, action: 'opened' });
       ctx.octokit.rest.issues.update.mockImplementation(async (args: any) => {
-        if (Object.prototype.hasOwnProperty.call(args, 'body')) throw new Error('update failed');
+        if (Object.hasOwn(args, 'body')) throw new Error('update failed');
         return {};
       });
       ctx.octokit.rest.repos.getContent.mockImplementation(async ({ path }: any) => {
@@ -4722,7 +4722,7 @@ public
     const topYaml = `contacts:\n  - "@topOwner"\n`;
     const barYaml = `contacts:\n  - "@barOwner"\n`;
 
-    (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+    (openCtx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
       if (path === 'data/vendors/sap.yaml') {
         return { data: { content: b64('name: sap\n'), encoding: 'base64' } };
       }
@@ -4737,9 +4737,9 @@ public
 
     await h['issues.opened'][0](openCtx);
 
-    (postOnce as jest.Mock).mockClear();
-    (ensureAssigneesOnce as jest.Mock).mockClear();
-    (createRequestPr as jest.Mock).mockClear();
+    (postOnce as Mock).mockClear();
+    (ensureAssigneesOnce as Mock).mockClear();
+    (createRequestPr as Mock).mockClear();
     runApprovalHook.mockResolvedValueOnce({ status: 'approved' } as any);
 
     const commentCtx = mkCommentContext({
@@ -5561,9 +5561,9 @@ public
       config: cfg,
     });
 
-    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+    const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
       if (typeof callback === 'function') callback();
-      return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
     });
 
     ctx.octokit.rest.pulls.list
@@ -6166,8 +6166,8 @@ public
       .mockResolvedValueOnce({ data: [] });
 
     ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({ data: [] });
-    ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
-    ctx.octokit.rest.git.getTree = jest.fn(async ({ owner, repo, tree_sha }: any) => {
+    ctx.octokit.rest.repos.getBranch = vi.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+    ctx.octokit.rest.git.getTree = vi.fn(async ({ owner, repo, tree_sha }: any) => {
       if (owner === 'o1' && repo === 'r1' && tree_sha === 'base-head-sha') {
         return {
           data: { tree: [{ path: 'resources/product-fork.yaml', type: 'blob', sha: 'base-file-sha' }] },
@@ -6183,7 +6183,7 @@ public
       return { data: { tree: [] } };
     });
 
-    ctx.octokit.rest.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+    ctx.octokit.rest.repos.getContent = vi.fn(async ({ owner, repo, path, ref }: any) => {
       if (
         owner === 'fork-owner' &&
         repo === 'fork-repo' &&
@@ -6309,7 +6309,7 @@ public
       data: [{ filename: 'resources/product-fork-issue.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.rest.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+    ctx.octokit.rest.repos.getContent = vi.fn(async ({ owner, repo, path, ref }: any) => {
       if (
         owner === 'fork-owner' &&
         repo === 'fork-repo' &&
@@ -6441,7 +6441,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
 
     Object.assign(ctx.octokit.rest.issues, {
       addAssignees,
@@ -6461,7 +6461,7 @@ public
 
     expect(ensureAssigneesOnce).toHaveBeenCalled();
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 161 }),
       expect.objectContaining({ number: 161 }),
@@ -6569,7 +6569,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({} as any);
@@ -6579,7 +6579,7 @@ public
     expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 425 }),
       expect.objectContaining({ number: 425 }),
@@ -6688,7 +6688,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({
@@ -6702,7 +6702,7 @@ public
     expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 426 }),
       expect.objectContaining({ number: 426 }),
@@ -6804,7 +6804,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({} as any);
@@ -6882,10 +6882,10 @@ public
         config: cfg,
       }).octokit,
       log: {
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       },
       resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
@@ -7064,7 +7064,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
 
     Object.assign(ctx.octokit.rest.issues, {
       addAssignees,
@@ -7075,7 +7075,7 @@ public
     expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 261 }),
       expect.objectContaining({ number: 261 }),
@@ -7347,7 +7347,7 @@ public
       };
 
       let releaseCreateReview: (() => void) | null = null;
-      const createReview = jest.fn(
+      const createReview = vi.fn(
         () =>
           new Promise((resolve) => {
             releaseCreateReview = () => resolve({});
@@ -7752,7 +7752,7 @@ public
       data: [{ filename: 'resources/product-cross-cleanup.yaml', status: 'modified' }],
     });
 
-    ctx.octokit.rest.repos.getContent = jest.fn(async ({ owner, repo, path, ref }: any) => {
+    ctx.octokit.rest.repos.getContent = vi.fn(async ({ owner, repo, path, ref }: any) => {
       if (
         owner === 'fork-owner' &&
         repo === 'fork-repo' &&
@@ -8030,7 +8030,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     await handler(ctx);
@@ -8045,7 +8045,7 @@ public
       'review'
     );
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 203 }),
       expect.objectContaining({ number: 203 }),
@@ -8115,7 +8115,7 @@ public
       config: cfg,
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     ctx.octokit.rest.issues.get.mockResolvedValue({
@@ -8157,7 +8157,7 @@ public
       'review'
     );
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 301 }),
       expect.objectContaining({ number: 301 }),
@@ -8232,7 +8232,7 @@ public
       config: cfg,
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     ctx.octokit.rest.issues.get.mockResolvedValue({
@@ -8266,7 +8266,7 @@ public
 
     await handlers['issues.opened'][0](ctx);
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 302 }),
       expect.objectContaining({ number: 302 }),
@@ -8330,7 +8330,7 @@ public
       config: cfg,
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     ctx.octokit.rest.issues.get
@@ -8420,7 +8420,7 @@ public
       config: cfg,
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     ctx.octokit.rest.issues.get
@@ -8586,7 +8586,7 @@ public
       message: 'manual review required',
     } as any);
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
 
     const mkPoolCtx = (issueNumber: number, productId: string): any => {
       const issue = {
@@ -8624,10 +8624,10 @@ public
     await handlers['issues.opened'][0](ctx302);
     await handlers['issues.opened'][0](ctx303);
 
-    const assigneeCall302 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+    const assigneeCall302 = (ensureAssigneesOnce as Mock).mock.calls.find(
       (call: any[]) => call[1]?.issue_number === 302
     );
-    const assigneeCall303 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+    const assigneeCall303 = (ensureAssigneesOnce as Mock).mock.calls.find(
       (call: any[]) => call[1]?.issue_number === 303
     );
 
@@ -8719,7 +8719,7 @@ public
       message: 'manual review required',
     } as any);
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
 
     const mkPoolCtx = (issueNumber: number, productId: string): any => {
       const issue = {
@@ -8757,10 +8757,10 @@ public
     await handlers['issues.opened'][0](ctx304);
     await handlers['issues.opened'][0](ctx305);
 
-    const assigneeCall304 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+    const assigneeCall304 = (ensureAssigneesOnce as Mock).mock.calls.find(
       (call: any[]) => call[1]?.issue_number === 304
     );
-    const assigneeCall305 = (ensureAssigneesOnce as jest.Mock).mock.calls.find(
+    const assigneeCall305 = (ensureAssigneesOnce as Mock).mock.calls.find(
       (call: any[]) => call[1]?.issue_number === 305
     );
 
@@ -9015,10 +9015,10 @@ public
         config: cfg,
       }).octokit,
       log: {
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       },
       resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
@@ -9109,10 +9109,10 @@ public
         config: cfg,
       }).octokit,
       log: {
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       },
       resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
@@ -9223,10 +9223,10 @@ public
         config: cfg,
       }).octokit,
       log: {
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       },
       resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
@@ -9368,10 +9368,10 @@ public
         config: cfg,
       }).octokit,
       log: {
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       },
       resourceBotConfig: withWorkflowLabels(cfg),
       resourceBotHooks: {},
@@ -9522,10 +9522,10 @@ public
           config: cfg,
         }).octokit,
         log: {
-          info: jest.fn(),
-          warn: jest.fn(),
-          error: jest.fn(),
-          debug: jest.fn(),
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
         },
         resourceBotConfig: withWorkflowLabels(cfg),
         resourceBotHooks: {},
@@ -9679,10 +9679,10 @@ public
           config: cfg,
         }).octokit,
         log: {
-          info: jest.fn(),
-          warn: jest.fn(),
-          error: jest.fn(),
-          debug: jest.fn(),
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
         },
         resourceBotConfig: withWorkflowLabels(cfg),
         resourceBotHooks: {},
@@ -9850,7 +9850,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     // onApproval did not match this registry doc.
@@ -9880,7 +9880,7 @@ public
     );
 
     // pool is sorted to ['poolA', 'poolB']; issue/PR #421 => (421 - 1) % 2 = 0 => poolA
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 421 }),
       expect.objectContaining({ number: 421 }),
@@ -10712,7 +10712,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     ctx.octokit.rest.pulls.listReviews.mockResolvedValue({
@@ -10953,7 +10953,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({} as any);
@@ -10963,7 +10963,7 @@ public
     expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 430 }),
       expect.objectContaining({ number: 430 }),
@@ -11209,7 +11209,7 @@ public
       },
     });
 
-    const addAssignees = jest.fn(async (_params: any): Promise<void> => undefined);
+    const addAssignees = vi.fn(async (_params: any): Promise<void> => undefined);
     Object.assign(ctx.octokit.rest.issues, { addAssignees });
 
     runApprovalHook.mockResolvedValue({
@@ -11223,7 +11223,7 @@ public
     expect(ctx.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
     expect(tryMergeIfGreen).not.toHaveBeenCalled();
 
-    expect((ensureAssigneesOnce as jest.Mock).mock.calls).toContainEqual([
+    expect((ensureAssigneesOnce as Mock).mock.calls).toContainEqual([
       ctx,
       expect.objectContaining({ owner: 'o1', repo: 'r1', issue_number: 432 }),
       expect.objectContaining({ number: 432 }),
@@ -11711,8 +11711,8 @@ test('push: default branch push updates approved green registry PR branches', as
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -11818,9 +11818,9 @@ test('push: default branch delayed retry logs when approved branch update retry 
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-delayed-retry', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -11865,8 +11865,8 @@ test('push: direct PR reevaluation skips missing head sha', async () => {
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.octokit.rest.pulls.list
@@ -11905,8 +11905,8 @@ test('push: direct PR reevaluation skips different base branch', async () => {
     commits: [{ modified: ['docs/readme.md'], added: [], removed: [] }],
   };
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   extractHashFromPrBody.mockReturnValueOnce('');
@@ -11952,8 +11952,8 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -11979,8 +11979,8 @@ test('push: direct PR reevaluation uses fallback tree diff and skips closed refr
     .mockResolvedValueOnce({ data: [] });
 
   ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({ data: [] });
-  ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
-  const getTreeMock: any = jest.fn();
+  ctx.octokit.rest.repos.getBranch = vi.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+  const getTreeMock: any = vi.fn();
   getTreeMock.mockResolvedValueOnce({
     data: { tree: [{ path: 'resources/product-tree.yaml', type: 'blob', sha: 'base-file-sha' }] },
   });
@@ -12031,8 +12031,8 @@ test('push: direct PR reevaluation requests update when current base comparison 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12074,8 +12074,8 @@ test('push: direct PR reevaluation requests update when current base comparison 
     },
   });
 
-  ctx.octokit.rest.repos.getBranch = jest.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
-  ctx.octokit.rest.repos.compareCommitsWithBasehead = jest.fn(async () => ({
+  ctx.octokit.rest.repos.getBranch = vi.fn(async () => ({ data: { commit: { sha: 'base-head-sha' } } }));
+  ctx.octokit.rest.repos.compareCommitsWithBasehead = vi.fn(async () => ({
     data: { status: 'ahead', ahead_by: 1 },
   }));
 
@@ -12111,8 +12111,8 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12138,7 +12138,7 @@ test('push: direct PR reevaluation skips when fallback tree diff cannot read cur
     .mockResolvedValueOnce({ data: [] });
 
   ctx.octokit.rest.pulls.listFiles.mockResolvedValueOnce({ data: [] });
-  ctx.octokit.rest.repos.getBranch = jest.fn(async () => {
+  ctx.octokit.rest.repos.getBranch = vi.fn(async () => {
     throw httpErr(500);
   });
 
@@ -12171,9 +12171,9 @@ test('push: direct PR reevaluation does not run approval when approved head chec
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12256,9 +12256,9 @@ test('push: direct PR reevaluation waits when latest approved head check runs ar
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12340,9 +12340,9 @@ test('push: direct PR reevaluation waits when completed head check runs have no 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12424,9 +12424,9 @@ test('push: direct PR reevaluation falls back to combined status when head check
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12479,7 +12479,7 @@ test('push: direct PR reevaluation falls back to combined status when head check
   });
 
   ctx.octokit.rest.checks.listForRef.mockRejectedValueOnce(httpErr(500));
-  ctx.octokit.rest.repos.getCombinedStatusForRef = jest.fn(async () => ({ data: { state: 'pending' } }));
+  ctx.octokit.rest.repos.getCombinedStatusForRef = vi.fn(async () => ({ data: { state: 'pending' } }));
 
   await handler(ctx);
 
@@ -12517,9 +12517,9 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12572,7 +12572,7 @@ test('push: direct PR reevaluation gives up when both check runs and combined st
   });
 
   ctx.octokit.rest.checks.listForRef.mockRejectedValueOnce(httpErr(500));
-  ctx.octokit.rest.repos.getCombinedStatusForRef = jest.fn(async () => {
+  ctx.octokit.rest.repos.getCombinedStatusForRef = vi.fn(async () => {
     throw httpErr(502);
   });
 
@@ -12607,9 +12607,9 @@ test('push: direct PR reevaluation stops when the current head sha is missing', 
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12689,9 +12689,9 @@ test('push: direct PR reevaluation caps head check-run pagination at twenty page
   loadStaticConfig.mockResolvedValueOnce({ config: cfg, source: 'mock', hooks: null, hooksSource: null });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12794,9 +12794,9 @@ test('push: stale direct registry PR retries updateBranch without expected head 
   });
   extractHashFromPrBody.mockReturnValueOnce('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -12898,9 +12898,9 @@ test('push: direct registry PR runs approval after reevaluation when branch is a
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13008,9 +13008,9 @@ test('push: direct registry PR polls mergeability repeatedly before merging on t
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13106,9 +13106,9 @@ test('push: direct registry PR creates an approval review when prior review look
   });
   extractHashFromPrBody.mockReturnValue('');
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13209,8 +13209,8 @@ test('push: approved review remains eligible for branch update after later comme
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13315,8 +13315,8 @@ test('push: paginated review history uses later review id as tie-breaker for sam
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13410,8 +13410,8 @@ test('push: review fetch and approved-label fallback fetch failures skip branch 
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13550,8 +13550,8 @@ test('push: plain approved review without bot marker is enough for branch update
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13646,8 +13646,8 @@ test('push: changes requested review blocks approved-label based branch update',
     hooksSource: null,
   });
 
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -13752,7 +13752,7 @@ test('issues.opened: partner namespace maps request type and matches normalized 
 
   await handler(ctx);
 
-  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['zoe']);
+  expect((ensureAssigneesOnce as Mock).mock.calls.at(-1)?.[3]).toEqual(['zoe']);
 });
 
 test('issues.opened: request config fallback matches normalized request keys when direct lookup misses', async () => {
@@ -13805,7 +13805,7 @@ test('issues.opened: request config fallback matches normalized request keys whe
 
   await handler(ctx);
 
-  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['normalized-pool-user']);
+  expect((ensureAssigneesOnce as Mock).mock.calls.at(-1)?.[3]).toEqual(['normalized-pool-user']);
 });
 
 test('issues.opened: non-object request config falls back to sorted workflow approvers pool', async () => {
@@ -13854,7 +13854,7 @@ test('issues.opened: non-object request config falls back to sorted workflow app
 
   await handler(ctx);
 
-  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['zoe']);
+  expect((ensureAssigneesOnce as Mock).mock.calls.at(-1)?.[3]).toEqual(['zoe']);
 });
 
 test('issues.opened: routing lock marker update failure is tolerated', async () => {
@@ -13963,7 +13963,7 @@ test('issues.opened: request config without own approver arrays falls back to wo
 
   await handler(ctx);
 
-  expect((ensureAssigneesOnce as jest.Mock).mock.calls.at(-1)?.[3]).toEqual(['fallback-approver']);
+  expect((ensureAssigneesOnce as Mock).mock.calls.at(-1)?.[3]).toEqual(['fallback-approver']);
 });
 
 test('issue_comment: approval tolerates approved-label refresh failures after approval state is applied', async () => {
@@ -14383,7 +14383,7 @@ test('issue_comment: parent-owner approval posts validation fallback errors and 
   });
 
   const openCtx = mkIssuesContext({ issue, action: 'opened' });
-  (openCtx.octokit.rest.repos.getContent as jest.Mock).mockImplementation(async ({ path }: any) => {
+  (openCtx.octokit.rest.repos.getContent as Mock).mockImplementation(async ({ path }: any) => {
     if (path === 'data/vendors/sap.yaml') {
       return {
         data: {
@@ -14406,8 +14406,8 @@ test('issue_comment: parent-owner approval posts validation fallback errors and 
   });
   await handlers['issues.opened'][0](openCtx);
 
-  (postOnce as jest.Mock).mockClear();
-  (setStateLabel as jest.Mock).mockClear();
+  (postOnce as Mock).mockClear();
+  (setStateLabel as Mock).mockClear();
   validateRequestIssue.mockResolvedValueOnce({
     errors: ['validation fallback error'],
     errorsGrouped: {},
@@ -15462,7 +15462,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       label: { name: 'broken-route' },
     };
     ctx.octokit.rest.issues.get.mockResolvedValue({ data: issue });
-    (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
+    (loadTemplate as Mock).mockImplementation(async (_context: any, args: any) => {
       const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
 
       if (labels.length === 1 && (labels[0] === 'route-1' || labels[0] === 'route-2')) {
@@ -15474,9 +15474,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
 
     await handlers['issues.labeled'][0](ctx);
 
-    const loadTemplateLabelSets = (loadTemplate as jest.Mock).mock.calls.map(
-      (call: any[]) => call[1]?.issueLabels ?? []
-    );
+    const loadTemplateLabelSets = (loadTemplate as Mock).mock.calls.map((call: any[]) => call[1]?.issueLabels ?? []);
 
     expect(ctx.octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'o', repo: 'r', issue_number: 9111, name: 'route-2' })
@@ -15822,7 +15820,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       label: { name: 'broken-route' },
     };
     ctx.octokit.rest.issues.get.mockResolvedValue({ data: issue });
-    (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
+    (loadTemplate as Mock).mockImplementation(async (_context: any, args: any) => {
       const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
 
       if (labels.length === 1 && (labels[0] === 'route-1' || labels[0] === 'route-2')) {
@@ -15866,7 +15864,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
       return ctx;
     };
 
-    (loadTemplate as jest.Mock).mockImplementation(async (_context: any, args: any) => {
+    (loadTemplate as Mock).mockImplementation(async (_context: any, args: any) => {
       const labels = Array.isArray(args?.issueLabels) ? args.issueLabels.map(String) : [];
 
       if (labels.length === 1 && (labels[0] === 'route-1' || labels[0] === 'route-2')) {
@@ -16000,7 +15998,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     ctx.payload.check_suite.status = 'completed';
     ctx.payload.check_suite.pull_requests = [];
 
-    const listPullRequestsAssociatedWithCommit = jest.fn(
+    const listPullRequestsAssociatedWithCommit = vi.fn(
       async (_params: any): Promise<{ data: { number: number; state: string }[] }> => ({
         data: [
           { number: 921, state: 'closed' },
@@ -16047,7 +16045,7 @@ describe('request orchestrator edge coverage for defensive branches', () => {
     ctx.payload.check_suite.status = 'completed';
     ctx.payload.check_suite.pull_requests = [];
 
-    const listPullRequestsAssociatedWithCommit = jest.fn(async (_params: any): Promise<never> => {
+    const listPullRequestsAssociatedWithCommit = vi.fn(async (_params: any): Promise<never> => {
       throw new Error('commit association lookup failed');
     });
 

@@ -1,6 +1,6 @@
-import { buildDetectedIssuesBody, normalizeMachineReadableIssues } from '../domain/machine-readable.js';
 import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
 import { toStringTrim } from '../domain/login-utils.js';
+import { buildDetectedIssuesBody, normalizeMachineReadableIssues } from '../domain/machine-readable.js';
 
 type IssueParamsBase = { owner: string; repo: string; issue_number: number };
 

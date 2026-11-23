@@ -1,29 +1,29 @@
-import { type ApprovalDecision } from '../domain/approval-decision.js';
-import { type RegistryValidationMachineReadableSource } from '../domain/registry-validation-annotations.js';
+import type { CheckCompletedHandlerCallbacks } from '../application/check-completed-handler.js';
 import {
-  maybeApprovePendingWorkflowRunsForRegistryPrWithRetryApplication,
-  maybeApprovePendingWorkflowRunsForPrNumbersApplication,
-  type WorkflowApprovalCallbacks,
-} from '../application/workflow-approval.js';
-import {
-  updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry as updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication,
   type DefaultBranchApprovedPrBranchUpdateCallbacks,
+  updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetry as updateApprovedOpenPullRequestBranchesAfterDefaultBranchPushWithRetryApplication,
 } from '../application/default-branch-approved-pr-branch-update.js';
 import {
-  reevaluateOpenDirectPullRequestsAfterDefaultBranchPush as reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication,
+  type DefaultBranchCheckSuiteReevaluationCallbacks,
+  maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
+} from '../application/default-branch-check-suite-reevaluation.js';
+import {
   type DefaultBranchDirectPrReevaluationCallbacks,
+  reevaluateOpenDirectPullRequestsAfterDefaultBranchPush as reevaluateOpenDirectPullRequestsAfterDefaultBranchPushApplication,
 } from '../application/default-branch-direct-pr-reevaluation.js';
 import {
-  maybeHandleDefaultBranchCheckSuiteSuccess as maybeHandleDefaultBranchCheckSuiteSuccessApplication,
-  type DefaultBranchCheckSuiteReevaluationCallbacks,
-} from '../application/default-branch-check-suite-reevaluation.js';
-import { type CheckCompletedHandlerCallbacks } from '../application/check-completed-handler.js';
+  maybeApprovePendingWorkflowRunsForPrNumbersApplication,
+  maybeApprovePendingWorkflowRunsForRegistryPrWithRetryApplication,
+  type WorkflowApprovalCallbacks,
+} from '../application/workflow-approval.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
+import type { RegistryValidationMachineReadableSource } from '../domain/registry-validation-annotations.js';
 import { composeCheckCompletedHandlerCallbacks } from './checks-composition.js';
+import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './default-branch-check-suite-composition.js';
 import {
   composeDefaultBranchApprovedPrBranchUpdateCallbacks,
   composeDefaultBranchDirectPrReevaluationCallbacks,
 } from './default-branch-push-composition.js';
-import { composeDefaultBranchCheckSuiteReevaluationCallbacks } from './default-branch-check-suite-composition.js';
 import { composeWorkflowApprovalCallbacks } from './workflow-approval-composition.js';
 
 const DEFAULT_BRANCH_UPDATE_RETRY_DELAY_MS = 5000;

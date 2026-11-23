@@ -1,5 +1,5 @@
-import { stripRoutingLockFromBody } from './routing-lock-marker.js';
 import { stripContactApprovalFromBody, stripParentApprovalFromBody } from './approval-markers.js';
+import { stripRoutingLockFromBody } from './routing-lock-marker.js';
 
 function toStringTrim(value: unknown): string {
   if (value === undefined || value === null) return '';

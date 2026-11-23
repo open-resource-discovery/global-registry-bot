@@ -1,11 +1,17 @@
 import {
-  finalizeApprovedRequest as finalizeApprovedRequestApplication,
+  type ApprovalCommentHandlingCallbacks,
+  handleApprovalComment as handleApprovalCommentApplication,
+} from '../application/approval-comment-handling.js';
+import { type ApprovalHandlingResult, maybeHandleApprovalDecision } from '../application/approval-decision-dispatch.js';
+import {
   type ApprovedRequestFinalizationCallbacks,
+  finalizeApprovedRequest as finalizeApprovedRequestApplication,
 } from '../application/approved-request-finalization.js';
 import {
-  handleApprovalComment as handleApprovalCommentApplication,
-  type ApprovalCommentHandlingCallbacks,
-} from '../application/approval-comment-handling.js';
+  type IssueStateReviewerOperationsCallbacks,
+  resolveAdditionalIssueApproversFromApprovalHook as resolveAdditionalIssueApproversFromApprovalHookApplication,
+  resolveManualReviewApproverOverrideFromApprovalHook as resolveManualReviewApproverOverrideFromApprovalHookApplication,
+} from '../application/issue-state-reviewer-operations.js';
 import {
   handleParentOwnerApprovalIfNeeded as handleParentOwnerApprovalIfNeededApplication,
   handleSystemContactOwnerApprovalIfNeeded as handleSystemContactOwnerApprovalIfNeededApplication,
@@ -16,13 +22,7 @@ import {
   maybeRequireSystemContactOwnerApproval as maybeRequireSystemContactOwnerApprovalApplication,
   type OwnerApprovalRequirementsCallbacks,
 } from '../application/owner-approval-requirements.js';
-import {
-  resolveAdditionalIssueApproversFromApprovalHook as resolveAdditionalIssueApproversFromApprovalHookApplication,
-  resolveManualReviewApproverOverrideFromApprovalHook as resolveManualReviewApproverOverrideFromApprovalHookApplication,
-  type IssueStateReviewerOperationsCallbacks,
-} from '../application/issue-state-reviewer-operations.js';
-import { maybeHandleApprovalDecision, type ApprovalHandlingResult } from '../application/approval-decision-dispatch.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
 
 type RepoInfoBase = {
   owner: string;
@@ -628,10 +628,10 @@ export function createApprovalRuntime<
 }
 
 export type {
+  ApprovalCommentHandlingCallbacks,
   ApprovalHandlingResult,
   ApprovedRequestFinalizationCallbacks,
-  ApprovalCommentHandlingCallbacks,
+  IssueStateReviewerOperationsCallbacks,
   OwnerApprovalCommentHandlingCallbacks,
   OwnerApprovalRequirementsCallbacks,
-  IssueStateReviewerOperationsCallbacks,
 };

@@ -1,9 +1,9 @@
-import { describe, test, expect } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 
 // ---- check-conclusions (domain) ------------------------------------------------
 import {
-  isGreenCheckConclusion,
   isBlockingCheckConclusion,
+  isGreenCheckConclusion,
   summarizeHeadGreenRun,
 } from '../src/handlers/request/domain/check-conclusions.js';
 
@@ -64,9 +64,9 @@ describe('summarizeHeadGreenRun', () => {
 
 // ---- comment-commands ----------------------------------------------------------
 import {
-  stripQuoteAndCode,
   isApprovalComment,
   isAuthorUpdateComment,
+  stripQuoteAndCode,
 } from '../src/handlers/request/domain/comment-commands.js';
 
 describe('stripQuoteAndCode', () => {
@@ -124,8 +124,8 @@ describe('isAuthorUpdateComment', () => {
 
 // ---- routing-lock-marker -------------------------------------------------------
 import {
-  readRoutingLockExpected,
   buildRoutingLockBody,
+  readRoutingLockExpected,
   stripRoutingLockFromBody,
 } from '../src/handlers/request/domain/routing-lock-marker.js';
 
@@ -271,10 +271,10 @@ describe('readIssueBodyForProcessing', () => {
 
 // ---- current-head-approval -----------------------------------------------------
 import {
-  isApprovalReviewForCurrentHead,
-  reviewTargetsCurrentHead,
   extractApprovedByLoginFromReviewBody,
+  isApprovalReviewForCurrentHead,
   resolveEffectiveReviewApproverLogin,
+  reviewTargetsCurrentHead,
 } from '../src/handlers/request/domain/current-head-approval.js';
 
 describe('isApprovalReviewForCurrentHead', () => {
@@ -357,10 +357,10 @@ describe('resolveEffectiveReviewApproverLogin', () => {
 
 // ---- direct-pr-resource-mapping ------------------------------------------------
 import {
+  buildFormDataFromRegistryDoc,
   matchRequestTypesForFile,
   pickRequestTypeForChangedResource,
   resolveRegistryDocResourceName,
-  buildFormDataFromRegistryDoc,
 } from '../src/handlers/request/domain/direct-pr-resource-mapping.js';
 
 const sampleConfig = {
@@ -609,9 +609,9 @@ describe('isApprovalDecisionAuthorizedByHookApprovers', () => {
 
 // ---- machine-readable ----------------------------------------------------------
 import {
-  normalizeMachineReadableIssues,
-  buildMachineReadableMetadataBlock,
   buildDetectedIssuesBody,
+  buildMachineReadableMetadataBlock,
+  normalizeMachineReadableIssues,
   singleMachineReadableIssue,
 } from '../src/handlers/request/domain/machine-readable.js';
 
@@ -692,7 +692,7 @@ describe('singleMachineReadableIssue', () => {
 });
 
 // ---- login-utils ---------------------------------------------------------------
-import { toStringTrim, normalizeLogin, uniqLogins } from '../src/handlers/request/domain/login-utils.js';
+import { normalizeLogin, toStringTrim, uniqLogins } from '../src/handlers/request/domain/login-utils.js';
 
 describe('toStringTrim', () => {
   test('trims string', () => expect(toStringTrim('  hello  ')).toBe('hello'));
@@ -726,10 +726,10 @@ describe('uniqLogins', () => {
 
 // ---- pull-request-review-state -------------------------------------------------
 import {
-  normalizeReviewState,
-  isActionableReviewState,
-  sortPullRequestReviewsChronologically,
   getLatestActionableReviewStates,
+  isActionableReviewState,
+  normalizeReviewState,
+  sortPullRequestReviewsChronologically,
 } from '../src/handlers/request/domain/pull-request-review-state.js';
 
 describe('normalizeReviewState', () => {
@@ -800,11 +800,11 @@ describe('getLatestActionableReviewStates', () => {
 
 // ---- registry-validation-annotations -------------------------------------------
 import {
+  buildRegistryValidationAggregateBody,
+  buildRegistryValidationCommentHeading,
+  filterRegistryValidationEntries,
   isRegistryValidateAnnotation,
   toSectionTitle,
-  buildRegistryValidationCommentHeading,
-  buildRegistryValidationAggregateBody,
-  filterRegistryValidationEntries,
 } from '../src/handlers/request/domain/registry-validation-annotations.js';
 
 describe('isRegistryValidateAnnotation', () => {

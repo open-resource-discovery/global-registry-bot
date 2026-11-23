@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
 import type { ApplicationFunctionOptions, Probot } from 'probot';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { coreSecrets } from './utils/secrets.js';
 
 const { APP_ID, WEBHOOK_SECRET, PRIVATE_KEY } = coreSecrets;

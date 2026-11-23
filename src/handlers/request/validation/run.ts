@@ -1,11 +1,20 @@
-import { parseForm as parseFormRaw, loadTemplate as loadTemplateRaw } from '../template.js';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ValidateFunction } from 'ajv';
+import Ajv2020Module from 'ajv/dist/2020.js';
+import ajvErrorsModule from 'ajv-errors';
+import addFormatsModule from 'ajv-formats';
 import { loadStaticConfig, type RegistryBotHooks as StaticRegistryBotHooks } from '../../../config.js';
 import { loadSecrets } from '../../../utils/secrets.js';
-import { createHookApi as createHookApiRaw } from './hook-api.js';
-import Ajv2020Module from 'ajv/dist/2020.js';
-import type { ValidateFunction } from 'ajv';
+import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from '../template.js';
+import {
+  type AjvErrorLike,
+  dedupe,
+  filterNoisyOneOfTypeErrors,
+  normalizeAjvMessage,
+} from './ajv-error-postprocessing.js';
+import { buildCustomValidateContextArgs } from './custom-validate-context.js';
+import { collectDuplicateRegistryErrors } from './duplicate-registry-validation.js';
 import {
   buildFormDataForHookValidationFromCandidate,
   normalizeFormDataForHookValidation,
@@ -13,25 +22,16 @@ import {
   resolvePrimaryIdFromCandidate,
   resolvePrimaryIdFromTemplate,
 } from './form-schema-projection.js';
+import { createHookApi as createHookApiRaw } from './hook-api.js';
 import { runApprovalHookRuntime } from './hook-approval-runtime.js';
 import { runBeforeValidateHookRuntime } from './hook-before-validate-runtime.js';
 import { runRegistryCustomValidateRuntime } from './hook-registry-custom-validate-runtime.js';
+import { runValidationHookRuntime } from './hook-validation-runtime.js';
 import { applyRequiredFieldValidation, applySchemaIdentifierConsistencyCheck } from './local-validation-checks.js';
 import { resolveTemplateAndRequestType } from './request-type-resolution.js';
 import { loadSchemaFromRepoOrLocal } from './schema-loading.js';
-import { runValidationHookRuntime } from './hook-validation-runtime.js';
-import { buildCustomValidateContextArgs } from './custom-validate-context.js';
-import {
-  dedupe,
-  filterNoisyOneOfTypeErrors,
-  normalizeAjvMessage,
-  type AjvErrorLike,
-} from './ajv-error-postprocessing.js';
 import { buildMissingTemplateResult, buildValidateRequestIssueResult } from './validation-result-formatting.js';
-import { collectDuplicateRegistryErrors } from './duplicate-registry-validation.js';
 import { collectVendorGovernanceErrors } from './vendor-governance-validation.js';
-import addFormatsModule from 'ajv-formats';
-import ajvErrorsModule from 'ajv-errors';
 
 export {
   projectForSchema,

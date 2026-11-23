@@ -124,7 +124,7 @@ export function pickSnapshot(
       const t = String(f?.type || '').toLowerCase();
       if (t === 'markdown') continue;
 
-      if (!Object.prototype.hasOwnProperty.call(data, id)) continue;
+      if (!Object.hasOwn(data, id)) continue;
 
       const val = normalizeScalar(data[id]);
       if (val !== '') {

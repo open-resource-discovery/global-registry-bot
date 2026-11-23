@@ -1,21 +1,21 @@
 import {
+  type BranchUpdateErrorClassificationCallbacks,
   isBenignUpdateBranchFailure,
   isManualUpdateBranchFailure,
-  type BranchUpdateErrorClassificationCallbacks,
 } from '../domain/branch-update-errors.js';
 import { toStringTrim } from '../domain/login-utils.js';
+import type { BranchUpdateBenignRetryOutcome } from './branch-update-benign-retry.js';
+import { isUpdateBranchCooldownActive, markUpdateBranchCooldown } from './branch-update-cooldown.js';
 import {
   clearUpdateBranchInflight,
   getUpdateBranchInflight,
   setUpdateBranchInflight,
 } from './branch-update-inflight.js';
-import { isUpdateBranchCooldownActive, markUpdateBranchCooldown } from './branch-update-cooldown.js';
+import { type PostOnceContext, postManualBranchUpdateNotice } from './branch-update-manual-notice.js';
 import {
   callPullRequestBranchUpdate,
   type PullRequestBranchUpdateCallContext,
 } from './pull-request-branch-update-call.js';
-import { postManualBranchUpdateNotice, type PostOnceContext } from './branch-update-manual-notice.js';
-import type { BranchUpdateBenignRetryOutcome } from './branch-update-benign-retry.js';
 
 type RepoInfo = { owner: string; repo: string };
 

@@ -1,7 +1,7 @@
-import { Piscina } from 'piscina';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { Piscina } from 'piscina';
 
 let pool: Piscina | null = null;
 

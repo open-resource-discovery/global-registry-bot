@@ -1,8 +1,8 @@
-import path from 'node:path';
-import os from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 function restoreEnvSnapshot(snapshot: NodeJS.ProcessEnv): void {
   for (const k of Object.keys(process.env)) {
@@ -15,7 +15,7 @@ function restoreEnvSnapshot(snapshot: NodeJS.ProcessEnv): void {
 }
 
 describe('pr-reviewers auto-run guard', () => {
-  jest.setTimeout(15000);
+  vi.setConfig({ testTimeout: 15000 });
 
   const originalEnv: NodeJS.ProcessEnv = { ...process.env };
   const originalCwd: string = process.cwd();

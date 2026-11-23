@@ -1,22 +1,22 @@
-import { jest } from '@jest/globals';
 import * as fsReal from 'node:fs';
 import * as path from 'node:path';
+import { type Mock, vi } from 'vitest';
 
 const handlersRoot = path.join(process.cwd(), 'src', 'handlers');
 
 type AppEntryFn = (app: unknown, context: unknown) => Promise<void>;
 
 async function importAppEntry(args: { secrets: unknown; fsMock?: unknown }): Promise<AppEntryFn> {
-  jest.resetModules();
+  vi.resetModules();
 
-  await jest.unstable_mockModule('dotenv/config', () => ({}));
+  await vi.doMock('dotenv/config', () => ({}));
 
-  await jest.unstable_mockModule('../src/utils/secrets.js', () => ({
+  await vi.doMock('../src/utils/secrets.js', () => ({
     coreSecrets: args.secrets,
   }));
 
   if (args.fsMock) {
-    await jest.unstable_mockModule('fs', () => ({ default: args.fsMock }));
+    await vi.doMock('fs', () => ({ default: args.fsMock }));
   }
 
   const mod = await import('../src/index.js');
@@ -27,19 +27,19 @@ async function importAppEntry(args: { secrets: unknown; fsMock?: unknown }): Pro
 function mkApp() {
   return {
     log: {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
     },
   } as unknown;
 }
 
 test('throws when required secrets are missing', async () => {
-  jest.resetModules();
+  vi.resetModules();
 
-  await jest.unstable_mockModule('dotenv/config', () => ({}));
-  await jest.unstable_mockModule('../src/utils/secrets.js', () => ({
+  await vi.doMock('dotenv/config', () => ({}));
+  await vi.doMock('../src/utils/secrets.js', () => ({
     coreSecrets: { APP_ID: '', WEBHOOK_SECRET: '', PRIVATE_KEY: '' },
   }));
 
@@ -62,7 +62,7 @@ test('logs and returns if handlers directory cannot be read', async () => {
   });
 
   const app = mkApp() as {
-    log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
+    log: { info: Mock; warn: Mock; error: Mock; debug: Mock };
   };
   await appEntry(app, {});
 
@@ -117,7 +117,7 @@ test('scans handlers folder and handles: good handler, missing index, bad defaul
     });
 
     const app = mkApp() as {
-      log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
+      log: { info: Mock; warn: Mock; error: Mock; debug: Mock };
     };
     await appEntry(app, {});
 
@@ -162,7 +162,7 @@ test('wraps non-Error directory read failures before logging', async () => {
   });
 
   const app = mkApp() as {
-    log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
+    log: { info: Mock; warn: Mock; error: Mock; debug: Mock };
   };
   await appEntry(app, {});
 
@@ -197,7 +197,7 @@ test('logs handler import fallback message when thrown error has no stack', asyn
     });
 
     const app = mkApp() as {
-      log: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock };
+      log: { info: Mock; warn: Mock; error: Mock; debug: Mock };
     };
     await appEntry(app, {});
 

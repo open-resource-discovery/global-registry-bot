@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
 
@@ -8,15 +9,15 @@
  * without going through the full approved-request-finalization pipeline.
  */
 
-import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Dynamic import is required because createRequestPrWithRecovery uses a module-level
-// inflight Map that must be reset between test suites (via jest.resetModules).
+// inflight Map that must be reset between test suites (via vi.resetModules).
 type CreateFn =
   typeof import('../src/handlers/request/application/request-pr-creation-recovery.js').createRequestPrWithRecovery;
 
 async function loadSubject(): Promise<{ createRequestPrWithRecovery: CreateFn }> {
-  jest.resetModules();
+  vi.resetModules();
   const mod = await import('../src/handlers/request/application/request-pr-creation-recovery.js');
   return { createRequestPrWithRecovery: (mod as any).createRequestPrWithRecovery };
 }
@@ -29,7 +30,7 @@ const TEMPLATE = { _meta: { requestType: 'system', root: 'data', schema: 'x.json
 const RESOURCE_NAME = 'my-resource';
 const BRANCH_NAME = 'feat/resource-my-resource-issue-42';
 
-function makeCallbacks(createRequestPr: jest.Mock<any>): any {
+function makeCallbacks(createRequestPr: Mock<any>): any {
   return {
     createRequestPr,
     getHttpStatus: (e: unknown) => {
@@ -45,7 +46,7 @@ function makeCallbacks(createRequestPr: jest.Mock<any>): any {
 describe('createRequestPrWithRecovery – single-flight guard', () => {
   // The inflight Map is module-level, so we reload the module between tests.
   beforeEach(() => {
-    jest.resetModules();
+    vi.resetModules();
   });
 
   // ── 1. Same key, concurrent success ─────────────────────────────────────────
@@ -57,10 +58,10 @@ describe('createRequestPrWithRecovery – single-flight guard', () => {
       resolveInner = res;
     });
 
-    const createRequestPr = jest.fn<() => Promise<{ number: number }>>(() => innerPromise);
+    const createRequestPr = vi.fn<() => Promise<{ number: number }>>(() => innerPromise);
     const callbacks = makeCallbacks(createRequestPr as any);
 
-    const logDebug = jest.fn();
+    const logDebug = vi.fn();
     const ctx = { log: { debug: logDebug } } as any;
 
     // Start two concurrent calls before the underlying promise resolves.
@@ -96,7 +97,7 @@ describe('createRequestPrWithRecovery – single-flight guard', () => {
       rejectInner = rej;
     });
 
-    const createRequestPr = jest.fn<() => Promise<{ number: number }>>(() => innerPromise);
+    const createRequestPr = vi.fn<() => Promise<{ number: number }>>(() => innerPromise);
     const callbacks = makeCallbacks(createRequestPr as any);
     const ctx = {} as any;
 
@@ -133,7 +134,7 @@ describe('createRequestPrWithRecovery – single-flight guard', () => {
 
     let callCount = 0;
     // The underlying function rejects on the first call, resolves on the second.
-    const underlyingFn = jest.fn<() => Promise<{ number: number }>>(() => {
+    const underlyingFn = vi.fn<() => Promise<{ number: number }>>(() => {
       callCount++;
       if (callCount === 1) return Promise.reject(new Error('first fail'));
       return Promise.resolve({ number: 99 });
@@ -185,14 +186,14 @@ describe('createRequestPrWithRecovery – single-flight guard', () => {
     let resolveFirst!: (v: { number: number }) => void;
     let resolveSecond!: (v: { number: number }) => void;
 
-    const firstPr = jest.fn<() => Promise<{ number: number }>>(
+    const firstPr = vi.fn<() => Promise<{ number: number }>>(
       () =>
         new Promise((res) => {
           resolveFirst = res;
           callOrder.push(1);
         })
     );
-    const secondPr = jest.fn<() => Promise<{ number: number }>>(
+    const secondPr = vi.fn<() => Promise<{ number: number }>>(
       () =>
         new Promise((res) => {
           resolveSecond = res;
@@ -246,14 +247,14 @@ describe('createRequestPrWithRecovery – single-flight guard', () => {
 
 describe('approved-request-finalization – findOpenIssuePrs failure handling', () => {
   it('findOpenIssuePrs rejects: posts one error comment, createRequestPrWithRecovery not called, applyApprovedRequestState not called', async () => {
-    jest.resetModules();
+    vi.resetModules();
     const mod = await import('../src/handlers/request/application/approved-request-finalization.js');
     const { finalizeApprovedRequest } = mod;
 
-    const postOnce = jest.fn(async () => {});
-    const createRequestPrWithRecovery = jest.fn(async () => ({ number: 1 }));
-    const applyApprovedRequestState = jest.fn(async () => {});
-    const findOpenIssuePrs = jest.fn<() => Promise<never>>().mockRejectedValueOnce(new Error('PR lookup failed'));
+    const postOnce = vi.fn(async () => {});
+    const createRequestPrWithRecovery = vi.fn(async () => ({ number: 1 }));
+    const applyApprovedRequestState = vi.fn(async () => {});
+    const findOpenIssuePrs = vi.fn<() => Promise<never>>().mockRejectedValueOnce(new Error('PR lookup failed'));
 
     const callbacks = {
       resolveEffectiveConstants: () => ({}),
@@ -263,8 +264,8 @@ describe('approved-request-finalization – findOpenIssuePrs failure handling', 
       resolveAdditionalIssueApproversFromApprovalHook: async () => [],
       findOpenIssuePrs,
       applyApprovedRequestState,
-      addApprovedLabelToPr: jest.fn(async () => {}),
-      ensureAssigneesPresent: jest.fn(async () => {}),
+      addApprovedLabelToPr: vi.fn(async () => {}),
+      ensureAssigneesPresent: vi.fn(async () => {}),
       createRequestPrWithRecovery,
       postOnce,
     };
@@ -289,15 +290,15 @@ describe('approved-request-finalization – findOpenIssuePrs failure handling', 
 
 describe('approved-request-finalization – no double prefix when createRequestPrWithRecovery already formatted error', () => {
   it('error already starting with "Failed to create Pull Request:" is not double-prefixed', async () => {
-    jest.resetModules();
+    vi.resetModules();
     const mod = await import('../src/handlers/request/application/approved-request-finalization.js');
     const { finalizeApprovedRequest } = mod;
 
-    const postOnce = jest.fn(async () => {});
+    const postOnce = vi.fn(async () => {});
 
     // recovery.ts already formats the message
     const alreadyFormattedError = new Error('Failed to create Pull Request: some stage detail');
-    const createRequestPrWithRecovery = jest.fn<() => Promise<never>>().mockRejectedValueOnce(alreadyFormattedError);
+    const createRequestPrWithRecovery = vi.fn<() => Promise<never>>().mockRejectedValueOnce(alreadyFormattedError);
 
     const callbacks = {
       resolveEffectiveConstants: () => ({}),
@@ -305,10 +306,10 @@ describe('approved-request-finalization – no double prefix when createRequestP
       extractResourceNameFromForm: () => 'my-resource',
       resolveEffectiveRequestType: () => 'system',
       resolveAdditionalIssueApproversFromApprovalHook: async () => [],
-      findOpenIssuePrs: jest.fn(async () => []),
-      applyApprovedRequestState: jest.fn(async () => {}),
-      addApprovedLabelToPr: jest.fn(async () => {}),
-      ensureAssigneesPresent: jest.fn(async () => {}),
+      findOpenIssuePrs: vi.fn(async () => []),
+      applyApprovedRequestState: vi.fn(async () => {}),
+      addApprovedLabelToPr: vi.fn(async () => {}),
+      ensureAssigneesPresent: vi.fn(async () => {}),
       createRequestPrWithRecovery,
       postOnce,
     };
@@ -325,12 +326,12 @@ describe('approved-request-finalization – no double prefix when createRequestP
   });
 
   it('raw error without prefix gets exactly one prefix added', async () => {
-    jest.resetModules();
+    vi.resetModules();
     const mod = await import('../src/handlers/request/application/approved-request-finalization.js');
     const { finalizeApprovedRequest } = mod;
 
-    const postOnce = jest.fn(async () => {});
-    const createRequestPrWithRecovery = jest.fn<() => Promise<never>>().mockRejectedValueOnce(new Error('raw error'));
+    const postOnce = vi.fn(async () => {});
+    const createRequestPrWithRecovery = vi.fn<() => Promise<never>>().mockRejectedValueOnce(new Error('raw error'));
 
     const callbacks = {
       resolveEffectiveConstants: () => ({}),
@@ -338,10 +339,10 @@ describe('approved-request-finalization – no double prefix when createRequestP
       extractResourceNameFromForm: () => 'my-resource',
       resolveEffectiveRequestType: () => 'system',
       resolveAdditionalIssueApproversFromApprovalHook: async () => [],
-      findOpenIssuePrs: jest.fn(async () => []),
-      applyApprovedRequestState: jest.fn(async () => {}),
-      addApprovedLabelToPr: jest.fn(async () => {}),
-      ensureAssigneesPresent: jest.fn(async () => {}),
+      findOpenIssuePrs: vi.fn(async () => []),
+      applyApprovedRequestState: vi.fn(async () => {}),
+      addApprovedLabelToPr: vi.fn(async () => {}),
+      ensureAssigneesPresent: vi.fn(async () => {}),
       createRequestPrWithRecovery,
       postOnce,
     };

@@ -1,16 +1,16 @@
-import { jest } from '@jest/globals';
-import { dispatchWebhookHandler } from '../src/handlers/request/events/webhook-dispatcher.js';
+import { type Mock, vi } from 'vitest';
 import type { RequestEventHandler } from '../src/handlers/request/events/types.js';
+import { dispatchWebhookHandler } from '../src/handlers/request/events/webhook-dispatcher.js';
 
 type TestContext = {
   id: string;
   name: string;
   payload: Record<string, unknown>;
   log: {
-    debug: jest.Mock;
-    info: jest.Mock;
-    warn: jest.Mock;
-    error: jest.Mock;
+    debug: Mock;
+    info: Mock;
+    warn: Mock;
+    error: Mock;
   };
 };
 
@@ -20,10 +20,10 @@ function makeContext(overrides: Partial<TestContext> = {}): TestContext {
     name: 'check_suite.completed',
     payload: { repository: { name: 'my-repo', owner: { login: 'my-org' } }, action: 'completed' },
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     ...overrides,
   };
@@ -74,7 +74,7 @@ describe('dispatchWebhookHandler', () => {
   test('returns before handler runs when REQUEST_WEBHOOK_ASYNC=1', async () => {
     process.env['REQUEST_WEBHOOK_ASYNC'] = '1';
 
-    const handler = jest.fn(async (_ctx: TestContext) => {
+    const handler = vi.fn(async (_ctx: TestContext) => {
       /* intentionally empty */
     });
 

@@ -4,7 +4,7 @@ import {
   type NormalizedStaticConfig,
   type RegistryBotHooks,
 } from '../../../config.js';
-import { log, type LoggerLike } from './logger.js';
+import { type LoggerLike, log } from './logger.js';
 
 export type StaticConfigLoadOptions = {
   forceReload?: boolean;

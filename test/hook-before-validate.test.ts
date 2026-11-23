@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, test, expect, jest, beforeAll, beforeEach } from '@jest/globals';
+import { beforeAll, beforeEach, describe, expect, type MockedFunction, test, vi } from 'vitest';
 import type { HookWorkerResult } from '../src/handlers/request/validation/hook-pool.js';
 
 type RunBeforeValidate =
@@ -11,7 +11,7 @@ let runBeforeValidateHookRuntime: RunBeforeValidate;
 let nextWorkerResult: HookWorkerResult = { found: true, value: null, logs: [] };
 const workerCallArgs: unknown[] = [];
 
-jest.unstable_mockModule('../src/handlers/request/validation/hook-pool.js', () => ({
+vi.doMock('../src/handlers/request/validation/hook-pool.js', () => ({
   // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   runHookInWorker: (...args: unknown[]) => {
     workerCallArgs.splice(0, workerCallArgs.length, ...args);
@@ -32,10 +32,10 @@ beforeEach(() => {
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function mkLog() {
   return {
-    debug: jest.fn() as jest.MockedFunction<(...args: any[]) => void>,
-    info: jest.fn() as jest.MockedFunction<(...args: any[]) => void>,
-    warn: jest.fn() as jest.MockedFunction<(...args: any[]) => void>,
-    error: jest.fn() as jest.MockedFunction<(...args: any[]) => void>,
+    debug: vi.fn() as MockedFunction<(...args: any[]) => void>,
+    info: vi.fn() as MockedFunction<(...args: any[]) => void>,
+    warn: vi.fn() as MockedFunction<(...args: any[]) => void>,
+    error: vi.fn() as MockedFunction<(...args: any[]) => void>,
   };
 }
 
@@ -216,7 +216,7 @@ describe('runBeforeValidateHookRuntime — direct hooks path', () => {
   });
 
   test('calls beforeValidate with runtime args when hooks object provided — covers lines 124-131', async () => {
-    const beforeValidate = jest.fn((): Promise<void> => Promise.resolve());
+    const beforeValidate = vi.fn((): Promise<void> => Promise.resolve());
     const formData: Record<string, string> = { title: 'Test' };
     const args = mkBaseArgs({
       hooks: { beforeValidate },
@@ -233,7 +233,7 @@ describe('runBeforeValidateHookRuntime — direct hooks path', () => {
 
   test('logs warning when beforeValidate throws an Error — covers lines 132-136', async () => {
     const log = mkLog();
-    const beforeValidate = jest.fn((): Promise<never> => Promise.reject(new Error('hook exploded')));
+    const beforeValidate = vi.fn((): Promise<never> => Promise.reject(new Error('hook exploded')));
     const args = mkBaseArgs({
       hooks: { beforeValidate },
       isHookDescriptor: () => false,
@@ -245,7 +245,7 @@ describe('runBeforeValidateHookRuntime — direct hooks path', () => {
 
   test('logs warning when beforeValidate throws a non-Error — String(err) path', async () => {
     const log = mkLog();
-    const beforeValidate = jest.fn((): Promise<never> => Promise.reject('string error'));
+    const beforeValidate = vi.fn((): Promise<never> => Promise.reject('string error'));
     const args = mkBaseArgs({
       hooks: { beforeValidate },
       isHookDescriptor: () => false,

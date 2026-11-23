@@ -1,10 +1,10 @@
+import { toStringTrim } from '../domain/login-utils.js';
+import { isPullRequestDirty, isPullRequestOpen, readMergeableState } from '../domain/pull-request-merge-state.js';
 import {
   clearSequentialRegistryPrQueueInflight,
   getSequentialRegistryPrQueueInflight,
   setSequentialRegistryPrQueueInflight,
 } from './sequential-registry-pr-state.js';
-import { isPullRequestDirty, isPullRequestOpen, readMergeableState } from '../domain/pull-request-merge-state.js';
-import { toStringTrim } from '../domain/login-utils.js';
 
 type RepoInfoBase = { owner: string; repo: string };
 

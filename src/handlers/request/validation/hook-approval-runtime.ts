@@ -1,4 +1,4 @@
-import { type RegistryBotHooks as StaticRegistryBotHooks } from '../../../config.js';
+import type { RegistryBotHooks as StaticRegistryBotHooks } from '../../../config.js';
 import { runHookInWorker } from './hook-pool.js';
 
 type HookSecrets = Readonly<Record<string, string | undefined>>;

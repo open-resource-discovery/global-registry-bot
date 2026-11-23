@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 import { categoryFromTemplate, loadTemplate, parseForm } from '../src/handlers/request/template.js';
 
 type FileEntry = { kind: 'file'; text: string; encoding?: BufferEncoding } | { kind: 'dir' };
@@ -10,7 +10,7 @@ function b64utf8(s: string): string {
 }
 
 function mkContext(args: { files: Record<string, FileEntry>; resourceBotConfig?: any }) {
-  const getContent = jest.fn(async ({ _owner, _repo, path }: any) => {
+  const getContent = vi.fn(async ({ _owner, _repo, path }: any) => {
     const entry = args.files[path];
     if (!entry) throw new Error(`missing fixture: ${path}`);
     if (entry.kind === 'dir') return { data: [] };
@@ -25,7 +25,7 @@ function mkContext(args: { files: Record<string, FileEntry>; resourceBotConfig?:
     context: {
       octokit: { rest: { repos: { getContent } } },
       resourceBotConfig: args.resourceBotConfig ?? {},
-      log: { debug: jest.fn() },
+      log: { debug: vi.fn() },
     },
     getContent,
   };

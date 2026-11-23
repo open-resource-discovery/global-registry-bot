@@ -1,10 +1,10 @@
 import {
   buildContactApprovalBody,
   buildParentApprovalBody,
-  readContactApprovalMeta,
-  readParentApprovalMeta,
   type ContactApprovalMeta,
   type ParentApprovalMeta,
+  readContactApprovalMeta,
+  readParentApprovalMeta,
 } from '../domain/approval-markers.js';
 import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
 

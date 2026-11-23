@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from '@jest/globals';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 type Mod = typeof import('../src/handlers/request/constants.js');
 let mod: Mod;
@@ -35,7 +35,7 @@ describe('src/handlers/request/constants.ts', () => {
         },
       };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getStateLabelsFromConfig(cfg as any)).toEqual({
         author: 'state:author',
         review: 'state:review',
@@ -43,7 +43,7 @@ describe('src/handlers/request/constants.ts', () => {
     });
 
     it('returns null for missing/empty/non-string labels', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getStateLabelsFromConfig(undefined as any)).toEqual({
         author: null,
         review: null,
@@ -58,7 +58,7 @@ describe('src/handlers/request/constants.ts', () => {
         },
       };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getStateLabelsFromConfig(cfg as any)).toEqual({
         author: null,
         review: null,
@@ -68,11 +68,11 @@ describe('src/handlers/request/constants.ts', () => {
 
   describe('getApproversFromConfig', () => {
     it('returns [] when workflow.approvers is not an array', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getApproversFromConfig(undefined as any)).toEqual([]);
 
       const cfg = { workflow: { approvers: 'nope' } };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getApproversFromConfig(cfg as any)).toEqual([]);
     });
 
@@ -84,7 +84,7 @@ describe('src/handlers/request/constants.ts', () => {
       };
 
       // note: String(123) => "123", String(null) => "null"
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getApproversFromConfig(cfg as any)).toEqual(['ap1', 'ap2', '123', 'null']);
     });
   });
@@ -100,20 +100,20 @@ describe('src/handlers/request/constants.ts', () => {
       };
 
       // function returns original string, not trimmed
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getDocLinksFromConfig(cfg as any)).toBe('  https://example.com/docs  ');
     });
 
     it('returns empty string when docs missing/empty/non-string', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getDocLinksFromConfig(undefined as any)).toBe('');
 
       const cfg1 = { workflow: { links: { docs: '   ' } } };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getDocLinksFromConfig(cfg1 as any)).toBe('');
 
       const cfg2 = { workflow: { links: { docs: 42 } } };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
       expect(mod.getDocLinksFromConfig(cfg2 as any)).toBe('');
     });
   });
@@ -146,7 +146,7 @@ describe('src/handlers/request/constants.ts', () => {
   });
 
   it('STATIC_CONFIG_SCHEMA exposes key schema invariants', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
     const s = mod.STATIC_CONFIG_SCHEMA as any;
 
     expect(s).toBeTruthy();

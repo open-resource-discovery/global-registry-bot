@@ -1,28 +1,28 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
+import { beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
 type IssueParams = { owner: string; repo: string; issue_number: number };
 
-const setStateLabel = jest.fn(async () => {});
-const ensureAssigneesOnce = jest.fn(async () => {});
-const postOnce = jest.fn(async () => {});
-const collapseBotCommentsByPrefix = jest.fn(async () => {});
+const setStateLabel = vi.fn(async () => {});
+const ensureAssigneesOnce = vi.fn(async () => {});
+const postOnce = vi.fn(async () => {});
+const collapseBotCommentsByPrefix = vi.fn(async () => {});
 
-const loadTemplate = jest.fn(async () => ({}));
-const parseForm = jest.fn(() => ({}));
-const validateRequestIssue = jest.fn(async () => ({}));
-const runApprovalHook = jest.fn(async () => false);
+const loadTemplate = vi.fn(async () => ({}));
+const parseForm = vi.fn(() => ({}));
+const validateRequestIssue = vi.fn(async () => ({}));
+const runApprovalHook = vi.fn(async () => false);
 
-const calcSnapshotHash = jest.fn(() => 'h1');
-const extractHashFromPrBody = jest.fn(() => '');
-const findOpenIssuePrs = jest.fn(async () => []);
+const calcSnapshotHash = vi.fn(() => 'h1');
+const extractHashFromPrBody = vi.fn(() => '');
+const findOpenIssuePrs = vi.fn(async () => []);
 
-const createRequestPr = jest.fn(async () => ({ number: 10 }));
-const tryMergeIfGreen = jest.fn(async () => undefined);
+const createRequestPr = vi.fn(async () => ({ number: 10 }));
+const tryMergeIfGreen = vi.fn(async () => undefined);
 
-const loadStaticConfig = jest.fn(async () => ({}));
-const getDocLinksFromConfig = jest.fn(() => '');
+const loadStaticConfig = vi.fn(async () => ({}));
+const getDocLinksFromConfig = vi.fn(() => '');
 
 const DEFAULT_CONFIG = {
   requests: {
@@ -51,10 +51,10 @@ function mkApp() {
   const handlers: Record<string, any[]> = {};
   const app: any = {
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     on: (events: string | string[], fn: any) => {
       for (const event of Array.isArray(events) ? events : [events]) {
@@ -71,14 +71,14 @@ function mkOctokit() {
   return {
     rest: {
       issues: {
-        get: jest.fn(async () => ({ data: { number: 1, labels: [] } })),
-        update: jest.fn(async () => ({})),
-        addLabels: jest.fn(async () => ({})),
-        removeLabel: jest.fn(async () => ({})),
+        get: vi.fn(async () => ({ data: { number: 1, labels: [] } })),
+        update: vi.fn(async () => ({})),
+        addLabels: vi.fn(async () => ({})),
+        removeLabel: vi.fn(async () => ({})),
       },
       pulls: {
-        list: jest.fn(async () => ({ data: [] })),
-        get: jest.fn(async (args: any) => ({
+        list: vi.fn(async () => ({ data: [] })),
+        get: vi.fn(async (args: any) => ({
           data: {
             number: Number(args?.pull_number ?? 1),
             state: 'open',
@@ -90,24 +90,24 @@ function mkOctokit() {
             mergeable_state: 'clean',
           },
         })),
-        listFiles: jest.fn(async () => ({ data: [] })),
-        listCommits: jest.fn(async () => ({ data: [] })),
-        listReviews: jest.fn(async () => ({ data: [] })),
-        createReview: jest.fn(async () => ({})),
-        updateBranch: jest.fn(async () => ({})),
+        listFiles: vi.fn(async () => ({ data: [] })),
+        listCommits: vi.fn(async () => ({ data: [] })),
+        listReviews: vi.fn(async () => ({ data: [] })),
+        createReview: vi.fn(async () => ({})),
+        updateBranch: vi.fn(async () => ({})),
       },
       checks: {
-        listForRef: jest.fn(async () => ({
+        listForRef: vi.fn(async () => ({
           data: {
             check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
           },
         })),
       },
       git: {
-        deleteRef: jest.fn(async () => ({})),
+        deleteRef: vi.fn(async () => ({})),
       },
       repos: {
-        getContent: jest.fn(async () => ({})),
+        getContent: vi.fn(async () => ({})),
       },
     },
   };
@@ -124,10 +124,10 @@ function mkStatusContext(args: { octokit?: any; sha?: string; config?: any }) {
       repository: { name: 'r1', owner: { login: 'o1' } },
     },
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     octokit,
     issue: (): IssueParams => ({ owner: 'o1', repo: 'r1', issue_number: 1 }),
@@ -170,46 +170,46 @@ function wireStandaloneApprovedRegistryPr(octokit: any, pr: any): void {
 }
 
 beforeAll(async () => {
-  await jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
+  await vi.doMock('../src/handlers/request/state.js', () => ({
     setStateLabel,
     ensureAssigneesOnce,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
+  await vi.doMock('../src/handlers/request/comments.js', () => ({
     postOnce,
     collapseBotCommentsByPrefix,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     loadTemplate,
     parseForm,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
+  await vi.doMock('../src/handlers/request/validation/run.js', () => ({
     validateRequestIssue,
     runApprovalHook,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
+  await vi.doMock('../src/handlers/request/pr/snapshot.js', () => ({
     calcSnapshotHash,
     extractHashFromPrBody,
     findOpenIssuePrs,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/pr/create.js', () => ({
+  await vi.doMock('../src/handlers/request/pr/create.js', () => ({
     createRequestPr,
   }));
 
-  await jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
+  await vi.doMock('../src/lib/auto-merge.js', () => ({
     tryMergeIfGreen,
   }));
 
-  await jest.unstable_mockModule('../src/config.js', () => ({
+  await vi.doMock('../src/config.js', () => ({
     DEFAULT_CONFIG,
     loadStaticConfig,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
+  await vi.doMock('../src/handlers/request/constants.js', () => ({
     getDocLinksFromConfig,
   }));
 
@@ -217,7 +217,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  vi.clearAllMocks();
 
   loadStaticConfig.mockResolvedValue({
     config: DEFAULT_CONFIG,

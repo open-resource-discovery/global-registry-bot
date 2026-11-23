@@ -1,6 +1,6 @@
-import { closeLinkedIssuePrs } from './linked-pr-closure.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
 import { postApprovalRejectedOnce } from './approval-outcome-posting.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import { closeLinkedIssuePrs } from './linked-pr-closure.js';
 
 type ApprovalPostingContext = Parameters<typeof postApprovalRejectedOnce>[0];
 

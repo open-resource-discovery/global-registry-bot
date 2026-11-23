@@ -1,7 +1,7 @@
-import { setStateLabel, ensureAssigneesOnce } from '../state.js';
 import { postOnce } from '../comments.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
+import { ensureAssigneesOnce, setStateLabel } from '../state.js';
 import { postApprovalUnknownOnce } from './approval-outcome-posting.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
 
 type HandoverContext = Parameters<typeof postOnce>[0] &
   Parameters<typeof setStateLabel>[0] &

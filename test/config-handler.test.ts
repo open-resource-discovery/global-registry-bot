@@ -1,26 +1,26 @@
 /* eslint-disable require-await */
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 
-// eslint-disable-next-line @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
 async function importConfigHandler(loadStaticConfigMock: any) {
-  jest.resetModules();
+  vi.resetModules();
 
-  await jest.unstable_mockModule('../src/config.js', () => ({
+  await vi.doMock('../src/config.js', () => ({
     loadStaticConfig: loadStaticConfigMock,
   }));
 
   const mod = await import('../src/handlers/config/index.js');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
   return mod.default as any;
 }
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function mkApp() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
   const handlers: any[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
   const app: any = {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
     on: (event: string, fn: any) => {
       if (event === 'push') handlers.push(fn);
     },
@@ -28,18 +28,18 @@ function mkApp() {
   return { app, handlers };
 }
 
-// eslint-disable-next-line @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
 function mkContext(payload: any) {
   return {
     payload,
     repo: () => ({ owner: 'o', repo: 'r' }),
-    log: { debug: jest.fn(), warn: jest.fn() },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    log: { debug: vi.fn(), warn: vi.fn() },
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
   } as any;
 }
 
 test('skips push events not on default branch', async () => {
-  const loadStaticConfig = jest.fn(async () => ({}));
+  const loadStaticConfig = vi.fn(async () => ({}));
   const handler = await importConfigHandler(loadStaticConfig);
 
   const { app, handlers } = mkApp();
@@ -58,7 +58,7 @@ test('skips push events not on default branch', async () => {
 });
 
 test('validates on default branch with forceReload=false when config not touched', async () => {
-  const loadStaticConfig = jest.fn(async () => ({}));
+  const loadStaticConfig = vi.fn(async () => ({}));
   const handler = await importConfigHandler(loadStaticConfig);
 
   const { app, handlers } = mkApp();
@@ -80,7 +80,7 @@ test('validates on default branch with forceReload=false when config not touched
 });
 
 test('validates on default branch with forceReload=true when config touched', async () => {
-  const loadStaticConfig = jest.fn(async () => ({}));
+  const loadStaticConfig = vi.fn(async () => ({}));
   const handler = await importConfigHandler(loadStaticConfig);
 
   const { app, handlers } = mkApp();
@@ -102,7 +102,7 @@ test('validates on default branch with forceReload=true when config touched', as
 });
 
 test('swallows loadStaticConfig errors and logs warn', async () => {
-  const loadStaticConfig = jest.fn(async () => {
+  const loadStaticConfig = vi.fn(async () => {
     throw new Error('fail');
   });
   const handler = await importConfigHandler(loadStaticConfig);

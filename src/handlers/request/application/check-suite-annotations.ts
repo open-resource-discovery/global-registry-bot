@@ -1,7 +1,7 @@
 import {
+  type CheckRunAnnotationLike,
   collectRegistryValidationArtifacts,
   isRegistryValidateAnnotation,
-  type CheckRunAnnotationLike,
   type RegistryValidationMachineReadableSource,
 } from '../domain/registry-validation-annotations.js';
 

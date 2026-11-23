@@ -1,10 +1,9 @@
-import path from 'node:path';
-import os from 'node:os';
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import YAML from 'yaml';
-
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { main, TEST_UTILS } from '../src/ci/pr-reviewers.js';
 
 function git(cwd: string, args: string[]): string {
@@ -81,16 +80,16 @@ describe('pr-reviewers', () => {
   const originalEnv: NodeJS.ProcessEnv = { ...process.env };
 
   let tmpDir = '';
-  let logSpy: ReturnType<typeof jest.spyOn> | null = null;
-  let errorSpy: ReturnType<typeof jest.spyOn> | null = null;
+  let logSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let errorSpy: ReturnType<typeof vi.spyOn> | null = null;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'registry-pr-reviewers-test-'));
     initRepo(tmpDir);
     process.chdir(tmpDir);
 
-    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(async () => {

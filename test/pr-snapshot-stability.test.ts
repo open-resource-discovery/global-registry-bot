@@ -1,3 +1,4 @@
+import type { MockedFunction } from 'vitest';
 /**
  * Regression tests for the snapshot-hash stability fix.
  *
@@ -17,7 +18,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
 
-import { beforeAll, describe, it, expect, jest } from '@jest/globals';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Module-level mock for categoryFromTemplate (used by snapshot.ts internally).
@@ -34,13 +35,13 @@ let extractHashFromPrBody: (body: string | null | undefined) => string | null;
 let closeOutdatedRequestPrs: (...args: any[]) => Promise<void>;
 
 beforeAll(async () => {
-  jest.resetModules();
+  vi.resetModules();
 
   // Pin categoryFromTemplate to 'system' so _category is stable across test runs
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     categoryFromTemplate: () => 'system',
-    loadTemplate: jest.fn(),
-    parseForm: jest.fn(() => ({})),
+    loadTemplate: vi.fn(),
+    parseForm: vi.fn(() => ({})),
   }));
 
   // Load real production modules after mock is registered
@@ -108,15 +109,15 @@ function mkOctokit(issueBody = '') {
   return {
     rest: {
       issues: {
-        get: jest.fn(async () => ({ data: { body: issueBody } })) as jest.MockedFunction<any>,
-        removeLabel: jest.fn(async () => ({})) as jest.MockedFunction<any>,
+        get: vi.fn(async () => ({ data: { body: issueBody } })) as MockedFunction<any>,
+        removeLabel: vi.fn(async () => ({})) as MockedFunction<any>,
       },
       pulls: {
-        list: jest.fn(async () => ({ data: [] })) as jest.MockedFunction<any>,
-        update: jest.fn(async () => ({})) as jest.MockedFunction<any>,
+        list: vi.fn(async () => ({ data: [] })) as MockedFunction<any>,
+        update: vi.fn(async () => ({})) as MockedFunction<any>,
       },
       git: {
-        deleteRef: jest.fn(async () => ({})) as jest.MockedFunction<any>,
+        deleteRef: vi.fn(async () => ({})) as MockedFunction<any>,
       },
     },
   };
@@ -142,9 +143,9 @@ function buildCallbacks(issueBody: string, formAtEval = FORM) {
     buildCompatibleRequestSnapshotHashes: () => acceptedHashes,
     calcSnapshotHash: (f: any, t: any, b: string) => calcSnapshotHash(f, t, b),
     extractHashFromPrBody: (b: string) => extractHashFromPrBody(b),
-    findOpenIssuePrs: jest.fn() as jest.MockedFunction<any>,
+    findOpenIssuePrs: vi.fn() as MockedFunction<any>,
     resolveEffectiveConstants: () => ({ labelOnApproved: null }),
-    postOnce: jest.fn() as jest.MockedFunction<any>,
+    postOnce: vi.fn() as MockedFunction<any>,
     _acceptedHashes: acceptedHashes,
     _currentHash: currentHash,
   };

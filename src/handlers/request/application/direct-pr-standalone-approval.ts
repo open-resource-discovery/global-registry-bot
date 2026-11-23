@@ -1,4 +1,4 @@
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
 import { toStringTrim } from '../domain/login-utils.js';
 
 type RepoInfoBase = { owner: string; repo: string };

@@ -5,27 +5,27 @@
   "description": "A configurable GitHub App bot to validate and automate registry-related requests",
   "author": "SAP SE",
   "homepage": "https://github.com/open-resource-discovery/global-registry-bot",
-  "keywords": [
-    "probot",
-    "github",
-    "probot-app"
-  ],
+  "keywords": ["probot", "github", "probot-app"],
   "scripts": {
     "prepare": "is-ci || husky",
-    "lint": "eslint .",
-    "format": "npm run prettier",
-    "lint:fix": "npm run prettier && eslint --fix .",
+    "lint": "biome lint .",
+    "format": "biome format --write . && oxfmt --no-error-on-unmatched-pattern '**/*.{md,yml,yaml,css,scss,html}'",
+    "lint:fix": "biome lint --write .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.prod.json",
-    "prettier:check": "npm run prettier:ci",
+    "prettier:check": "npm run format:check",
     "start": "probot run ./dist/index.js",
     "start:src": "probot run ./src/index.js",
-    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
-    "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
-    "test:coverage": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --coverage",
-    "prettier": "prettier --write \"**/*.{js,ts,json,yml,yaml,md}\"",
-    "prettier:ci": "prettier --check \"**/*.{js,ts,json,yml,yaml,md}\"",
-    "lint:staged": "lint-staged"
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "prettier": "npm run format",
+    "prettier:ci": "npm run format:check",
+    "lint:staged": "lint-staged",
+    "format:check": "biome format . && oxfmt --check --no-error-on-unmatched-pattern '**/*.{md,yml,yaml,css,scss,html}'",
+    "check:tooling": "npm run lint && npm run format:check",
+    "test:ci": "vitest run --config vitest.config.ts --coverage",
+    "coverage": "vitest run --config vitest.config.ts --coverage"
   },
   "dependencies": {
     "ajv": "8.20.0",
@@ -38,39 +38,26 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@babel/core": "7.29.7",
-    "@babel/preset-env": "7.29.7",
-    "@babel/preset-typescript": "7.29.7",
-    "@sap/eslint-config": "0.5.2",
-    "@types/jest": "30.0.0",
     "@types/js-yaml": "4.0.9",
     "@types/node": "25.9.9",
-    "@typescript/native": "npm:typescript@7.0.2",
-    "babel-jest": "30.5.2",
-    "eslint": "10.13.0",
-    "globals": "17.13.0",
     "husky": "9.1.7",
-    "jest": "30.5.2",
     "lint-staged": "17.6.0",
     "nock": "15.0.5",
-    "prettier": "3.9.10",
     "smee-client": "5.0.0",
-    "ts-jest": "29.4.15",
     "typescript": "npm:@typescript/typescript6@6.0.2",
-    "is-ci": "4.1.0"
+    "is-ci": "4.1.0",
+    "@biomejs/biome": "2.6.4",
+    "oxfmt": "0.75.0",
+    "vitest": "5.0.5",
+    "@vitest/coverage-v8": "5.0.5"
   },
   "engines": {
     "node": ">=22",
     "npm": ">=10"
   },
   "lint-staged": {
-    "**/*.{js,ts,mjs,cjs}": [
-      "prettier --write",
-      "eslint --fix"
-    ],
-    "**/*.{md,json,yml,yaml}": [
-      "prettier --write"
-    ]
+    "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,css,html}": ["biome check --write --no-errors-on-unmatched"],
+    "*.{md,yml,yaml}": ["oxfmt"]
   },
   "type": "module",
   "license": "Apache-2.0",

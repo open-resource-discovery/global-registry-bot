@@ -1,9 +1,9 @@
 import { readBranchHeadShaFromResponse } from '../domain/branch-head-response.js';
+import { toStringTrim } from '../domain/login-utils.js';
 import { buildPullRequestCompareCandidates } from '../domain/pull-request-compare-candidates.js';
 import { evaluatePullRequestCompareResult } from '../domain/pull-request-compare-result.js';
-import { isCrossRepositoryPullRequest, resolvePullRequestHeadRepoInfo } from '../domain/pull-request-repo-info.js';
 import { isPullRequestBehindBase } from '../domain/pull-request-merge-state.js';
-import { toStringTrim } from '../domain/login-utils.js';
+import { isCrossRepositoryPullRequest, resolvePullRequestHeadRepoInfo } from '../domain/pull-request-repo-info.js';
 
 type RepoInfo = { owner: string; repo: string };
 

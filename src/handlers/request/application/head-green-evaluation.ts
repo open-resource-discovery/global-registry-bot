@@ -1,8 +1,8 @@
 import {
+  type HeadGreenRunSummary,
   isBlockingCheckConclusion,
   isGreenCheckConclusion,
   summarizeHeadGreenRun,
-  type HeadGreenRunSummary,
 } from '../domain/check-conclusions.js';
 import { toStringTrim } from '../domain/login-utils.js';
 

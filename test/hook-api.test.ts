@@ -1,11 +1,11 @@
-import { jest } from '@jest/globals';
+import { type MockedFunction, vi } from 'vitest';
 import { createHookApi } from '../src/handlers/request/validation/hook-api.js';
 
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 const globalFetchRef = globalThis as unknown as { fetch?: unknown };
 const realFetch = globalFetchRef.fetch;
-let fetchMock: jest.MockedFunction<FetchFn>;
+let fetchMock: MockedFunction<FetchFn>;
 
 function mockRes(opts: {
   status: number;
@@ -42,12 +42,12 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  fetchMock = jest.fn();
+  fetchMock = vi.fn();
   globalFetchRef.fetch = fetchMock;
 });
 
 afterEach(() => {
-  jest.restoreAllMocks();
+  vi.restoreAllMocks();
 });
 
 test('assertAllowedUrl allows an explicitly configured host', () => {
@@ -134,11 +134,11 @@ test('httpGetJson sends accept header, normalizes custom headers, strips Authori
   const out = await api.httpGetJson<{ ok: boolean }>('https://example.com/test', {
     headers: {
       ' X-Test ': ' 1 ',
-      'Authorization': 'Bearer evil',
-      'Cookie': 'x=y',
+      Authorization: 'Bearer evil',
+      Cookie: 'x=y',
       'Bad Header': 'x',
       'X-Evil': 'a\nb',
-      'Empty': ' ',
+      Empty: ' ',
     },
     auth: { type: 'bearer', secret: 'TOKEN' },
   });
@@ -153,9 +153,9 @@ test('httpGetJson sends accept header, normalizes custom headers, strips Authori
 
   const hdrs = init?.headers as Record<string, string> | undefined;
   expect(hdrs).toMatchObject({
-    'accept': 'application/json',
+    accept: 'application/json',
     'x-test': '1',
-    'authorization': 'Bearer t123',
+    authorization: 'Bearer t123',
   });
 
   expect(hdrs?.cookie).toBeUndefined();
@@ -174,7 +174,7 @@ test('httpGetJson supports header auth with optional prefix', async () => {
   const hdrs = init?.headers as Record<string, string> | undefined;
 
   expect(hdrs).toMatchObject({
-    'accept': 'application/json',
+    accept: 'application/json',
     'x-api-key': 'Token t123',
   });
   expect(hdrs?.authorization).toBeUndefined();
@@ -335,7 +335,7 @@ test('httpGetJson rejects if streamed body exceeds maxBytes', async () => {
 });
 
 test('httpGetJson converts AbortError to "timeout"', async () => {
-  jest.useFakeTimers();
+  vi.useFakeTimers();
 
   const api = createHookApi({}, { allowedHosts: ['example.com'] });
 
@@ -351,10 +351,10 @@ test('httpGetJson converts AbortError to "timeout"', async () => {
 
   const p = api.httpGetJson('https://example.com/test', { timeoutMs: 5 });
 
-  jest.advanceTimersByTime(10);
+  vi.advanceTimersByTime(10);
   await expect(p).rejects.toThrow('timeout');
 
-  jest.useRealTimers();
+  vi.useRealTimers();
 });
 
 test('httpGetJson fails when fetch is not available', async () => {
@@ -381,7 +381,7 @@ test('httpGetJson clamps timeoutMs to [1..30000] (via setTimeout argument)', asy
 
   fetchMock.mockImplementation(() => Promise.resolve(mockRes({ status: 200, text: JSON.stringify({ ok: true }) })));
 
-  const spy = jest.spyOn(globalThis, 'setTimeout');
+  const spy = vi.spyOn(globalThis, 'setTimeout');
 
   await api.httpGetJson('https://example.com/test', { timeoutMs: 0 });
   const first = spy.mock.calls.at(-1);

@@ -1,18 +1,12 @@
 import type { Probot } from 'probot';
-import { type LogLevel } from '../infrastructure/logger.js';
-import { getHttpStatus } from '../infrastructure/errors.js';
-import {
-  createGitHubIssueUpdateGateway,
-  type GitHubIssueUpdateGatewayContext,
-} from '../infrastructure/github-gateway.js';
-import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
-import { toStringTrim } from '../domain/login-utils.js';
-import { handoverToCpa } from '../application/review-handover.js';
-import {
+import type {
+  ApprovalHandlingResult,
   maybeHandleApprovalDecision as maybeHandleApprovalDecisionApplication,
-  type ApprovalHandlingResult,
 } from '../application/approval-decision-dispatch.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import {
+  closeOutdatedRequestPrs as closeOutdatedRequestPrsApplication,
+  type OutdatedRequestPrCleanupCallbacks,
+} from '../application/outdated-request-pr-cleanup.js';
 import {
   processAuthorUpdateComment as processAuthorUpdateCommentApplication,
   processRequestIssueLifecycle as processRequestIssueLifecycleApplication,
@@ -20,13 +14,19 @@ import {
   type RequestIssueLifecycleCallbacks,
 } from '../application/request-issue-lifecycle.js';
 import {
-  closeOutdatedRequestPrs as closeOutdatedRequestPrsApplication,
-  type OutdatedRequestPrCleanupCallbacks,
-} from '../application/outdated-request-pr-cleanup.js';
-import {
   createRequestPrWithRecovery as createRequestPrWithRecoveryApplication,
   type RequestPrCreationRecoveryCallbacks,
 } from '../application/request-pr-creation-recovery.js';
+import { handoverToCpa } from '../application/review-handover.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
+import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
+import { toStringTrim } from '../domain/login-utils.js';
+import { getHttpStatus } from '../infrastructure/errors.js';
+import {
+  createGitHubIssueUpdateGateway,
+  type GitHubIssueUpdateGatewayContext,
+} from '../infrastructure/github-gateway.js';
+import type { LogLevel } from '../infrastructure/logger.js';
 import {
   composeRequestIssueAuthorUpdateCallbacks,
   composeRequestIssueLifecycleCallbacks,
@@ -714,8 +714,8 @@ export function createRequestLifecycleRuntime<
 
 export type {
   ApprovalHandlingResult,
-  RequestPrCreationRecoveryCallbacks,
-  RequestIssueLifecycleCallbacks,
-  RequestIssueAuthorUpdateCallbacks,
   OutdatedRequestPrCleanupCallbacks,
+  RequestIssueAuthorUpdateCallbacks,
+  RequestIssueLifecycleCallbacks,
+  RequestPrCreationRecoveryCallbacks,
 };

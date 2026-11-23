@@ -1,13 +1,14 @@
+import type { MockedFunction } from 'vitest';
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 
-type AsyncMock<Args extends unknown[] = unknown[], Result = unknown> = jest.MockedFunction<
+type AsyncMock<Args extends unknown[] = unknown[], Result = unknown> = MockedFunction<
   (...args: Args) => Promise<Result>
 >;
 
 function mockAsync<Args extends unknown[] = unknown[], Result = unknown>(): AsyncMock<Args, Result> {
-  return jest.fn((..._args: Args) => Promise.resolve(undefined as unknown as Result));
+  return vi.fn((..._args: Args) => Promise.resolve(undefined as unknown as Result));
 }
 
 function mkCtx(config?: any) {
@@ -17,7 +18,7 @@ function mkCtx(config?: any) {
 
   return {
     resourceBotConfig: config,
-    log: { warn: jest.fn() },
+    log: { warn: vi.fn() },
     octokit: {
       rest: {
         issues: { removeLabel, addLabels, addAssignees },
@@ -30,15 +31,15 @@ async function loadSubject(opts?: {
   stateLabels?: { author?: string | null; review?: string | null };
   approvers?: string[];
 }) {
-  jest.resetModules();
+  vi.resetModules();
 
-  const getStateLabelsFromConfig = jest
+  const getStateLabelsFromConfig = vi
     .fn()
     .mockReturnValue(opts?.stateLabels ?? { author: 'state:author', review: 'state:review' });
 
-  const getApproversFromConfig = jest.fn().mockReturnValue(opts?.approvers ?? ['ap1', 'ap2']);
+  const getApproversFromConfig = vi.fn().mockReturnValue(opts?.approvers ?? ['ap1', 'ap2']);
 
-  await jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
+  await vi.doMock('../src/handlers/request/constants.js', () => ({
     getStateLabelsFromConfig,
     getApproversFromConfig,
   }));

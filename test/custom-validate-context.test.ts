@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, test, expect, jest } from '@jest/globals';
+import { describe, expect, test, vi } from 'vitest';
 import { buildCustomValidateContextArgs } from '../src/handlers/request/validation/custom-validate-context.js';
 
 // ── local callback implementations ────────────────────────────────────────────
@@ -41,7 +41,7 @@ function mk404(): Error & { status: number } {
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function mkContext(files: Record<string, string> = {}) {
   // eslint-disable-next-line require-await
-  const getContent = jest.fn(async ({ path }: { owner: string; repo: string; path: string }) => {
+  const getContent = vi.fn(async ({ path }: { owner: string; repo: string; path: string }) => {
     if (path in files) {
       return { data: { content: b64(files[path]), encoding: 'base64' } };
     }
@@ -282,7 +282,7 @@ contacts: "@alice @bob"
       octokit: {
         rest: {
           repos: {
-            getContent: jest.fn((): Promise<never> => Promise.reject(serverErr)),
+            getContent: vi.fn((): Promise<never> => Promise.reject(serverErr)),
           },
         },
       },

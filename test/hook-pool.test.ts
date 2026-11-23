@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 import type { HookWorkerResult, HookWorkerTask } from '../src/handlers/request/validation/hook-pool.js';
 
 type RunOpts = { abortSignal?: AbortSignal; signal?: AbortSignal };
@@ -15,13 +15,13 @@ function makeAbortError(message: string): Error {
 let runImpl: RunImpl = (_task: unknown, _opts: RunOpts): Promise<unknown> =>
   Promise.resolve({ found: true, value: 'ok', logs: [] });
 
-const runMock = jest.fn((task: unknown, opts: unknown): Promise<unknown> => runImpl(task, opts as RunOpts));
+const runMock = vi.fn((task: unknown, opts: unknown): Promise<unknown> => runImpl(task, opts as RunOpts));
 
-const piscinaCtor = jest.fn((_opts: unknown): { run: typeof runMock } => ({
-  run: runMock,
-}));
+const piscinaCtor = vi.fn(function (_opts: unknown): { run: typeof runMock } {
+  return { run: runMock };
+});
 
-jest.unstable_mockModule('piscina', (): { Piscina: typeof piscinaCtor } => ({
+vi.doMock('piscina', (): { Piscina: typeof piscinaCtor } => ({
   Piscina: piscinaCtor,
 }));
 
@@ -95,7 +95,7 @@ test('returns default result when piscina.run resolves undefined', async (): Pro
 });
 
 test('converts AbortError to a __hookError payload (timeout)', async (): Promise<void> => {
-  jest.useFakeTimers();
+  vi.useFakeTimers();
   try {
     runImpl = (_task: unknown, opts: RunOpts): Promise<unknown> => {
       const sig = opts.abortSignal ?? opts.signal;
@@ -109,7 +109,7 @@ test('converts AbortError to a __hookError payload (timeout)', async (): Promise
     };
 
     const p = runHookInWorker(mkTask(), { timeoutMs: 0 });
-    await jest.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1);
 
     const res = await p;
     expect(res).toEqual({
@@ -118,7 +118,7 @@ test('converts AbortError to a __hookError payload (timeout)', async (): Promise
       logs: [],
     });
   } finally {
-    jest.useRealTimers();
+    vi.useRealTimers();
   }
 });
 

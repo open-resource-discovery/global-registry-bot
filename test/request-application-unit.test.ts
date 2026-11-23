@@ -1,17 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, test, expect, jest } from '@jest/globals';
+import { describe, expect, type Mock, test, vi } from 'vitest';
 
 // ---- branch-update-sequential-handoff ------------------------------------------
 import { requestPullRequestBranchUpdateRespectingSequentialRegistryQueue } from '../src/handlers/request/application/branch-update-sequential-handoff.js';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkBranchUpdateCallbacks(overrides: Partial<Record<string, jest.Mock>> = {}) {
+function mkBranchUpdateCallbacks(overrides: Partial<Record<string, Mock>> = {}) {
   return {
-    isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(false)),
-    requestPullRequestBranchUpdate: jest.fn(() => Promise.resolve(true)),
-    getSequentialRegistryPrActive: jest.fn(() => null),
-    markSequentialRegistryPrActive: jest.fn(),
-    runOneSequentialDirectRegistryPrMaintenance: jest.fn(() => Promise.resolve({ updated: true })),
+    isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(false)),
+    requestPullRequestBranchUpdate: vi.fn(() => Promise.resolve(true)),
+    getSequentialRegistryPrActive: vi.fn(() => null),
+    markSequentialRegistryPrActive: vi.fn(),
+    runOneSequentialDirectRegistryPrMaintenance: vi.fn(() => Promise.resolve({ updated: true })),
     ...overrides,
   } as any;
 }
@@ -21,7 +21,7 @@ const repoInfo = { owner: 'o', repo: 'r' };
 
 describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () => {
   test('non-sequential PR: delegates directly to requestPullRequestBranchUpdate', async () => {
-    const cbs = mkBranchUpdateCallbacks({ isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(false)) });
+    const cbs = mkBranchUpdateCallbacks({ isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(false)) });
     const pr = { number: 1, base: { ref: 'main' } };
     const result = await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
       ctx,
@@ -38,9 +38,9 @@ describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () =
   test('sequential PR with no active state: runs maintenance and returns updated', async () => {
     // Lines 72-90 — the sequential path
     const cbs = mkBranchUpdateCallbacks({
-      isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(true)),
-      getSequentialRegistryPrActive: jest.fn(() => null),
-      runOneSequentialDirectRegistryPrMaintenance: jest.fn(() => Promise.resolve({ updated: true })),
+      isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(true)),
+      getSequentialRegistryPrActive: vi.fn(() => null),
+      runOneSequentialDirectRegistryPrMaintenance: vi.fn(() => Promise.resolve({ updated: true })),
     });
     const pr = { number: 99, base: { ref: 'main' } };
     const result = await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
@@ -58,9 +58,9 @@ describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () =
 
   test('sequential PR with different active PR: runs maintenance', async () => {
     const cbs = mkBranchUpdateCallbacks({
-      isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(true)),
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 55 })),
-      runOneSequentialDirectRegistryPrMaintenance: jest.fn(() => Promise.resolve({ updated: false })),
+      isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(true)),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 55 })),
+      runOneSequentialDirectRegistryPrMaintenance: vi.fn(() => Promise.resolve({ updated: false })),
     });
     const pr = { number: 99, base: { ref: 'main' } };
     const result = await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
@@ -78,10 +78,10 @@ describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () =
   test('sequential PR where this PR is the active one: requests update and marks active', async () => {
     // Lines 74-82 — active PR matches current PR
     const cbs = mkBranchUpdateCallbacks({
-      isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(true)),
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      requestPullRequestBranchUpdate: jest.fn(() => Promise.resolve(true)),
-      markSequentialRegistryPrActive: jest.fn(),
+      isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(true)),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      requestPullRequestBranchUpdate: vi.fn(() => Promise.resolve(true)),
+      markSequentialRegistryPrActive: vi.fn(),
     });
     const pr = { number: 42, base: { ref: 'main' } };
     const result = await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
@@ -99,10 +99,10 @@ describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () =
 
   test('sequential PR where this PR is active but update fails: does not mark active', async () => {
     const cbs = mkBranchUpdateCallbacks({
-      isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(true)),
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      requestPullRequestBranchUpdate: jest.fn(() => Promise.resolve(false)),
-      markSequentialRegistryPrActive: jest.fn(),
+      isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(true)),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      requestPullRequestBranchUpdate: vi.fn(() => Promise.resolve(false)),
+      markSequentialRegistryPrActive: vi.fn(),
     });
     const pr = { number: 42, base: { ref: 'main' } };
     const result = await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(
@@ -119,7 +119,7 @@ describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () =
   });
 
   test('uses pr.base.ref when baseBranch arg is empty', async () => {
-    const cbs = mkBranchUpdateCallbacks({ isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(false)) });
+    const cbs = mkBranchUpdateCallbacks({ isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(false)) });
     const pr = { number: 1, base: { ref: 'develop' } };
     await requestPullRequestBranchUpdateRespectingSequentialRegistryQueue(ctx, repoInfo, pr, '', 'reason', cbs);
     expect(cbs.requestPullRequestBranchUpdate).toHaveBeenCalled();
@@ -130,15 +130,15 @@ describe('requestPullRequestBranchUpdateRespectingSequentialRegistryQueue', () =
 import { runMergeApprovedPrOrUpdateBranch } from '../src/handlers/request/application/merge-approved-pr-or-update-branch.js';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkMergeCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkMergeCallbacks(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    waitForPullRequestMergeability: jest.fn((_ctx: any, _repo: any, pr: any) => Promise.resolve(pr)),
-    shouldUpdatePullRequestBranch: jest.fn(() => Promise.resolve(false)),
-    requestPullRequestBranchUpdateRespectingSequentialRegistryQueue: jest.fn(() => Promise.resolve(true)),
-    hasAutoApprovedPrHead: jest.fn(() => false),
-    isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(true)),
-    isCrossRepositoryPullRequest: jest.fn(() => false),
-    evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+    waitForPullRequestMergeability: vi.fn((_ctx: any, _repo: any, pr: any) => Promise.resolve(pr)),
+    shouldUpdatePullRequestBranch: vi.fn(() => Promise.resolve(false)),
+    requestPullRequestBranchUpdateRespectingSequentialRegistryQueue: vi.fn(() => Promise.resolve(true)),
+    hasAutoApprovedPrHead: vi.fn(() => false),
+    isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(true)),
+    isCrossRepositoryPullRequest: vi.fn(() => false),
+    evaluateHeadGreenForApprovalReevaluation: vi.fn(() =>
       Promise.resolve({
         green: true,
         reason: 'all-green',
@@ -146,8 +146,8 @@ function mkMergeCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = 
         blockingRuns: [],
       })
     ),
-    tryMergeIfGreen: jest.fn(() => Promise.resolve(true)),
-    readFreshPullRequest: jest.fn((_ctx: any, _repo: any, prNumber: number) =>
+    tryMergeIfGreen: vi.fn(() => Promise.resolve(true)),
+    readFreshPullRequest: vi.fn((_ctx: any, _repo: any, prNumber: number) =>
       Promise.resolve({
         number: prNumber,
         state: 'closed',
@@ -157,9 +157,9 @@ function mkMergeCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = 
         mergeable_state: 'clean',
       })
     ),
-    log: jest.fn(),
-    getErrorMessage: jest.fn((e: unknown) => String(e)),
-    getHttpStatus: jest.fn(() => undefined),
+    log: vi.fn(),
+    getErrorMessage: vi.fn((e: unknown) => String(e)),
+    getHttpStatus: vi.fn(() => undefined),
     ...overrides,
   } as any;
 }
@@ -173,7 +173,7 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
   test('returns early when PR is not open after mergeability wait', async () => {
     const closedPr = { number: 10, state: 'closed', head: { sha: 'sha1' }, base: { ref: 'main' } };
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(closedPr)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(closedPr)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, closedPr as any, 'reason', cbs);
     expect(cbs.tryMergeIfGreen).not.toHaveBeenCalled();
@@ -184,7 +184,7 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = { ...openPr('sha-original'), number: 10 };
     const changedPr = { ...pr, head: { sha: 'sha-new' }, state: 'open' };
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(changedPr)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(changedPr)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -200,7 +200,7 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     // Covers lines 133-144
     const dirtyPr = { ...openPr(), mergeable_state: 'dirty', mergeable: false };
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(dirtyPr)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(dirtyPr)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, dirtyPr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -216,8 +216,8 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     // Covers lines 147-155
     const pr = openPr();
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      shouldUpdatePullRequestBranch: jest.fn(() => Promise.resolve(true)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      shouldUpdatePullRequestBranch: vi.fn(() => Promise.resolve(true)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.requestPullRequestBranchUpdateRespectingSequentialRegistryQueue).toHaveBeenCalled();
@@ -228,10 +228,10 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     // Covers lines 168-181
     const pr = openPr();
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      shouldUpdatePullRequestBranch: jest.fn(() => Promise.resolve(false)),
-      hasAutoApprovedPrHead: jest.fn(() => false),
-      isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(false)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      shouldUpdatePullRequestBranch: vi.fn(() => Promise.resolve(false)),
+      hasAutoApprovedPrHead: vi.fn(() => false),
+      isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(false)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -247,8 +247,8 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     // Covers lines 187-201
     const pr = openPr();
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      evaluateHeadGreenForApprovalReevaluation: vi.fn(() =>
         Promise.resolve({
           green: false,
           reason: 'failing-ci',
@@ -271,8 +271,8 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     // Covers lines 207-219
     const pr = openPr();
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      evaluateHeadGreenForApprovalReevaluation: vi.fn(() =>
         Promise.resolve({
           green: true,
           reason: 'all-green',
@@ -294,9 +294,9 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
   test('merges successfully and returns when tryMergeIfGreen returns true', async () => {
     const pr = openPr();
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn(() => Promise.resolve(true)),
-      readFreshPullRequest: jest.fn(() => Promise.resolve({ ...pr, state: 'closed' })),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn(() => Promise.resolve(true)),
+      readFreshPullRequest: vi.fn(() => Promise.resolve({ ...pr, state: 'closed' })),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.tryMergeIfGreen).toHaveBeenCalled();
@@ -307,9 +307,9 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = openPr();
     const freshPr = { ...pr, state: 'open' };
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn(() => Promise.resolve(false)),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn(() => Promise.resolve(false)),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -325,9 +325,9 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = openPr('sha-before');
     const afterPr = { ...pr, state: 'open', head: { sha: 'sha-after' } };
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn(() => Promise.resolve(undefined)), // returns undefined = retry needed
-      readFreshPullRequest: jest.fn(() => Promise.resolve(afterPr)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn(() => Promise.resolve(undefined)), // returns undefined = retry needed
+      readFreshPullRequest: vi.fn(() => Promise.resolve(afterPr)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -341,9 +341,9 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
   test('returns null fresh PR early', async () => {
     const pr = openPr();
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn(() => Promise.resolve(true)),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(null)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn(() => Promise.resolve(true)),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(null)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     // No error thrown — null PR handled
@@ -355,9 +355,9 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = openPr();
     const branchProtectionError = new Error('protected branch hook declined');
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn((): Promise<never> => Promise.reject(branchProtectionError)),
-      getErrorMessage: jest.fn(() => 'protected branch hook declined'),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn((): Promise<never> => Promise.reject(branchProtectionError)),
+      getErrorMessage: vi.fn(() => 'protected branch hook declined'),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -374,15 +374,15 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = openPr();
     const outdatedError = new Error('branch is out-of-date');
     const freshPr = { ...pr, state: 'open' };
-    const shouldUpdateMock = jest.fn((): Promise<boolean> => Promise.resolve(false));
+    const shouldUpdateMock = vi.fn((): Promise<boolean> => Promise.resolve(false));
     shouldUpdateMock.mockResolvedValueOnce(false); // call 1 — before merge attempt
     shouldUpdateMock.mockResolvedValueOnce(true); // call 2 — after merge error
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
       shouldUpdatePullRequestBranch: shouldUpdateMock,
-      tryMergeIfGreen: jest.fn((): Promise<never> => Promise.reject(outdatedError)),
-      getErrorMessage: jest.fn(() => 'branch is out-of-date'),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
+      tryMergeIfGreen: vi.fn((): Promise<never> => Promise.reject(outdatedError)),
+      getErrorMessage: vi.fn(() => 'branch is out-of-date'),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.requestPullRequestBranchUpdateRespectingSequentialRegistryQueue).toHaveBeenCalled();
@@ -393,11 +393,11 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const outdatedError = new Error('must be up to date before merging');
     const freshPr = { ...pr, state: 'open' };
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn((): Promise<never> => Promise.reject(outdatedError)),
-      getErrorMessage: jest.fn(() => 'must be up to date before merging'),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
-      shouldUpdatePullRequestBranch: jest.fn(() => Promise.resolve(false)),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn((): Promise<never> => Promise.reject(outdatedError)),
+      getErrorMessage: vi.fn(() => 'must be up to date before merging'),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
+      shouldUpdatePullRequestBranch: vi.fn(() => Promise.resolve(false)),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -412,9 +412,9 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = openPr();
     const unknownError = new Error('Something completely unexpected');
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      tryMergeIfGreen: jest.fn((): Promise<never> => Promise.reject(unknownError)),
-      getErrorMessage: jest.fn(() => 'Something completely unexpected'),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      tryMergeIfGreen: vi.fn((): Promise<never> => Promise.reject(unknownError)),
+      getErrorMessage: vi.fn(() => 'Something completely unexpected'),
     });
     await expect(runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs)).rejects.toThrow(
       unknownError
@@ -424,11 +424,11 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
   test('uses hasAutoApprovedPrHead when it returns true', async () => {
     const pr = openPr('sha-auto');
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(pr)),
-      hasAutoApprovedPrHead: jest.fn(() => true),
-      isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(false)),
-      tryMergeIfGreen: jest.fn(() => Promise.resolve(true)),
-      readFreshPullRequest: jest.fn(() => Promise.resolve({ ...pr, state: 'closed' })),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(pr)),
+      hasAutoApprovedPrHead: vi.fn(() => true),
+      isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(false)),
+      tryMergeIfGreen: vi.fn(() => Promise.resolve(true)),
+      readFreshPullRequest: vi.fn(() => Promise.resolve({ ...pr, state: 'closed' })),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     // hasAutoApprovedPrHead = true → skips isPullRequestApprovedForBranchMaintenance
@@ -441,13 +441,13 @@ describe('runMergeApprovedPrOrUpdateBranch', () => {
     const pr = openPr();
     let callCount = 0;
     const cbs = mkMergeCallbacks({
-      waitForPullRequestMergeability: jest.fn((): Promise<unknown> => {
+      waitForPullRequestMergeability: vi.fn((): Promise<unknown> => {
         callCount++;
         if (callCount === 1) return Promise.resolve(pr);
         return Promise.resolve({ ...pr, mergeable_state: 'dirty', mergeable: false });
       }),
-      tryMergeIfGreen: jest.fn(() => Promise.resolve(undefined)), // returns undefined → retry mergeability
-      readFreshPullRequest: jest.fn(() => Promise.resolve({ ...pr, state: 'open' })),
+      tryMergeIfGreen: vi.fn(() => Promise.resolve(undefined)), // returns undefined → retry mergeability
+      readFreshPullRequest: vi.fn(() => Promise.resolve({ ...pr, state: 'open' })),
     });
     await runMergeApprovedPrOrUpdateBranch(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -467,34 +467,34 @@ import {
 } from '../src/handlers/request/application/sequential-registry-pr-terminal.js';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkTerminalCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkTerminalCallbacks(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    readFreshPullRequest: jest.fn(() => Promise.resolve(null)),
-    isPullRequestOpen: jest.fn((pr: any) => pr?.state === 'open'),
-    getSequentialRegistryPrActive: jest.fn(() => null),
-    clearSequentialRegistryPrActive: jest.fn(),
-    markSequentialRegistryPrHeadSkipped: jest.fn(),
-    listOpenPullRequests: jest.fn(() => Promise.resolve([])),
-    pullRequestTargetsBranch: jest.fn(() => true),
-    listChangedYamlFilesForPrWithFallback: jest.fn(() => Promise.resolve([])),
-    runOneSequentialDirectRegistryPrMaintenance: jest.fn(() => Promise.resolve({})),
-    evaluateHeadGreenForApprovalReevaluation: jest.fn(() => Promise.resolve({ green: false, reason: 'not-green' })),
-    isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(false)),
-    log: jest.fn(),
+    readFreshPullRequest: vi.fn(() => Promise.resolve(null)),
+    isPullRequestOpen: vi.fn((pr: any) => pr?.state === 'open'),
+    getSequentialRegistryPrActive: vi.fn(() => null),
+    clearSequentialRegistryPrActive: vi.fn(),
+    markSequentialRegistryPrHeadSkipped: vi.fn(),
+    listOpenPullRequests: vi.fn(() => Promise.resolve([])),
+    pullRequestTargetsBranch: vi.fn(() => true),
+    listChangedYamlFilesForPrWithFallback: vi.fn(() => Promise.resolve([])),
+    runOneSequentialDirectRegistryPrMaintenance: vi.fn(() => Promise.resolve({})),
+    evaluateHeadGreenForApprovalReevaluation: vi.fn(() => Promise.resolve({ green: false, reason: 'not-green' })),
+    isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(false)),
+    log: vi.fn(),
     ...overrides,
   } as any;
 }
 
 describe('advanceSequentialRegistryPrQueueAfterTerminalState', () => {
   test('returns early when no active PR', async () => {
-    const cbs = mkTerminalCallbacks({ getSequentialRegistryPrActive: jest.fn(() => null) });
+    const cbs = mkTerminalCallbacks({ getSequentialRegistryPrActive: vi.fn(() => null) });
     const pr = { number: 1, base: { ref: 'main' }, head: { sha: 'sha1' } };
     await advanceSequentialRegistryPrQueueAfterTerminalState(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.readFreshPullRequest).not.toHaveBeenCalled();
   });
 
   test('returns early when active PR does not match', async () => {
-    const cbs = mkTerminalCallbacks({ getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 99 })) });
+    const cbs = mkTerminalCallbacks({ getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 99 })) });
     const pr = { number: 1, base: { ref: 'main' }, head: { sha: 'sha1' } };
     await advanceSequentialRegistryPrQueueAfterTerminalState(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.readFreshPullRequest).not.toHaveBeenCalled();
@@ -505,9 +505,9 @@ describe('advanceSequentialRegistryPrQueueAfterTerminalState', () => {
     const pr = { number: 42, state: 'closed', base: { ref: 'main' }, head: { sha: 'sha1' } };
     const freshOpenPr = { number: 42, state: 'open', base: { ref: 'main' }, head: { sha: 'sha1' } };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshOpenPr)),
-      isPullRequestOpen: jest.fn((p: any) => p?.state === 'open'),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshOpenPr)),
+      isPullRequestOpen: vi.fn((p: any) => p?.state === 'open'),
     });
     await advanceSequentialRegistryPrQueueAfterTerminalState(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.clearSequentialRegistryPrActive).not.toHaveBeenCalled();
@@ -518,9 +518,9 @@ describe('advanceSequentialRegistryPrQueueAfterTerminalState', () => {
     const pr = { number: 42, state: 'closed', base: { ref: 'main' }, head: { sha: 'sha1' } };
     const freshClosedPr = { number: 42, state: 'closed', base: { ref: 'main' } };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshClosedPr)),
-      isPullRequestOpen: jest.fn(() => false),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshClosedPr)),
+      isPullRequestOpen: vi.fn(() => false),
     });
     await advanceSequentialRegistryPrQueueAfterTerminalState(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.clearSequentialRegistryPrActive).toHaveBeenCalled();
@@ -530,9 +530,9 @@ describe('advanceSequentialRegistryPrQueueAfterTerminalState', () => {
   test('clears active but skips maintenance when no base branch found', async () => {
     const pr = { number: 42, state: 'closed', base: { ref: '' }, head: { sha: 'sha1' } };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(null)),
-      isPullRequestOpen: jest.fn(() => false),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(null)),
+      isPullRequestOpen: vi.fn(() => false),
     });
     await advanceSequentialRegistryPrQueueAfterTerminalState(ctx, repoInfo, pr as any, 'reason', cbs);
     expect(cbs.clearSequentialRegistryPrActive).toHaveBeenCalled();
@@ -550,11 +550,11 @@ describe('handleBlockingRegistryHeadConclusion', () => {
   test('marks failed PRs and runs maintenance', async () => {
     const openPrForHead = { number: 7, state: 'open', base: { ref: 'main' }, head: { sha: 'abc123' } };
     const cbs = mkTerminalCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([openPrForHead])),
-      pullRequestTargetsBranch: jest.fn(() => true),
-      listChangedYamlFilesForPrWithFallback: jest.fn(() => Promise.resolve(['data/ns/foo.yaml'])),
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 7 })),
-      clearSequentialRegistryPrActive: jest.fn(),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([openPrForHead])),
+      pullRequestTargetsBranch: vi.fn(() => true),
+      listChangedYamlFilesForPrWithFallback: vi.fn(() => Promise.resolve(['data/ns/foo.yaml'])),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 7 })),
+      clearSequentialRegistryPrActive: vi.fn(),
     });
     const result = await handleBlockingRegistryHeadConclusion(ctx, repoInfo, 'abc123', 'main', 'reason', cbs);
     expect(result).toBe(true);
@@ -565,7 +565,7 @@ describe('handleBlockingRegistryHeadConclusion', () => {
 
   test('logs blocking-head-not-marked when no PRs match', async () => {
     const cbs = mkTerminalCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([])),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([])),
     });
     const result = await handleBlockingRegistryHeadConclusion(ctx, repoInfo, 'abc123', 'main', 'reason', cbs);
     expect(result).toBe(false);
@@ -581,10 +581,10 @@ describe('handleBlockingRegistryHeadConclusion', () => {
     // Covers lines 259-272 — advance-skipped-missing-base-branch
     const openPrForHead = { number: 7, state: 'open', base: { ref: '' }, head: { sha: 'abc123' } };
     const cbs = mkTerminalCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([openPrForHead])),
-      pullRequestTargetsBranch: jest.fn(() => true),
-      listChangedYamlFilesForPrWithFallback: jest.fn(() => Promise.resolve(['data/ns/foo.yaml'])),
-      getSequentialRegistryPrActive: jest.fn(() => null),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([openPrForHead])),
+      pullRequestTargetsBranch: vi.fn(() => true),
+      listChangedYamlFilesForPrWithFallback: vi.fn(() => Promise.resolve(['data/ns/foo.yaml'])),
+      getSequentialRegistryPrActive: vi.fn(() => null),
     });
     // baseBranch is empty AND no PR base branch
     const result = await handleBlockingRegistryHeadConclusion(ctx, repoInfo, 'abc123', '', 'reason', cbs);
@@ -601,8 +601,8 @@ describe('handleBlockingRegistryHeadConclusion', () => {
   test('skips PRs not targeting the base branch', async () => {
     const pr = { number: 7, state: 'open', base: { ref: 'feature' }, head: { sha: 'abc123' } };
     const cbs = mkTerminalCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      pullRequestTargetsBranch: jest.fn(() => false),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      pullRequestTargetsBranch: vi.fn(() => false),
     });
     const result = await handleBlockingRegistryHeadConclusion(ctx, repoInfo, 'abc123', 'main', 'reason', cbs);
     expect(result).toBe(false);
@@ -611,9 +611,9 @@ describe('handleBlockingRegistryHeadConclusion', () => {
   test('skips PRs with no changed registry files', async () => {
     const pr = { number: 7, state: 'open', base: { ref: 'main' }, head: { sha: 'abc123' } };
     const cbs = mkTerminalCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      pullRequestTargetsBranch: jest.fn(() => true),
-      listChangedYamlFilesForPrWithFallback: jest.fn(() => Promise.resolve([])),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      pullRequestTargetsBranch: vi.fn(() => true),
+      listChangedYamlFilesForPrWithFallback: vi.fn(() => Promise.resolve([])),
     });
     const result = await handleBlockingRegistryHeadConclusion(ctx, repoInfo, 'abc123', 'main', 'reason', cbs);
     expect(result).toBe(false);
@@ -622,7 +622,7 @@ describe('handleBlockingRegistryHeadConclusion', () => {
 
 describe('releaseSequentialRegistryPrIfNotApprovedAfterGreen', () => {
   test('returns early when no active PR', async () => {
-    const cbs = mkTerminalCallbacks({ getSequentialRegistryPrActive: jest.fn(() => null) });
+    const cbs = mkTerminalCallbacks({ getSequentialRegistryPrActive: vi.fn(() => null) });
     const pr = { number: 1, head: { sha: 'sha1' }, base: { ref: 'main' } };
     await releaseSequentialRegistryPrIfNotApprovedAfterGreen(ctx, repoInfo, pr as any, cbs);
     expect(cbs.readFreshPullRequest).not.toHaveBeenCalled();
@@ -633,9 +633,9 @@ describe('releaseSequentialRegistryPrIfNotApprovedAfterGreen', () => {
     const pr = { number: 42, head: { sha: 'sha1' }, base: { ref: 'main' } };
     const closedFreshPr = { number: 42, state: 'closed', head: { sha: 'sha1' }, base: { ref: 'main' } };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(closedFreshPr)),
-      isPullRequestOpen: jest.fn(() => false),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(closedFreshPr)),
+      isPullRequestOpen: vi.fn(() => false),
     });
     await releaseSequentialRegistryPrIfNotApprovedAfterGreen(ctx, repoInfo, pr as any, cbs);
     expect(cbs.clearSequentialRegistryPrActive).toHaveBeenCalled();
@@ -645,9 +645,9 @@ describe('releaseSequentialRegistryPrIfNotApprovedAfterGreen', () => {
     const pr = { number: 42, head: { sha: '' }, base: { ref: 'main' } };
     const freshPr = { number: 42, state: 'open', head: { sha: '' }, base: { ref: 'main' } };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
-      isPullRequestOpen: jest.fn(() => true),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
+      isPullRequestOpen: vi.fn(() => true),
     });
     await releaseSequentialRegistryPrIfNotApprovedAfterGreen(ctx, repoInfo, pr as any, cbs);
     expect(cbs.evaluateHeadGreenForApprovalReevaluation).not.toHaveBeenCalled();
@@ -657,10 +657,10 @@ describe('releaseSequentialRegistryPrIfNotApprovedAfterGreen', () => {
     const pr = { number: 42, head: { sha: 'sha1' }, base: { ref: 'main' } };
     const freshPr = { ...pr, state: 'open' };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
-      isPullRequestOpen: jest.fn(() => true),
-      isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(true)),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
+      isPullRequestOpen: vi.fn(() => true),
+      isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(true)),
     });
     await releaseSequentialRegistryPrIfNotApprovedAfterGreen(ctx, repoInfo, pr as any, cbs);
     expect(cbs.evaluateHeadGreenForApprovalReevaluation).not.toHaveBeenCalled();
@@ -671,11 +671,11 @@ describe('releaseSequentialRegistryPrIfNotApprovedAfterGreen', () => {
     const pr = { number: 42, head: { sha: 'sha1' }, base: { ref: 'main' } };
     const freshPr = { ...pr, state: 'open' };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
-      isPullRequestOpen: jest.fn(() => true),
-      isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(false)),
-      evaluateHeadGreenForApprovalReevaluation: jest.fn(() => Promise.resolve({ green: false, reason: 'failing' })),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
+      isPullRequestOpen: vi.fn(() => true),
+      isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(false)),
+      evaluateHeadGreenForApprovalReevaluation: vi.fn(() => Promise.resolve({ green: false, reason: 'failing' })),
     });
     await releaseSequentialRegistryPrIfNotApprovedAfterGreen(ctx, repoInfo, pr as any, cbs);
     expect(cbs.markSequentialRegistryPrHeadSkipped).not.toHaveBeenCalled();
@@ -685,11 +685,11 @@ describe('releaseSequentialRegistryPrIfNotApprovedAfterGreen', () => {
     const pr = { number: 42, head: { sha: 'sha1' }, base: { ref: 'main' } };
     const freshPr = { ...pr, state: 'open' };
     const cbs = mkTerminalCallbacks({
-      getSequentialRegistryPrActive: jest.fn(() => ({ prNumber: 42 })),
-      readFreshPullRequest: jest.fn(() => Promise.resolve(freshPr)),
-      isPullRequestOpen: jest.fn(() => true),
-      isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(false)),
-      evaluateHeadGreenForApprovalReevaluation: jest.fn(() => Promise.resolve({ green: true, reason: 'all-good' })),
+      getSequentialRegistryPrActive: vi.fn(() => ({ prNumber: 42 })),
+      readFreshPullRequest: vi.fn(() => Promise.resolve(freshPr)),
+      isPullRequestOpen: vi.fn(() => true),
+      isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(false)),
+      evaluateHeadGreenForApprovalReevaluation: vi.fn(() => Promise.resolve({ green: true, reason: 'all-good' })),
     });
     await releaseSequentialRegistryPrIfNotApprovedAfterGreen(ctx, repoInfo, pr as any, cbs);
     expect(cbs.markSequentialRegistryPrHeadSkipped).toHaveBeenCalled();
@@ -815,23 +815,23 @@ describe('applySchemaIdentifierConsistencyCheck', () => {
 import { updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush } from '../src/handlers/request/application/default-branch-approved-pr-branch-update.js';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkDefaultBranchCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkDefaultBranchCallbacks(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    isSequentialRegistryPrActiveBlocking: jest.fn(() => Promise.resolve(false)),
-    listOpenPullRequests: jest.fn(() => Promise.resolve([])),
-    isSequentialRegistryPrHeadSkipped: jest.fn(() => false),
-    listChangedYamlFilesForPrWithFallback: jest.fn(() => Promise.resolve(['data/ns/foo.yaml'])),
-    isSnapshotManagedRequestPr: jest.fn(() => true),
-    isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(true)),
-    waitForPullRequestMergeability: jest.fn((_ctx: any, _ri: any, p: any) => Promise.resolve(p)),
-    isPullRequestOpen: jest.fn(() => true),
-    isPullRequestDirty: jest.fn(() => false),
-    readMergeableState: jest.fn(() => 'clean'),
-    shouldUpdatePullRequestBranch: jest.fn(() => Promise.resolve(true)),
-    requestPullRequestBranchUpdate: jest.fn(() => Promise.resolve(true)),
-    markSequentialRegistryPrHeadSkipped: jest.fn(),
-    getErrorMessage: jest.fn((e: unknown) => (e instanceof Error ? e.message : String(e))),
-    log: jest.fn(),
+    isSequentialRegistryPrActiveBlocking: vi.fn(() => Promise.resolve(false)),
+    listOpenPullRequests: vi.fn(() => Promise.resolve([])),
+    isSequentialRegistryPrHeadSkipped: vi.fn(() => false),
+    listChangedYamlFilesForPrWithFallback: vi.fn(() => Promise.resolve(['data/ns/foo.yaml'])),
+    isSnapshotManagedRequestPr: vi.fn(() => true),
+    isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(true)),
+    waitForPullRequestMergeability: vi.fn((_ctx: any, _ri: any, p: any) => Promise.resolve(p)),
+    isPullRequestOpen: vi.fn(() => true),
+    isPullRequestDirty: vi.fn(() => false),
+    readMergeableState: vi.fn(() => 'clean'),
+    shouldUpdatePullRequestBranch: vi.fn(() => Promise.resolve(true)),
+    requestPullRequestBranchUpdate: vi.fn(() => Promise.resolve(true)),
+    markSequentialRegistryPrHeadSkipped: vi.fn(),
+    getErrorMessage: vi.fn((e: unknown) => (e instanceof Error ? e.message : String(e))),
+    log: vi.fn(),
     ...overrides,
   } as any;
 }
@@ -847,7 +847,7 @@ const defaultBranchRepoInfo = { owner: 'org', repo: 'repo' };
 describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('returns false immediately when sequential PR is blocking — covers line 94', async () => {
     const cbs = mkDefaultBranchCallbacks({
-      isSequentialRegistryPrActiveBlocking: jest.fn(() => Promise.resolve(true)),
+      isSequentialRegistryPrActiveBlocking: vi.fn(() => Promise.resolve(true)),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -860,7 +860,7 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   });
 
   test('returns false when no open PRs', async () => {
-    const cbs = mkDefaultBranchCallbacks({ listOpenPullRequests: jest.fn(() => Promise.resolve([])) });
+    const cbs = mkDefaultBranchCallbacks({ listOpenPullRequests: vi.fn(() => Promise.resolve([])) });
     expect(
       await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
         defaultBranchCtx,
@@ -874,8 +874,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('logs skip when PR has no changed registry files — covers lines 115-121', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      listChangedYamlFilesForPrWithFallback: jest.fn(() => Promise.resolve([])),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      listChangedYamlFilesForPrWithFallback: vi.fn(() => Promise.resolve([])),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -895,8 +895,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('logs skip for direct registry PR handled by sequential queue — covers lines 125-134', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      isSnapshotManagedRequestPr: jest.fn(() => false), // not snapshot → sequential queue
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      isSnapshotManagedRequestPr: vi.fn(() => false), // not snapshot → sequential queue
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -916,8 +916,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('logs skip when PR is not approved', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      isPullRequestApprovedForBranchMaintenance: jest.fn(() => Promise.resolve(false)),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      isPullRequestApprovedForBranchMaintenance: vi.fn(() => Promise.resolve(false)),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -938,9 +938,9 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
     const pr = mkOpenPr(1);
     const closedPr = { ...pr, state: 'closed' };
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(closedPr)),
-      isPullRequestOpen: jest.fn(() => false),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(closedPr)),
+      isPullRequestOpen: vi.fn(() => false),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -955,9 +955,9 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
     const pr = mkOpenPr(1);
     const dirtyPr = { ...pr, mergeable_state: 'dirty' };
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      waitForPullRequestMergeability: jest.fn(() => Promise.resolve(dirtyPr)),
-      isPullRequestDirty: jest.fn(() => true),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      waitForPullRequestMergeability: vi.fn(() => Promise.resolve(dirtyPr)),
+      isPullRequestDirty: vi.fn(() => true),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -977,8 +977,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('logs skip when PR is not behind current base', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      shouldUpdatePullRequestBranch: jest.fn(() => Promise.resolve(false)),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      shouldUpdatePullRequestBranch: vi.fn(() => Promise.resolve(false)),
     });
     await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -997,8 +997,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('returns true when branch update is requested', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      requestPullRequestBranchUpdate: jest.fn(() => Promise.resolve(true)),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      requestPullRequestBranchUpdate: vi.fn(() => Promise.resolve(true)),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -1012,8 +1012,8 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('marks head skipped when requestPullRequestBranchUpdate returns false', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      requestPullRequestBranchUpdate: jest.fn(() => Promise.resolve(false)),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      requestPullRequestBranchUpdate: vi.fn(() => Promise.resolve(false)),
     });
     await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -1027,11 +1027,9 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
   test('logs warning and marks skipped when exception thrown — covers lines 196-207', async () => {
     const pr = mkOpenPr(1);
     const cbs = mkDefaultBranchCallbacks({
-      listOpenPullRequests: jest.fn(() => Promise.resolve([pr])),
-      listChangedYamlFilesForPrWithFallback: jest.fn((): Promise<never> =>
-        Promise.reject(new Error('unexpected error'))
-      ),
-      getErrorMessage: jest.fn(() => 'unexpected error'),
+      listOpenPullRequests: vi.fn(() => Promise.resolve([pr])),
+      listChangedYamlFilesForPrWithFallback: vi.fn((): Promise<never> => Promise.reject(new Error('unexpected error'))),
+      getErrorMessage: vi.fn(() => 'unexpected error'),
     });
     const result = await updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush(
       defaultBranchCtx,
@@ -1052,19 +1050,19 @@ describe('updateApprovedOpenPullRequestBranchesAfterDefaultBranchPush', () => {
 
 // ---- branch-update-decision ---------------------------------------------------
 import {
-  readBranchHeadSha,
   isPullRequestBehindCurrentBase,
+  readBranchHeadSha,
   shouldUpdatePullRequestBranch,
 } from '../src/handlers/request/application/branch-update-decision.js';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkBranchDecisionCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkBranchDecisionCallbacks(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: '' } } })),
-    compareCommitsWithBasehead: jest.fn(() => Promise.resolve({ data: { status: 'identical', ahead_by: 0 } })),
-    log: jest.fn(),
-    getErrorMessage: jest.fn((e: unknown) => (e instanceof Error ? e.message : String(e))),
-    getHttpStatus: jest.fn(() => undefined as number | undefined),
+    getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: '' } } })),
+    compareCommitsWithBasehead: vi.fn(() => Promise.resolve({ data: { status: 'identical', ahead_by: 0 } })),
+    log: vi.fn(),
+    getErrorMessage: vi.fn((e: unknown) => (e instanceof Error ? e.message : String(e))),
+    getHttpStatus: vi.fn(() => undefined as number | undefined),
     ...overrides,
   } as any;
 }
@@ -1081,15 +1079,15 @@ describe('readBranchHeadSha', () => {
 
   test('returns sha from getBranch response', async () => {
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'abc123' } } })),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'abc123' } } })),
     });
     expect(await readBranchHeadSha(branchCtx, branchRepoInfo, 'main', cbs)).toBe('abc123');
   });
 
   test('returns empty and logs when getBranch throws', async () => {
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn((): Promise<never> => Promise.reject(new Error('not found'))),
-      getErrorMessage: jest.fn(() => 'not found'),
+      getBranch: vi.fn((): Promise<never> => Promise.reject(new Error('not found'))),
+      getErrorMessage: vi.fn(() => 'not found'),
     });
     const result = await readBranchHeadSha(branchCtx, branchRepoInfo, 'main', cbs);
     expect(result).toBe('');
@@ -1108,7 +1106,7 @@ describe('isPullRequestBehindCurrentBase', () => {
   test('returns false when baseHeadSha equals headSha', async () => {
     const pr = { number: 1, head: { sha: 'same', ref: 'feature' }, base: { ref: 'main' } };
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'same' } } })),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'same' } } })),
     });
     expect(await isPullRequestBehindCurrentBase(branchCtx, branchRepoInfo, pr as any, 'main', cbs)).toBe(false);
   });
@@ -1116,8 +1114,8 @@ describe('isPullRequestBehindCurrentBase', () => {
   test('returns true when compare result is ahead (behind current base) — covers line 147', async () => {
     const pr = { number: 1, head: { sha: 'pr-sha', ref: 'feature' }, base: { ref: 'main' } };
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
-      compareCommitsWithBasehead: jest.fn(() => Promise.resolve({ data: { status: 'ahead', ahead_by: 1 } })),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
+      compareCommitsWithBasehead: vi.fn(() => Promise.resolve({ data: { status: 'ahead', ahead_by: 1 } })),
     });
     expect(await isPullRequestBehindCurrentBase(branchCtx, branchRepoInfo, pr as any, 'main', cbs)).toBe(true);
   });
@@ -1125,8 +1123,8 @@ describe('isPullRequestBehindCurrentBase', () => {
   test('returns false when compare result is identical (not behind) — covers line 148', async () => {
     const pr = { number: 1, head: { sha: 'pr-sha', ref: 'feature' }, base: { ref: 'main' } };
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
-      compareCommitsWithBasehead: jest.fn(() => Promise.resolve({ data: { status: 'identical', ahead_by: 0 } })),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
+      compareCommitsWithBasehead: vi.fn(() => Promise.resolve({ data: { status: 'identical', ahead_by: 0 } })),
     });
     expect(await isPullRequestBehindCurrentBase(branchCtx, branchRepoInfo, pr as any, 'main', cbs)).toBe(false);
   });
@@ -1134,9 +1132,9 @@ describe('isPullRequestBehindCurrentBase', () => {
   test('logs warning and falls back when compareCommitsWithBasehead throws — covers lines 149-164', async () => {
     const pr = { number: 1, head: { sha: 'pr-sha', ref: 'feature' }, base: { ref: 'main' }, mergeable_state: null };
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
-      compareCommitsWithBasehead: jest.fn((): Promise<never> => Promise.reject(new Error('compare failed'))),
-      getErrorMessage: jest.fn(() => 'compare failed'),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
+      compareCommitsWithBasehead: vi.fn((): Promise<never> => Promise.reject(new Error('compare failed'))),
+      getErrorMessage: vi.fn(() => 'compare failed'),
     });
     const result = await isPullRequestBehindCurrentBase(branchCtx, branchRepoInfo, pr as any, 'main', cbs);
     expect(cbs.log).toHaveBeenCalledWith(
@@ -1152,8 +1150,8 @@ describe('isPullRequestBehindCurrentBase', () => {
     // 'behind' status is unknown → isBehindCurrentBase = null → no early return → fallback
     const pr = { number: 1, head: { sha: 'pr-sha', ref: 'feature' }, base: { ref: 'main' }, mergeable_state: 'behind' };
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
-      compareCommitsWithBasehead: jest.fn(() => Promise.resolve({ data: { status: 'behind', ahead_by: 0 } })),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
+      compareCommitsWithBasehead: vi.fn(() => Promise.resolve({ data: { status: 'behind', ahead_by: 0 } })),
     });
     const result = await isPullRequestBehindCurrentBase(branchCtx, branchRepoInfo, pr as any, 'main', cbs);
     // isPullRequestBehindBase checks mergeable_state === 'behind' → true
@@ -1172,17 +1170,17 @@ describe('shouldUpdatePullRequestBranch', () => {
   test('delegates to isPullRequestBehindCurrentBase when not obviously behind — covers line 178', async () => {
     const pr = { number: 1, head: { sha: 'pr-sha', ref: 'feature' }, base: { ref: 'main' }, mergeable_state: 'clean' };
     const cbs = mkBranchDecisionCallbacks({
-      getBranch: jest.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
-      compareCommitsWithBasehead: jest.fn(() => Promise.resolve({ data: { status: 'ahead', ahead_by: 1 } })),
+      getBranch: vi.fn(() => Promise.resolve({ data: { commit: { sha: 'base-sha' } } })),
+      compareCommitsWithBasehead: vi.fn(() => Promise.resolve({ data: { status: 'ahead', ahead_by: 1 } })),
     });
     expect(await shouldUpdatePullRequestBranch(branchCtx, branchRepoInfo, pr as any, 'main', cbs)).toBe(true);
     expect(cbs.getBranch).toHaveBeenCalled();
   });
 });
 
+import { markAutoApprovedPrHead } from '../src/handlers/request/application/auto-approved-head-tracking.js';
 // ---- branch-maintenance-approval -------------------------------------------
 import { isPullRequestApprovedForBranchMaintenance } from '../src/handlers/request/application/branch-maintenance-approval.js';
-import { markAutoApprovedPrHead } from '../src/handlers/request/application/auto-approved-head-tracking.js';
 
 const maintenanceRepoInfo = { owner: 'org', repo: 'repo' };
 
@@ -1192,7 +1190,7 @@ function mkMaintenanceCtx(reviews: { state?: string; body?: string; user?: { log
     octokit: {
       rest: {
         pulls: {
-          listReviews: jest.fn(() => Promise.resolve({ data: reviews })),
+          listReviews: vi.fn(() => Promise.resolve({ data: reviews })),
         },
       },
     },
@@ -1200,10 +1198,10 @@ function mkMaintenanceCtx(reviews: { state?: string; body?: string; user?: { log
 }
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkMaintenanceCbs(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkMaintenanceCbs(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    hasApprovedLabelOnPr: jest.fn(() => Promise.resolve(false)),
-    isSnapshotManagedRequestPr: jest.fn(() => false),
+    hasApprovedLabelOnPr: vi.fn(() => Promise.resolve(false)),
+    isSnapshotManagedRequestPr: vi.fn(() => false),
     ...overrides,
   } as any;
 }
@@ -1221,7 +1219,7 @@ describe('isPullRequestApprovedForBranchMaintenance', () => {
   test('returns true for snapshot managed PR — covers line 49', async () => {
     const ctx = mkMaintenanceCtx([]);
     const pr = { number: 2, head: { sha: 'sha2' }, body: '' };
-    const cbs = mkMaintenanceCbs({ isSnapshotManagedRequestPr: jest.fn(() => true) });
+    const cbs = mkMaintenanceCbs({ isSnapshotManagedRequestPr: vi.fn(() => true) });
     expect(await isPullRequestApprovedForBranchMaintenance(ctx, maintenanceRepoInfo, pr as any, {}, cbs)).toBe(true);
   });
 
@@ -1258,7 +1256,7 @@ describe('isPullRequestApprovedForBranchMaintenance', () => {
   test('returns true when hasApprovedLabelOnPr is true — covers lines 72-74', async () => {
     const ctx = mkMaintenanceCtx([]);
     const pr = { number: 5, head: { sha: 'sha-label' }, body: '' };
-    const cbs = mkMaintenanceCbs({ hasApprovedLabelOnPr: jest.fn(() => Promise.resolve(true)) });
+    const cbs = mkMaintenanceCbs({ hasApprovedLabelOnPr: vi.fn(() => Promise.resolve(true)) });
     expect(
       await isPullRequestApprovedForBranchMaintenance(
         ctx,
@@ -1283,7 +1281,7 @@ describe('isPullRequestApprovedForBranchMaintenance', () => {
       octokit: {
         rest: {
           pulls: {
-            listReviews: jest.fn((): Promise<never> => Promise.reject(new Error('api error'))),
+            listReviews: vi.fn((): Promise<never> => Promise.reject(new Error('api error'))),
           },
         },
       },
@@ -1307,23 +1305,23 @@ const atCtx = {};
 const atRepoInfo = { owner: 'org', repo: 'repo' };
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkAutoMergeTriggerCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkAutoMergeTriggerCallbacks(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    getStaticConfig: jest.fn(() => Promise.resolve({})),
-    evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+    getStaticConfig: vi.fn(() => Promise.resolve({})),
+    evaluateHeadGreenForApprovalReevaluation: vi.fn(() =>
       Promise.resolve({ green: true, reason: 'all-green', latestRuns: [], blockingRuns: [] })
     ),
-    listOpenPullRequests: jest.fn(() => Promise.resolve([])),
-    processPullRequestForAutoMerge: jest.fn(() => Promise.resolve()),
-    releaseSequentialRegistryPrIfNotApprovedAfterGreen: jest.fn(() => Promise.resolve()),
-    advanceSequentialRegistryPrQueueAfterTerminalState: jest.fn(() => Promise.resolve()),
-    readFreshPullRequest: jest.fn(() => Promise.resolve(null)),
-    isSequentialDirectRegistryPr: jest.fn(() => Promise.resolve(false)),
-    getSequentialRegistryPrActive: jest.fn(() => null),
-    clearSequentialRegistryPrActive: jest.fn(),
-    markSequentialRegistryPrHeadSkipped: jest.fn(),
-    runOneSequentialDirectRegistryPrMaintenance: jest.fn(() => Promise.resolve({})),
-    log: jest.fn(),
+    listOpenPullRequests: vi.fn(() => Promise.resolve([])),
+    processPullRequestForAutoMerge: vi.fn(() => Promise.resolve()),
+    releaseSequentialRegistryPrIfNotApprovedAfterGreen: vi.fn(() => Promise.resolve()),
+    advanceSequentialRegistryPrQueueAfterTerminalState: vi.fn(() => Promise.resolve()),
+    readFreshPullRequest: vi.fn(() => Promise.resolve(null)),
+    isSequentialDirectRegistryPr: vi.fn(() => Promise.resolve(false)),
+    getSequentialRegistryPrActive: vi.fn(() => null),
+    clearSequentialRegistryPrActive: vi.fn(),
+    markSequentialRegistryPrHeadSkipped: vi.fn(),
+    runOneSequentialDirectRegistryPrMaintenance: vi.fn(() => Promise.resolve({})),
+    log: vi.fn(),
     ...overrides,
   } as any;
 }
@@ -1331,7 +1329,7 @@ function mkAutoMergeTriggerCallbacks(overrides: Partial<Record<string, jest.Mock
 describe('runAutoMergeEvaluation — deferred vs terminal', () => {
   test('returns false when checks are still running (check-runs-not-completed) — deferred', async () => {
     const cbs = mkAutoMergeTriggerCallbacks({
-      evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+      evaluateHeadGreenForApprovalReevaluation: vi.fn(() =>
         Promise.resolve({
           green: false,
           reason: 'check-runs-not-completed',
@@ -1344,7 +1342,7 @@ describe('runAutoMergeEvaluation — deferred vs terminal', () => {
     expect(result).toBe(false);
     expect(cbs.listOpenPullRequests).not.toHaveBeenCalled();
     expect(
-      (cbs.log as jest.Mock).mock.calls.some(
+      (cbs.log as Mock).mock.calls.some(
         ([, , , msg]: unknown[]) => msg === 'auto-merge:evaluation deferred: checks still running'
       )
     ).toBe(true);
@@ -1352,7 +1350,7 @@ describe('runAutoMergeEvaluation — deferred vs terminal', () => {
 
   test('returns true when not-green for a reason other than checks-not-completed — terminal', async () => {
     const cbs = mkAutoMergeTriggerCallbacks({
-      evaluateHeadGreenForApprovalReevaluation: jest.fn(() =>
+      evaluateHeadGreenForApprovalReevaluation: vi.fn(() =>
         Promise.resolve({ green: false, reason: 'status-not-green', latestRuns: [], blockingRuns: [] })
       ),
     });
@@ -1370,8 +1368,8 @@ describe('runAutoMergeEvaluation — deferred vs terminal', () => {
 describe('tryAutoMerge — recently-completed dedup', () => {
   test('deferred evaluation does not block a subsequent call for the same SHA', async () => {
     const cbs = mkAutoMergeTriggerCallbacks();
-    const deferredFn = jest.fn((): Promise<boolean> => Promise.resolve(false));
-    const terminalFn = jest.fn((): Promise<boolean> => Promise.resolve(true));
+    const deferredFn = vi.fn((): Promise<boolean> => Promise.resolve(false));
+    const terminalFn = vi.fn((): Promise<boolean> => Promise.resolve(true));
     const sha = `sha-at-deferred-${Date.now()}`;
 
     await tryAutoMerge(atCtx, atRepoInfo, sha, deferredFn, cbs);
@@ -1380,7 +1378,7 @@ describe('tryAutoMerge — recently-completed dedup', () => {
     expect(deferredFn).toHaveBeenCalledTimes(1);
     expect(terminalFn).toHaveBeenCalledTimes(1);
     expect(
-      (cbs.log as jest.Mock).mock.calls.some(
+      (cbs.log as Mock).mock.calls.some(
         ([, , , msg]: unknown[]) => msg === 'auto-merge:evaluation skipped: recently completed'
       )
     ).toBe(false);
@@ -1388,7 +1386,7 @@ describe('tryAutoMerge — recently-completed dedup', () => {
 
   test('terminal evaluation blocks a subsequent call for the same SHA', async () => {
     const cbs = mkAutoMergeTriggerCallbacks();
-    const terminalFn = jest.fn((): Promise<boolean> => Promise.resolve(true));
+    const terminalFn = vi.fn((): Promise<boolean> => Promise.resolve(true));
     const sha = `sha-at-terminal-${Date.now()}`;
 
     await tryAutoMerge(atCtx, atRepoInfo, sha, terminalFn, cbs);
@@ -1396,7 +1394,7 @@ describe('tryAutoMerge — recently-completed dedup', () => {
 
     expect(terminalFn).toHaveBeenCalledTimes(1);
     expect(
-      (cbs.log as jest.Mock).mock.calls.some(
+      (cbs.log as Mock).mock.calls.some(
         ([, , , msg]: unknown[]) => msg === 'auto-merge:evaluation skipped: recently completed'
       )
     ).toBe(true);
@@ -1405,8 +1403,8 @@ describe('tryAutoMerge — recently-completed dedup', () => {
   test('failed evaluation does not mark SHA as recently completed', async () => {
     const sha = `sha-error-${Date.now()}`;
     const cbs = mkAutoMergeTriggerCallbacks();
-    const failingFn = jest.fn((): Promise<boolean> => Promise.reject(new Error('eval-boom')));
-    const terminalFn = jest.fn((): Promise<boolean> => Promise.resolve(true));
+    const failingFn = vi.fn((): Promise<boolean> => Promise.reject(new Error('eval-boom')));
+    const terminalFn = vi.fn((): Promise<boolean> => Promise.resolve(true));
 
     await expect(tryAutoMerge(atCtx, atRepoInfo, sha, failingFn, cbs)).rejects.toThrow('eval-boom');
 
@@ -1420,28 +1418,28 @@ describe('tryAutoMerge — recently-completed dedup', () => {
 import { handleCheckCompletedEvent } from '../src/handlers/request/application/check-completed-handler.js';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function mkCheckCompletedCallbacks(overrides: Partial<Record<string, jest.Mock | any>> = {}) {
+function mkCheckCompletedCallbacks(overrides: Partial<Record<string, Mock | any>> = {}) {
   return {
-    readCheckRunFromPayload: jest.fn(() => null),
-    readCheckSuiteFromPayload: jest.fn(() => null),
-    readRepoInfoFromPayload: jest.fn(() => ({ owner: 'org', repo: 'repo' })),
-    readCheckRunPrNumbers: jest.fn((): number[] => []),
-    resolveCheckSuitePrNumbers: jest.fn((): Promise<number[]> => Promise.resolve([])),
-    readCheckSuiteId: jest.fn(() => null),
-    listAllCheckRunsForSuite: jest.fn(() => Promise.resolve([])),
-    readCheckRunId: jest.fn(() => null),
-    readFirstRegistryValidationArtifactsForSuiteRuns: jest.fn(() => Promise.resolve(null)),
-    readPullRequestHtmlUrl: jest.fn(() => Promise.resolve('')),
-    collapseBotCommentsByPrefix: jest.fn(() => Promise.resolve()),
-    postCheckSuiteRegistryValidationComments: jest.fn(() => Promise.resolve()),
-    maybeHandleDefaultBranchCheckSuiteSuccess: jest.fn(() => Promise.resolve()),
-    tryAutoMerge: jest.fn(() => Promise.resolve()),
-    maybeApprovePendingWorkflowRunsForPrNumbers: jest.fn(() => Promise.resolve(false)),
-    handleBlockingRegistryHeadConclusion: jest.fn(() => Promise.resolve(false)),
-    isBlockingCheckConclusion: jest.fn((): boolean => false),
-    readDefaultBranchFromPayload: jest.fn((): string => 'main'),
-    getStaticConfig: jest.fn(() => Promise.resolve({})),
-    log: jest.fn(),
+    readCheckRunFromPayload: vi.fn(() => null),
+    readCheckSuiteFromPayload: vi.fn(() => null),
+    readRepoInfoFromPayload: vi.fn(() => ({ owner: 'org', repo: 'repo' })),
+    readCheckRunPrNumbers: vi.fn((): number[] => []),
+    resolveCheckSuitePrNumbers: vi.fn((): Promise<number[]> => Promise.resolve([])),
+    readCheckSuiteId: vi.fn(() => null),
+    listAllCheckRunsForSuite: vi.fn(() => Promise.resolve([])),
+    readCheckRunId: vi.fn(() => null),
+    readFirstRegistryValidationArtifactsForSuiteRuns: vi.fn(() => Promise.resolve(null)),
+    readPullRequestHtmlUrl: vi.fn(() => Promise.resolve('')),
+    collapseBotCommentsByPrefix: vi.fn(() => Promise.resolve()),
+    postCheckSuiteRegistryValidationComments: vi.fn(() => Promise.resolve()),
+    maybeHandleDefaultBranchCheckSuiteSuccess: vi.fn(() => Promise.resolve()),
+    tryAutoMerge: vi.fn(() => Promise.resolve()),
+    maybeApprovePendingWorkflowRunsForPrNumbers: vi.fn(() => Promise.resolve(false)),
+    handleBlockingRegistryHeadConclusion: vi.fn(() => Promise.resolve(false)),
+    isBlockingCheckConclusion: vi.fn((): boolean => false),
+    readDefaultBranchFromPayload: vi.fn((): string => 'main'),
+    getStaticConfig: vi.fn(() => Promise.resolve({})),
+    log: vi.fn(),
     isDebugEnabled: false,
     ...overrides,
   } as any;
@@ -1460,15 +1458,13 @@ describe('handleCheckCompletedEvent — check_run.completed with no PR mapping',
   test('skips tryAutoMerge and logs deferred when prNumbers is empty — cross-repo PR scenario', async () => {
     const run = { id: 1, status: 'completed', conclusion: 'success', head_sha: 'sha-no-pr', pull_requests: [] };
     const cbs = mkCheckCompletedCallbacks({
-      readCheckRunFromPayload: jest.fn(() => run),
-      readCheckRunPrNumbers: jest.fn((): number[] => []),
+      readCheckRunFromPayload: vi.fn(() => run),
+      readCheckRunPrNumbers: vi.fn((): number[] => []),
     });
     await handleCheckCompletedEvent({}, mkCheckRunPayload('sha-no-pr'), 'check_run.completed', cbs);
     expect(cbs.tryAutoMerge).not.toHaveBeenCalled();
     expect(
-      (cbs.log as jest.Mock).mock.calls.some(
-        ([, , , msg]: unknown[]) => msg === 'checks:check-run-deferred-no-pr-mapping'
-      )
+      (cbs.log as Mock).mock.calls.some(([, , , msg]: unknown[]) => msg === 'checks:check-run-deferred-no-pr-mapping')
     ).toBe(true);
   });
 
@@ -1481,8 +1477,8 @@ describe('handleCheckCompletedEvent — check_run.completed with no PR mapping',
       pull_requests: [{ number: 42 }],
     };
     const cbs = mkCheckCompletedCallbacks({
-      readCheckRunFromPayload: jest.fn(() => run),
-      readCheckRunPrNumbers: jest.fn((): number[] => [42]),
+      readCheckRunFromPayload: vi.fn(() => run),
+      readCheckRunPrNumbers: vi.fn((): number[] => [42]),
     });
     await handleCheckCompletedEvent({}, mkCheckRunPayload('sha-with-pr'), 'check_run.completed', cbs);
     expect(cbs.tryAutoMerge).toHaveBeenCalledWith({}, { owner: 'org', repo: 'repo' }, 'sha-with-pr');
@@ -1491,8 +1487,8 @@ describe('handleCheckCompletedEvent — check_run.completed with no PR mapping',
   test('check_suite.completed with prNumbers still calls tryAutoMerge', async () => {
     const suite = { id: 9, status: 'completed', conclusion: 'success', head_sha: 'sha-suite', head_branch: 'main' };
     const cbs = mkCheckCompletedCallbacks({
-      readCheckSuiteFromPayload: jest.fn(() => suite),
-      resolveCheckSuitePrNumbers: jest.fn((): Promise<number[]> => Promise.resolve([599])),
+      readCheckSuiteFromPayload: vi.fn(() => suite),
+      resolveCheckSuitePrNumbers: vi.fn((): Promise<number[]> => Promise.resolve([599])),
     });
     const payload = {
       action: 'completed',

@@ -1,11 +1,11 @@
+import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
+import { toStringTrim } from '../domain/login-utils.js';
 import {
   buildDetectedIssuesBody,
   normalizeMachineReadableIssues,
   singleMachineReadableIssue,
 } from '../domain/machine-readable.js';
-import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
 import { readRoutingLockExpected } from '../domain/routing-lock-marker.js';
-import { toStringTrim } from '../domain/login-utils.js';
 
 type IssueParamsBase = { owner: string; repo: string; issue_number: number };
 

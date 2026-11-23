@@ -1,6 +1,6 @@
 import { postOnce } from '../comments.js';
 import { buildAutoApprovalReviewBody } from '../domain/approval-comment-rendering.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
 
 type RepoInfo = { owner: string; repo: string };
 type PullRequestLike = {

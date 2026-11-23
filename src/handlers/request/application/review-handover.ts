@@ -1,5 +1,5 @@
-import { setStateLabel, ensureAssigneesOnce } from '../state.js';
 import { postOnce } from '../comments.js';
+import { ensureAssigneesOnce, setStateLabel } from '../state.js';
 
 type HandoverContext = Parameters<typeof postOnce>[0] &
   Parameters<typeof setStateLabel>[0] &

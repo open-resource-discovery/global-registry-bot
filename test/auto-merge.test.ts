@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { vi } from 'vitest';
 import { tryEnableAutoMerge, tryMergeIfGreen } from '../src/lib/auto-merge.js';
 
 interface OpenPr {
@@ -56,30 +56,30 @@ type LogWarnFn = (obj: unknown, msg: string) => void;
 function mkContext() {
   return {
     octokit: {
-      graphql: jest.fn<GraphqlFn>(() => Promise.resolve({})),
+      graphql: vi.fn<GraphqlFn>(() => Promise.resolve({})),
 
       rest: {
         pulls: {
-          get: jest.fn<PullsGetFn>(() => Promise.resolve({ data: mkOpenPr() })),
-          merge: jest.fn<PullsMergeFn>(() => Promise.resolve({})),
-          listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
+          get: vi.fn<PullsGetFn>(() => Promise.resolve({ data: mkOpenPr() })),
+          merge: vi.fn<PullsMergeFn>(() => Promise.resolve({})),
+          listReviews: vi.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
         },
 
         repos: {
-          getCombinedStatusForRef: jest.fn<CombinedStatusFn>(() =>
+          getCombinedStatusForRef: vi.fn<CombinedStatusFn>(() =>
             Promise.resolve({ data: { state: 'success', total_count: 0 } })
           ),
         },
 
         checks: {
-          listForRef: jest.fn<ChecksListForRefFn>(() => Promise.resolve({ data: { total_count: 0, check_runs: [] } })),
+          listForRef: vi.fn<ChecksListForRefFn>(() => Promise.resolve({ data: { total_count: 0, check_runs: [] } })),
         },
       },
     },
 
     log: {
-      info: jest.fn<LogInfoFn>(() => undefined),
-      warn: jest.fn<LogWarnFn>(() => undefined),
+      info: vi.fn<LogInfoFn>(() => undefined),
+      warn: vi.fn<LogWarnFn>(() => undefined),
     },
   };
 }

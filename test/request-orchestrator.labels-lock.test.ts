@@ -1,6 +1,6 @@
-/* eslint-disable require-await */
-import { beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import type { Probot } from 'probot';
+/* eslint-disable require-await */
+import { beforeAll, beforeEach, describe, expect, type MockedFunction, test, vi } from 'vitest';
 
 type IssueParams = { owner: string; repo: string; issue_number: number };
 
@@ -19,22 +19,22 @@ type SenderLike = { type?: string | null; login?: string | null };
 
 type LoggerFn = (obj: unknown, msg?: string) => void;
 type LoggerLike = {
-  debug: jest.MockedFunction<LoggerFn>;
-  info: jest.MockedFunction<LoggerFn>;
-  warn: jest.MockedFunction<LoggerFn>;
-  error: jest.MockedFunction<LoggerFn>;
+  debug: MockedFunction<LoggerFn>;
+  info: MockedFunction<LoggerFn>;
+  warn: MockedFunction<LoggerFn>;
+  error: MockedFunction<LoggerFn>;
 };
 
 type OctokitLike = {
   rest: {
     issues: {
-      get: jest.MockedFunction<(p: IssueParams) => Promise<{ data: IssueLike }>>;
-      addLabels: jest.MockedFunction<(p: IssueParams & { labels: string[] }) => Promise<void>>;
-      removeLabel: jest.MockedFunction<(p: IssueParams & { name: string }) => Promise<void>>;
-      update: jest.MockedFunction<(p: IssueParams & { title: string }) => Promise<void>>;
+      get: MockedFunction<(p: IssueParams) => Promise<{ data: IssueLike }>>;
+      addLabels: MockedFunction<(p: IssueParams & { labels: string[] }) => Promise<void>>;
+      removeLabel: MockedFunction<(p: IssueParams & { name: string }) => Promise<void>>;
+      update: MockedFunction<(p: IssueParams & { title: string }) => Promise<void>>;
     };
     pulls: {
-      list: jest.MockedFunction<
+      list: MockedFunction<
         (p: {
           owner: string;
           repo: string;
@@ -43,15 +43,13 @@ type OctokitLike = {
           page: number;
         }) => Promise<{ data: unknown[] }>
       >;
-      update: jest.MockedFunction<
-        (p: { owner: string; repo: string; pull_number: number; state: string }) => Promise<void>
-      >;
+      update: MockedFunction<(p: { owner: string; repo: string; pull_number: number; state: string }) => Promise<void>>;
     };
     git: {
-      deleteRef: jest.MockedFunction<(p: { owner: string; repo: string; ref: string }) => Promise<void>>;
+      deleteRef: MockedFunction<(p: { owner: string; repo: string; ref: string }) => Promise<void>>;
     };
     repos: {
-      getContent: jest.MockedFunction<(p: { owner: string; repo: string; path: string }) => Promise<void>>;
+      getContent: MockedFunction<(p: { owner: string; repo: string; path: string }) => Promise<void>>;
     };
   };
 };
@@ -117,21 +115,21 @@ type Handler = (ctx: unknown) => Promise<void>;
 type AppLike = {
   on: (events: string | string[], handler: Handler) => void;
   log: {
-    warn: jest.MockedFunction<(obj: unknown, msg?: string) => void>;
+    warn: MockedFunction<(obj: unknown, msg?: string) => void>;
   };
 };
 
 // Mocks
-const setStateLabel = jest.fn() as unknown as jest.MockedFunction<SetStateLabelFn>;
-const ensureAssigneesOnce = jest.fn() as unknown as jest.MockedFunction<EnsureAssigneesOnceFn>;
-const postOnce = jest.fn() as unknown as jest.MockedFunction<PostOnceFn>;
-const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
-const loadTemplate = jest.fn() as unknown as jest.MockedFunction<LoadTemplateFn>;
-const parseForm = jest.fn() as unknown as jest.MockedFunction<ParseFormFn>;
+const setStateLabel = vi.fn() as unknown as MockedFunction<SetStateLabelFn>;
+const ensureAssigneesOnce = vi.fn() as unknown as MockedFunction<EnsureAssigneesOnceFn>;
+const postOnce = vi.fn() as unknown as MockedFunction<PostOnceFn>;
+const collapseBotCommentsByPrefix = vi.fn() as unknown as MockedFunction<CollapseBotCommentsByPrefix>;
+const loadTemplate = vi.fn() as unknown as MockedFunction<LoadTemplateFn>;
+const parseForm = vi.fn() as unknown as MockedFunction<ParseFormFn>;
 
 // Not used directly in these tests, but request handler imports them
-const runApprovalHook = jest.fn(async () => false);
-const validateRequestIssue = jest.fn() as unknown as jest.MockedFunction<
+const runApprovalHook = vi.fn(async () => false);
+const validateRequestIssue = vi.fn() as unknown as MockedFunction<
   (
     context: unknown,
     params: IssueParams,
@@ -148,18 +146,18 @@ const validateRequestIssue = jest.fn() as unknown as jest.MockedFunction<
     nsType: string;
   }>
 >;
-const calcSnapshotHash = jest.fn() as unknown as jest.MockedFunction<
+const calcSnapshotHash = vi.fn() as unknown as MockedFunction<
   (formData: Record<string, string>, template: TemplateLike, rawBody: string) => string
 >;
-const extractHashFromPrBody = jest.fn() as unknown as jest.MockedFunction<(body: string) => string>;
-const findOpenIssuePrs = jest.fn() as unknown as jest.MockedFunction<
+const extractHashFromPrBody = vi.fn() as unknown as MockedFunction<(body: string) => string>;
+const findOpenIssuePrs = vi.fn() as unknown as MockedFunction<
   (
     context: unknown,
     repo: { owner: string; repo: string },
     issueNumber: number
   ) => Promise<{ number: number; body?: string | null; head: { ref: string; sha: string } }[]>
 >;
-const createRequestPr = jest.fn() as unknown as jest.MockedFunction<
+const createRequestPr = vi.fn() as unknown as MockedFunction<
   (
     context: unknown,
     repo: { owner: string; repo: string },
@@ -168,7 +166,7 @@ const createRequestPr = jest.fn() as unknown as jest.MockedFunction<
     options?: { template?: TemplateLike }
   ) => Promise<{ number: number }>
 >;
-const tryMergeIfGreen = jest.fn() as unknown as jest.MockedFunction<
+const tryMergeIfGreen = vi.fn() as unknown as MockedFunction<
   (
     context: unknown,
     args: {
@@ -180,13 +178,13 @@ const tryMergeIfGreen = jest.fn() as unknown as jest.MockedFunction<
     }
   ) => Promise<void>
 >;
-const loadStaticConfig = jest.fn() as unknown as jest.MockedFunction<
+const loadStaticConfig = vi.fn() as unknown as MockedFunction<
   (
     context: unknown,
     opts: { validate: boolean; updateIssue: boolean }
   ) => Promise<{ config: StaticConfig; hooks: unknown; hooksSource?: string }>
 >;
-const getDocLinksFromConfig = jest.fn() as unknown as jest.MockedFunction<(cfg: StaticConfig) => string>;
+const getDocLinksFromConfig = vi.fn() as unknown as MockedFunction<(cfg: StaticConfig) => string>;
 
 const TEST_WORKFLOW_LABELS = {
   authorAction: 'Requester Action',
@@ -215,46 +213,46 @@ const DEFAULT_CONFIG: StaticConfig = withWorkflowLabels({
   requests: {},
 });
 
-jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
+vi.doMock('../src/handlers/request/state.js', () => ({
   setStateLabel,
   ensureAssigneesOnce,
 }));
 
-jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
+vi.doMock('../src/handlers/request/comments.js', () => ({
   postOnce,
   collapseBotCommentsByPrefix,
 }));
 
-jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+vi.doMock('../src/handlers/request/template.js', () => ({
   loadTemplate,
   parseForm,
 }));
 
-jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
+vi.doMock('../src/handlers/request/validation/run.js', () => ({
   validateRequestIssue,
   runApprovalHook,
 }));
 
-jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
+vi.doMock('../src/handlers/request/pr/snapshot.js', () => ({
   calcSnapshotHash,
   extractHashFromPrBody,
   findOpenIssuePrs,
 }));
 
-jest.unstable_mockModule('../src/handlers/request/pr/create.js', () => ({
+vi.doMock('../src/handlers/request/pr/create.js', () => ({
   createRequestPr,
 }));
 
-jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
+vi.doMock('../src/lib/auto-merge.js', () => ({
   tryMergeIfGreen,
 }));
 
-jest.unstable_mockModule('../src/config.js', () => ({
+vi.doMock('../src/config.js', () => ({
   loadStaticConfig,
   DEFAULT_CONFIG,
 }));
 
-jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
+vi.doMock('../src/handlers/request/constants.js', () => ({
   getDocLinksFromConfig,
 }));
 
@@ -275,10 +273,10 @@ const DEFAULT_TEMPLATE: TemplateLike = {
 
 function mkLogger(): LoggerLike {
   return {
-    debug: jest.fn(),
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
   };
 }
 
@@ -286,20 +284,20 @@ function mkOctokit(): OctokitLike {
   return {
     rest: {
       issues: {
-        get: jest.fn((_p: IssueParams) => Promise.resolve({ data: { number: 1, labels: [] } })),
-        addLabels: jest.fn((_p: IssueParams & { labels: string[] }) => Promise.resolve()),
-        removeLabel: jest.fn((_p: IssueParams & { name: string }) => Promise.resolve()),
-        update: jest.fn((_p: IssueParams & { title: string }) => Promise.resolve()),
+        get: vi.fn((_p: IssueParams) => Promise.resolve({ data: { number: 1, labels: [] } })),
+        addLabels: vi.fn((_p: IssueParams & { labels: string[] }) => Promise.resolve()),
+        removeLabel: vi.fn((_p: IssueParams & { name: string }) => Promise.resolve()),
+        update: vi.fn((_p: IssueParams & { title: string }) => Promise.resolve()),
       },
       pulls: {
-        list: jest.fn((_p) => Promise.resolve({ data: [] })),
-        update: jest.fn((_p) => Promise.resolve()),
+        list: vi.fn((_p) => Promise.resolve({ data: [] })),
+        update: vi.fn((_p) => Promise.resolve()),
       },
       git: {
-        deleteRef: jest.fn((_p) => Promise.resolve()),
+        deleteRef: vi.fn((_p) => Promise.resolve()),
       },
       repos: {
-        getContent: jest.fn((_p) => Promise.resolve()),
+        getContent: vi.fn((_p) => Promise.resolve()),
       },
     },
   };
@@ -309,7 +307,7 @@ function mkApp(): { app: AppLike; handlers: Record<string, Handler[]> } {
   const handlers: Record<string, Handler[]> = {};
 
   const app: AppLike = {
-    log: { warn: jest.fn() },
+    log: { warn: vi.fn() },
     on: (events: string | string[], handler: Handler) => {
       const list = Array.isArray(events) ? events : [events];
       for (const e of list) {
@@ -371,7 +369,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  vi.clearAllMocks();
 
   // Defaults: make it a request issue so labeled/unlabeled handler continues.
   loadTemplate.mockResolvedValue(DEFAULT_TEMPLATE);
@@ -1178,7 +1176,7 @@ describe('request handler label guards (workflow-label-lock + routing label lock
       config: cfg,
       octokit,
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Existing exception retained during tooling migration.
     (ctx.payload as any).label = 42;
 
     await handlers['issues.labeled']?.[0]?.(ctx);

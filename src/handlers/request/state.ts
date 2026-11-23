@@ -1,10 +1,10 @@
+import { getApproversFromConfig, getStateLabelsFromConfig } from './constants.js';
 import {
   createGitHubIssueAssigneesGateway,
   createGitHubIssueLabelsGateway,
   type GitHubIssueAssigneesGatewayContext,
   type GitHubIssueLabelsGatewayContext,
 } from './infrastructure/github-gateway.js';
-import { getStateLabelsFromConfig, getApproversFromConfig } from './constants.js';
 
 type LabelLike = string | { name?: string | null };
 

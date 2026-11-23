@@ -1,4 +1,4 @@
-import type { Probot, Context } from 'probot';
+import type { Context, Probot } from 'probot';
 import { loadStaticConfig } from '../../config.js';
 
 const DBG = process.env.DEBUG_NS === '1';

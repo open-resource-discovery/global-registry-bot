@@ -1,6 +1,6 @@
-import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
-import { normalizeApprovalDecision, type ApprovalDecision } from '../domain/approval-decision.js';
+import { type ApprovalDecision, normalizeApprovalDecision } from '../domain/approval-decision.js';
 import { getUnknownManualApprovers } from '../domain/approval-policy.js';
+import { normalizeLogin, toStringTrim, uniqLogins } from '../domain/login-utils.js';
 
 type RepoInfoBase = {
   owner: string;

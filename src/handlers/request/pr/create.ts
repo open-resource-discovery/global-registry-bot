@@ -1,21 +1,21 @@
 import * as jsYamlModule from 'js-yaml';
-import { calcSnapshotHash as calcSnapshotHashRaw, SNAPSHOT_HASH_MARKER_KEY } from './snapshot.js';
-import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
-import { tryEnableAutoMerge as tryEnableAutoMergeRaw } from '../../../lib/auto-merge.js';
-import { loadTemplate as loadTemplateRaw } from '../template.js';
 import { loadStaticConfig as loadStaticConfigRaw } from '../../../config.js';
+import { tryEnableAutoMerge as tryEnableAutoMergeRaw } from '../../../lib/auto-merge.js';
+import { readIssueBodyForProcessing } from '../domain/issue-body-processing.js';
+import { loadTemplate as loadTemplateRaw } from '../template.js';
 import {
-  resolvePrimaryIdFromTemplate as resolvePrimaryIdFromTemplateRaw,
   projectForSchema as projectForSchemaRaw,
+  resolvePrimaryIdFromTemplate as resolvePrimaryIdFromTemplateRaw,
 } from '../validation/run.js';
 import {
-  inspectExistingBranch,
-  compareFileOnBranch,
-  writeFileWithReconciliation,
-  createPrWithReconciliation,
   type ContextForReconciliation,
+  compareFileOnBranch,
+  createPrWithReconciliation,
   type DelayFn,
+  inspectExistingBranch,
+  writeFileWithReconciliation,
 } from './reconciliation.js';
+import { calcSnapshotHash as calcSnapshotHashRaw, SNAPSHOT_HASH_MARKER_KEY } from './snapshot.js';
 
 // All root/type/title/labels must come from user config or template meta.
 
@@ -390,10 +390,10 @@ function orderCandidateForYaml(candidate: JsonValue): JsonValue {
 
   const out: JsonObject = {};
   for (const k of preferred) {
-    if (Object.prototype.hasOwnProperty.call(candidate, k)) out[k] = candidate[k];
+    if (Object.hasOwn(candidate, k)) out[k] = candidate[k];
   }
   for (const k of Object.keys(candidate)) {
-    if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = candidate[k];
+    if (!Object.hasOwn(out, k)) out[k] = candidate[k];
   }
   return out;
 }
@@ -462,7 +462,7 @@ function getTypeSubschema(schema: JsonValue, type: string): JsonValue | null {
   if (!isPlainObject(schema)) return null;
 
   const defs = schema['$defs'];
-  if (isPlainObject(defs) && Object.prototype.hasOwnProperty.call(defs, type)) {
+  if (isPlainObject(defs) && Object.hasOwn(defs, type)) {
     return defs[type] ?? null;
   }
 
@@ -489,10 +489,10 @@ function stripDefaultsBySchema(node: JsonValue, subschema: JsonValue): void {
   const props = isPlainObject(subschema['properties']) ? (subschema['properties'] as JsonObject) : {};
 
   for (const [k, defSchemaRaw] of Object.entries(props)) {
-    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    if (!Object.hasOwn(node, k)) continue;
 
     const defSchema = isPlainObject(defSchemaRaw) ? defSchemaRaw : null;
-    if (defSchema && Object.prototype.hasOwnProperty.call(defSchema, 'default')) {
+    if (defSchema && Object.hasOwn(defSchema, 'default')) {
       if (node[k] === defSchema['default']) delete node[k];
     }
 
@@ -526,8 +526,8 @@ function pickContactProp(schemaObj: JsonValue): 'contacts' | 'contact' | '' {
     isPlainObject(schemaObj) && isPlainObject(schemaObj['properties']) ? (schemaObj['properties'] as JsonObject) : null;
   if (!props) return 'contact';
 
-  if (Object.prototype.hasOwnProperty.call(props, 'contacts') && props['contacts'] !== false) return 'contacts';
-  if (Object.prototype.hasOwnProperty.call(props, 'contact') && props['contact'] !== false) return 'contact';
+  if (Object.hasOwn(props, 'contacts') && props['contacts'] !== false) return 'contacts';
+  if (Object.hasOwn(props, 'contact') && props['contact'] !== false) return 'contact';
   return ''; // schema forbids both
 }
 
@@ -860,7 +860,7 @@ export async function createRequestPr(
           ? (productSub.properties as JsonObject)
           : null;
 
-      if (!props || (Object.prototype.hasOwnProperty.call(props, 'parent') && props.parent !== false)) {
+      if (!props || (Object.hasOwn(props, 'parent') && props.parent !== false)) {
         candidate.parent = `sap:product:${parentId}:`;
       }
     }
@@ -1110,7 +1110,7 @@ export async function createRequestPr(
         : [];
 
     const isRequired = new Set([...reqRoot, ...reqType]).has(contactProp);
-    const hasProp = Object.prototype.hasOwnProperty.call(candidate, contactProp);
+    const hasProp = Object.hasOwn(candidate, contactProp);
 
     if (minItems && (hasContactField || isRequired || hasProp)) {
       const arr = (candidate as Record<string, unknown>)[contactProp];

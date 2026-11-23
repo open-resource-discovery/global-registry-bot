@@ -1,8 +1,8 @@
-import YAML from 'yaml';
-import Ajv2020 from 'ajv/dist/2020.js';
-import ajvErrors from 'ajv-errors';
 import { createHash } from 'node:crypto';
 import type { ErrorObject, ValidateFunction } from 'ajv';
+import Ajv2020 from 'ajv/dist/2020.js';
+import ajvErrors from 'ajv-errors';
+import YAML from 'yaml';
 import { DEFAULT_CONFIG as DEFAULT_CONFIG_RAW, STATIC_CONFIG_SCHEMA } from './handlers/request/constants.js';
 import { asError, getHttpStatus, isPlainObject } from './handlers/request/infrastructure/errors.js';
 
@@ -210,7 +210,9 @@ export class StaticConfigMissingError extends Error {
 }
 
 const CONFIG_VALIDATOR: ValidateFunction<unknown> = ((): ValidateFunction<unknown> => {
-  const ajvCtor = Ajv2020 as unknown as new (opts?: Record<string, unknown>) => {
+  const ajvCtor = Ajv2020 as unknown as new (
+    opts?: Record<string, unknown>
+  ) => {
     compile: (schema: unknown) => ValidateFunction<unknown>;
   };
   const ajv = new ajvCtor({ allErrors: true, strict: false });

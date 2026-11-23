@@ -1,8 +1,9 @@
 /* eslint-disable no-console */
-import YAML from 'yaml';
-import { readFile, appendFile } from 'node:fs/promises';
+
 import { execFile } from 'node:child_process';
+import { appendFile, readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import YAML from 'yaml';
 
 const CONFIG_BASE_DIR = '.github/registry-bot';
 
@@ -141,7 +142,7 @@ async function loadConfig(): Promise<LoadedConfig> {
     }
 
     const approversRaw = rc0['approvers'];
-    let approvers: string[] | null | undefined = undefined;
+    let approvers: string[] | null | undefined;
 
     if (approversRaw === null) approvers = null;
     else if (approversRaw !== undefined) {

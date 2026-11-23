@@ -1,8 +1,8 @@
 import { toStringTrim } from '../domain/login-utils.js';
 import {
   buildMachineReadableMetadataBlock,
-  normalizeMachineReadableIssues,
   type MachineReadableIssue,
+  normalizeMachineReadableIssues,
 } from '../domain/machine-readable.js';
 import {
   buildRegistryValidationAggregateBody,
@@ -130,9 +130,7 @@ export async function loadSchemaFieldAliasLookup<ContextType, RepoInfoType exten
         const lookup = new Map<string, string>();
         collectSchemaFieldAliases(parsed, lookup);
         return lookup;
-      } catch {
-        continue;
-      }
+      } catch {}
     }
 
     return new Map<string, string>();

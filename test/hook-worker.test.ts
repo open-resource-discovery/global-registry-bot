@@ -1,8 +1,8 @@
-import { jest } from '@jest/globals';
-import hookWorker from '../src/handlers/request/validation/hook-worker.js';
+import { type MockInstance, vi } from 'vitest';
 import type { HookWorkerTask } from '../src/handlers/request/validation/hook-pool.js';
+import hookWorker from '../src/handlers/request/validation/hook-worker.js';
 
-let fetchMock: jest.SpiedFunction<typeof fetch>;
+let fetchMock: MockInstance<typeof fetch>;
 let sequence = 0;
 
 function mkTask(overrides: Partial<HookWorkerTask> & Pick<HookWorkerTask, 'code'>): HookWorkerTask {
@@ -18,18 +18,18 @@ function mkTask(overrides: Partial<HookWorkerTask> & Pick<HookWorkerTask, 'code'
 }
 
 beforeEach(() => {
-  jest.replaceProperty(process, 'env', { ...process.env, REGISTRY_BOT_ENABLE_JS_HOOKS: 'true' });
-  fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok'));
-  jest.spyOn(process, 'exit').mockImplementation(() => {
+  vi.stubEnv('REGISTRY_BOT_ENABLE_JS_HOOKS', 'true');
+  fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok'));
+  vi.spyOn(process, 'exit').mockImplementation(() => {
     throw new Error('Unexpected process.exit');
   });
-  jest.spyOn(process, 'kill').mockImplementation(() => {
+  vi.spyOn(process, 'kill').mockImplementation(() => {
     throw new Error('Unexpected process.kill');
   });
 });
 
 afterEach(() => {
-  jest.restoreAllMocks();
+  vi.restoreAllMocks();
 });
 
 test('returns found=false and restores fetch when the hook is missing', async () => {

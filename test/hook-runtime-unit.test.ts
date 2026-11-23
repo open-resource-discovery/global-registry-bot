@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, test, expect, jest, beforeAll, beforeEach } from '@jest/globals';
+import { beforeAll, beforeEach, describe, expect, type MockedFunction, test, vi } from 'vitest';
 import type { HookWorkerResult } from '../src/handlers/request/validation/hook-pool.js';
 
 // ── shared worker mock ────────────────────────────────────────────────────────
@@ -7,7 +7,7 @@ import type { HookWorkerResult } from '../src/handlers/request/validation/hook-p
 let nextWorkerResults: HookWorkerResult[] = [];
 let workerCallIndex = 0;
 
-jest.unstable_mockModule('../src/handlers/request/validation/hook-pool.js', () => ({
+vi.doMock('../src/handlers/request/validation/hook-pool.js', () => ({
   // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   runHookInWorker: () => {
     const res = nextWorkerResults[workerCallIndex] ?? { found: false, value: null, logs: [] };
@@ -44,10 +44,10 @@ const repoInfo = { owner: 'org', repo: 'repo' };
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function mkLog() {
   return {
-    debug: jest.fn() as jest.MockedFunction<(obj: unknown, msg?: string) => void>,
-    info: jest.fn() as jest.MockedFunction<(obj: unknown, msg?: string) => void>,
-    warn: jest.fn() as jest.MockedFunction<(obj: unknown, msg?: string) => void>,
-    error: jest.fn() as jest.MockedFunction<(obj: unknown, msg?: string) => void>,
+    debug: vi.fn() as MockedFunction<(obj: unknown, msg?: string) => void>,
+    info: vi.fn() as MockedFunction<(obj: unknown, msg?: string) => void>,
+    warn: vi.fn() as MockedFunction<(obj: unknown, msg?: string) => void>,
+    error: vi.fn() as MockedFunction<(obj: unknown, msg?: string) => void>,
   };
 }
 

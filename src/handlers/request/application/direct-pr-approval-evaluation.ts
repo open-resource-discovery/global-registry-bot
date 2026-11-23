@@ -1,12 +1,12 @@
 import type { ApprovalDecision } from '../domain/approval-decision.js';
 import { toStringTrim } from '../domain/login-utils.js';
 import {
-  evaluateChangedResourceApproval,
   type DirectPrChangedResourceApprovalCallbacks,
+  evaluateChangedResourceApproval,
 } from './direct-pr-changed-resource-approval.js';
 import {
-  resolvePullRequestRequestAuthorId,
   type PullRequestAuthorResolutionContext,
+  resolvePullRequestRequestAuthorId,
 } from './pull-request-author-resolution.js';
 
 type RepoInfo = { owner: string; repo: string };

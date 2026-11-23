@@ -1,12 +1,12 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
-/* eslint-disable require-await */
-import { describe, it, expect, jest } from '@jest/globals';
 import Ajv2020 from 'ajv/dist/2020.js';
 import ajvErrors from 'ajv-errors';
-import { validateRequestIssue } from '../src/handlers/request/validation/run.js';
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
+/* eslint-disable require-await */
+import { describe, expect, it, type Mock, type MockedFunction, vi } from 'vitest';
 import { STATIC_CONFIG_SCHEMA } from '../src/handlers/request/constants.js';
+import { validateRequestIssue } from '../src/handlers/request/validation/run.js';
 
-type MockedAsync<Args extends unknown[], Result> = jest.MockedFunction<(...args: Args) => Promise<Result>>;
+type MockedAsync<Args extends unknown[], Result> = MockedFunction<(...args: Args) => Promise<Result>>;
 
 const b64json = (obj: unknown): string => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
 
@@ -18,13 +18,13 @@ function httpErr(status: number, msg = 'http'): Error & { status: number } {
 
 function mkIssuesStub() {
   return {
-    get: jest.fn(async () => ({ data: {} })),
-    listForRepo: jest.fn(async () => ({ data: [] })),
-    update: jest.fn(async () => ({})),
-    create: jest.fn(async () => ({})),
-    createComment: jest.fn(async () => ({})),
-    addLabels: jest.fn(async () => ({})),
-    removeLabel: jest.fn(async () => ({})),
+    get: vi.fn(async () => ({ data: {} })),
+    listForRepo: vi.fn(async () => ({ data: [] })),
+    update: vi.fn(async () => ({})),
+    create: vi.fn(async () => ({})),
+    createComment: vi.fn(async () => ({})),
+    addLabels: vi.fn(async () => ({})),
+    removeLabel: vi.fn(async () => ({})),
   };
 }
 
@@ -32,22 +32,22 @@ async function loadSubject(opts: { dbg?: '0' | '1'; mockYaml?: boolean } = {}) {
   const prevDbg = process.env.DEBUG_NS;
   process.env.DEBUG_NS = opts.dbg ?? '0';
 
-  jest.resetModules();
+  vi.resetModules();
 
   // ---- typed mocks ----
-  const readFile = jest.fn() as unknown as MockedAsync<[string, string], string>;
+  const readFile = vi.fn() as unknown as MockedAsync<[string, string], string>;
 
-  const loadStaticConfig = jest.fn() as unknown as MockedAsync<
+  const loadStaticConfig = vi.fn() as unknown as MockedAsync<
     [unknown, unknown],
     { config: any; hooks: any; hooksSource?: string | null }
   >;
 
-  const loadSecrets = jest.fn(() => ({ HOOK_SECRETS: { TEST: '1' } })) as unknown as jest.Mock;
+  const loadSecrets = vi.fn(() => ({ HOOK_SECRETS: { TEST: '1' } })) as unknown as Mock;
 
-  const parseForm = jest.fn();
-  const loadTemplate = jest.fn() as unknown as MockedAsync<[unknown], unknown>;
+  const parseForm = vi.fn();
+  const loadTemplate = vi.fn() as unknown as MockedAsync<[unknown], unknown>;
 
-  const createHookApi = jest.fn(() => ({ mocked: true })) as unknown as jest.Mock;
+  const createHookApi = vi.fn(() => ({ mocked: true })) as unknown as Mock;
 
   type HookWorkerTask = {
     owner: string;
@@ -67,13 +67,10 @@ async function loadSubject(opts: { dbg?: '0' | '1'; mockYaml?: boolean } = {}) {
     logs: { level: 'debug' | 'info' | 'warn' | 'error'; obj: unknown; msg?: string }[];
   };
 
-  const runHookInWorker = jest.fn() as unknown as MockedAsync<
-    [HookWorkerTask, { timeoutMs: number }],
-    HookWorkerResult
-  >;
+  const runHookInWorker = vi.fn() as unknown as MockedAsync<[HookWorkerTask, { timeoutMs: number }], HookWorkerResult>;
 
   if (opts.mockYaml) {
-    await jest.unstable_mockModule('yaml', () => ({
+    await vi.doMock('yaml', () => ({
       stringify: (v: unknown) => JSON.stringify(v),
       default: {
         parse: (src: string) => {
@@ -84,18 +81,18 @@ async function loadSubject(opts: { dbg?: '0' | '1'; mockYaml?: boolean } = {}) {
     }));
   }
 
-  await jest.unstable_mockModule('node:fs/promises', () => ({ readFile }));
-  await jest.unstable_mockModule('../src/config.js', () => ({ loadStaticConfig }));
-  await jest.unstable_mockModule('../src/utils/secrets.js', () => ({ loadSecrets }));
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('node:fs/promises', () => ({ readFile }));
+  await vi.doMock('../src/config.js', () => ({ loadStaticConfig }));
+  await vi.doMock('../src/utils/secrets.js', () => ({ loadSecrets }));
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     parseForm,
     loadTemplate,
   }));
-  await jest.unstable_mockModule('../src/handlers/request/validation/hook-api.js', () => ({
+  await vi.doMock('../src/handlers/request/validation/hook-api.js', () => ({
     createHookApi,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/validation/hook-pool.js', () => ({
+  await vi.doMock('../src/handlers/request/validation/hook-pool.js', () => ({
     runHookInWorker,
   }));
 
@@ -141,31 +138,31 @@ describe('validation/run.ts extra coverage', () => {
         // YAML parsing branch: itemsType === 'object'
         correlationIdTypes: { type: 'array', items: { type: 'object' } },
 
-        enabled: { 'type': 'boolean', 'x-form-field': 'enabled' },
-        count: { 'type': 'integer', 'x-form-field': 'count' },
+        enabled: { type: 'boolean', 'x-form-field': 'enabled' },
+        count: { type: 'integer', 'x-form-field': 'count' },
 
         // array raw for string type should join with newline
-        notes: { 'type': 'string', 'x-form-field': 'notes' },
+        notes: { type: 'string', 'x-form-field': 'notes' },
 
         // schema-driven object parse (JSON)
-        meta: { 'type': 'object', 'x-form-field': 'meta' },
+        meta: { type: 'object', 'x-form-field': 'meta' },
 
         // schema-driven array from string list
-        tags: { 'type': 'array', 'items': { type: 'string' }, 'x-form-field': 'tags' },
+        tags: { type: 'array', items: { type: 'string' }, 'x-form-field': 'tags' },
       },
     };
 
     const form = {
-      'namespace': 'acme.system',
+      namespace: 'acme.system',
       'open-system': 'yes',
-      'contact': 'a@b\nc@d',
-      'correlationIds': 'id1, id2, id1',
-      'correlationIdTypes': '- kind: a\n  value: b\n',
-      'enabled': 'yes',
-      'count': '42',
-      'notes': ['line1', 'line2'] as any,
-      'meta': '{"a": 1}',
-      'tags': 'x\ny',
+      contact: 'a@b\nc@d',
+      correlationIds: 'id1, id2, id1',
+      correlationIdTypes: '- kind: a\n  value: b\n',
+      enabled: 'yes',
+      count: '42',
+      notes: ['line1', 'line2'] as any,
+      meta: '{"a": 1}',
+      tags: 'x\ny',
     };
 
     const candidate = await mod.projectForSchema('system', form, schemaObj);
@@ -228,7 +225,7 @@ describe('validation/run.ts extra coverage', () => {
       },
     };
 
-    const getContent = jest.fn(async (args: any) => {
+    const getContent = vi.fn(async (args: any) => {
       if (args.path === 'schema.json') {
         return {
           data: {
@@ -244,7 +241,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
 
@@ -363,7 +360,7 @@ describe('validation/run.ts extra coverage', () => {
       },
     };
 
-    const getContent = jest.fn(async (args: any) => {
+    const getContent = vi.fn(async (args: any) => {
       if (args.path === 'schema.json') {
         return {
           data: {
@@ -379,7 +376,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
 
@@ -443,7 +440,7 @@ describe('validation/run.ts extra coverage', () => {
       },
     };
 
-    const getContent = jest.fn(async (args: any) => {
+    const getContent = vi.fn(async (args: any) => {
       if (args.path === 'schema.json') {
         return {
           data: {
@@ -464,7 +461,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
 
@@ -504,8 +501,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
 
@@ -543,7 +540,7 @@ describe('validation/run.ts extra coverage', () => {
     const schemaObj = {
       type: 'object',
       properties: {
-        foo: { 'type': 'string', 'x-form-field': 'identifier' },
+        foo: { type: 'string', 'x-form-field': 'identifier' },
       },
     };
 
@@ -607,22 +604,22 @@ describe('validation/run.ts extra coverage', () => {
 
         // noisy oneOf type error + minItems at same path -> filterNoisyOneOfTypeErrors()
         tags: {
-          'type': 'array',
+          type: 'array',
           'x-form-field': 'tags',
-          'oneOf': [{ type: 'string' }, { type: 'array', minItems: 2, items: { type: 'string', pattern: '^[a-z]+$' } }],
+          oneOf: [{ type: 'string' }, { type: 'array', minItems: 2, items: { type: 'string', pattern: '^[a-z]+$' } }],
         },
 
         // additionalProperties error with params.additionalProperty -> DBG "extras" logging
         meta: {
-          'type': 'object',
+          type: 'object',
           'x-form-field': 'meta',
-          'properties': { allowed: { type: 'string' } },
-          'additionalProperties': false,
+          properties: { allowed: { type: 'string' } },
+          additionalProperties: false,
         },
       },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       // schemaPath starts with "/": loader strips leading "/" -> "schema.json"
       if (path === 'schema.json') {
         return { data: { content: b64json(schemaObj), encoding: 'base64' } };
@@ -636,7 +633,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -710,20 +707,20 @@ describe('validation/run.ts extra coverage', () => {
       type: 'object',
       properties: {
         // marks primary identifier via x-form-field="identifier"
-        name: { 'type': 'string', 'x-form-field': 'identifier' },
+        name: { type: 'string', 'x-form-field': 'identifier' },
         type: { const: 'system' },
       },
       required: ['type', 'name'],
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
       throw httpErr(404);
     });
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -773,7 +770,7 @@ describe('validation/run.ts extra coverage', () => {
       required: ['type', 'name', 'identifier', 'title'],
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
 
       // file exists -> registry error bucket
@@ -784,7 +781,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -831,7 +828,7 @@ describe('validation/run.ts extra coverage', () => {
 
     // schema still 404 in repo -> fallback to loadSchemaLocal()
     // but vendor root "sap" exists, so vendor governance stays neutral
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'data/vendors/sap.yaml') {
         return {
           data: {
@@ -867,7 +864,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -894,11 +891,11 @@ describe('validation/run.ts extra coverage', () => {
     const ctx: any = {
       octokit: {
         rest: {
-          repos: { getContent: jest.fn(async () => ({ data: [] })) },
+          repos: { getContent: vi.fn(async () => ({ data: [] })) },
           issues: mkIssuesStub(),
         },
       },
-      log: { warn: jest.fn() },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -934,8 +931,8 @@ describe('validation/run.ts extra coverage', () => {
     mocks.loadTemplate.mockRejectedValueOnce(new Error('template missing'));
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
     };
 
@@ -957,7 +954,7 @@ describe('validation/run.ts extra coverage', () => {
         type: { type: 'string' },
         name: { type: 'string' },
 
-        enabled: { 'type': 'boolean', 'x-form-field': 'enabled' },
+        enabled: { type: 'boolean', 'x-form-field': 'enabled' },
 
         shortDescription: { type: 'string' },
         summary: { type: 'string' },
@@ -967,12 +964,12 @@ describe('validation/run.ts extra coverage', () => {
     };
 
     const form: any = {
-      'identifier': 'acme.sys',
-      'enabled': 'no',
+      identifier: 'acme.sys',
+      enabled: 'no',
       'short-description': '  short  ',
-      'summary': ' sum ',
-      'details': ' det ',
-      'parentId': ' p1 ',
+      summary: ' sum ',
+      details: ' det ',
+      parentId: ' p1 ',
     };
 
     const cand = await mod.projectForSchema('system', form, schemaObj);
@@ -1024,8 +1021,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1061,8 +1058,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1097,8 +1094,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1155,7 +1152,7 @@ describe('validation/run.ts extra coverage', () => {
       },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') {
         return { data: { content: b64json(schemaObj), encoding: 'base64' } };
       }
@@ -1181,7 +1178,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1198,8 +1195,8 @@ describe('validation/run.ts extra coverage', () => {
       {
         template,
         formData: {
-          'requestType': 'subContext',
-          'identifier': 'sap.cds.ai',
+          requestType: 'subContext',
+          identifier: 'sap.cds.ai',
           'sub-context-description': '  hello  ',
           'correlation-ids': 'c1\nc2',
         },
@@ -1241,7 +1238,7 @@ describe('validation/run.ts extra coverage', () => {
       properties: { type: { const: 'weird' }, name: { type: 'string' } },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
       if (path === 'data/acme.weird.yaml') throw httpErr(404);
       throw httpErr(404);
@@ -1249,7 +1246,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn() },
+      log: { warn: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1292,15 +1289,15 @@ describe('validation/run.ts extra coverage', () => {
         type: { const: 'system' },
         name: { type: 'string' },
         meta: {
-          'type': 'object',
+          type: 'object',
           'x-form-field': 'meta',
-          'properties': { allowed: { type: 'string' } },
-          'additionalProperties': false, // triggers additionalProperties error
+          properties: { allowed: { type: 'string' } },
+          additionalProperties: false, // triggers additionalProperties error
         },
       },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
       if (path === 'data/acme.sys.yaml') throw httpErr(404);
       throw httpErr(404);
@@ -1308,7 +1305,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1333,7 +1330,7 @@ describe('validation/run.ts extra coverage', () => {
   it('runCustomValidateForRegistryCandidate: buildFormFromCandidate stringifies complex values', async () => {
     const { mod, restore } = await loadSubject();
 
-    const onValidate = jest.fn(async ({ form }: any) => {
+    const onValidate = vi.fn(async ({ form }: any) => {
       expect(form).toHaveProperty('name', 'acme.sys');
       expect(form).toHaveProperty('identifier', 'acme.sys');
       expect(form).toHaveProperty('namespace', 'acme.sys');
@@ -1343,8 +1340,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
       resourceBotConfig: { requests: {} },
@@ -1375,8 +1372,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: {
         __type: 'registry-bot-hooks:esm',
@@ -1419,7 +1416,7 @@ describe('validation/run.ts extra coverage', () => {
   it('runCustomValidateForRegistryCandidate: normalizes explicit formData like issue validation', async () => {
     const { mod, restore } = await loadSubject();
 
-    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+    const onValidate = vi.fn(async ({ form, requestType, resourceName }: any) => {
       expect(requestType).toBe('product');
       expect(resourceName).toBe('PROD-1');
 
@@ -1434,8 +1431,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
       resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
@@ -1457,8 +1454,8 @@ describe('validation/run.ts extra coverage', () => {
         candidate: { name: 'ignored' },
         formData: {
           'product-id': ' PROD-1 ',
-          'description': '  desc  ',
-          'contacts': 'a@x\nb@y',
+          description: '  desc  ',
+          contacts: 'a@x\nb@y',
           'correlation-ids': 'c1\nc2',
         },
       }
@@ -1473,7 +1470,7 @@ describe('validation/run.ts extra coverage', () => {
   it('runCustomValidateForRegistryCandidate: builds normalized form from candidate using schema mapping', async () => {
     const { mod, restore } = await loadSubject({ mockYaml: true });
 
-    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+    const onValidate = vi.fn(async ({ form, requestType, resourceName }: any) => {
       expect(requestType).toBe('system');
       expect(resourceName).toBe('acme.sys');
 
@@ -1492,8 +1489,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
       resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
@@ -1543,8 +1540,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: {
         __type: 'registry-bot-hooks:esm',
@@ -1571,7 +1568,7 @@ describe('validation/run.ts extra coverage', () => {
         candidate: { name: 'ignored' },
         formData: {
           'product-id': ' PROD-2 ',
-          'contacts': ['a@x', 'b@y'] as any,
+          contacts: ['a@x', 'b@y'] as any,
         },
       }
     );
@@ -1602,13 +1599,13 @@ describe('validation/run.ts extra coverage', () => {
   it('runCustomValidateForRegistryCandidate: returns hook error when legacy onValidate throws', async () => {
     const { mod, restore } = await loadSubject();
 
-    const onValidate = jest.fn(async () => {
+    const onValidate = vi.fn(async () => {
       throw new Error('boom');
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
       resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
@@ -1647,12 +1644,12 @@ describe('validation/run.ts extra coverage', () => {
       type: 'object',
       properties: {
         type: { const: 'system' },
-        resourceName: { 'type': 'string', 'x-form-field': 'identifier' },
+        resourceName: { type: 'string', 'x-form-field': 'identifier' },
       },
       required: ['type', 'resourceName'],
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') return { data: { content: b64json(schemaObj), encoding: 'base64' } };
       if (path === 'data/acme.sys.yaml') throw httpErr(404);
       throw httpErr(404);
@@ -1660,7 +1657,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1686,7 +1683,7 @@ describe('validation/run.ts extra coverage', () => {
   it('runCustomValidateForRegistryCandidate: uses explicit resourceName and explicit normalized formData', async () => {
     const { mod, restore } = await loadSubject();
 
-    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+    const onValidate = vi.fn(async ({ form, requestType, resourceName }: any) => {
       expect(requestType).toBe('product');
       expect(resourceName).toBe('PROD-1');
       expect(form).toEqual({
@@ -1702,8 +1699,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
       resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
@@ -1735,7 +1732,7 @@ describe('validation/run.ts extra coverage', () => {
   it('runCustomValidateForRegistryCandidate: falls back to candidate identifier for resourceName', async () => {
     const { mod, restore } = await loadSubject();
 
-    const onValidate = jest.fn(async ({ form, requestType, resourceName }: any) => {
+    const onValidate = vi.fn(async ({ form, requestType, resourceName }: any) => {
       expect(requestType).toBe('product');
       expect(resourceName).toBe('PROD-123');
       expect(form.identifier).toBe('PROD-123');
@@ -1746,8 +1743,8 @@ describe('validation/run.ts extra coverage', () => {
     });
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: { onValidate },
       resourceBotConfig: { requests: {}, hooks: { allowedHosts: ['api.sap.com'] } },
@@ -1779,8 +1776,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       resourceBotHooks: {
         __type: 'registry-bot-hooks:esm',
@@ -1844,8 +1841,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { warn: jest.fn(), info: jest.fn(), debug: jest.fn(), error: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1890,8 +1887,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -1965,8 +1962,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -2011,8 +2008,8 @@ describe('validation/run.ts extra coverage', () => {
     } as any);
 
     const ctx: any = {
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -2064,8 +2061,8 @@ describe('validation/run.ts extra coverage', () => {
       } as any);
 
     const mkCtx = () => ({
-      octokit: { rest: { repos: { getContent: jest.fn() }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      octokit: { rest: { repos: { getContent: vi.fn() }, issues: mkIssuesStub() } },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     });
@@ -2124,7 +2121,7 @@ describe('validation/run.ts extra coverage', () => {
       },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === 'schema.json') {
         return {
           data: {
@@ -2141,7 +2138,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -2188,12 +2185,12 @@ describe('validation/run.ts extra coverage', () => {
       required: ['type', 'name', 'title'],
       properties: {
         type: { const: 'product' },
-        name: { 'type': 'string', 'minLength': 5, 'x-form-field': 'identifier' },
+        name: { type: 'string', minLength: 5, 'x-form-field': 'identifier' },
         title: { type: 'string', minLength: 3 },
       },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === '/schema.json' || path === 'schema.json') {
         return {
           data: {
@@ -2210,7 +2207,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -2263,12 +2260,12 @@ describe('validation/run.ts extra coverage', () => {
       required: ['type', 'name', 'title'],
       properties: {
         type: { const: 'product' },
-        name: { 'type': 'string', 'minLength': 5, 'x-form-field': 'identifier' },
+        name: { type: 'string', minLength: 5, 'x-form-field': 'identifier' },
         title: { type: 'string', minLength: 3 },
       },
     };
 
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
       if (path === '/schema.json' || path === 'schema.json') {
         return {
           data: {
@@ -2285,7 +2282,7 @@ describe('validation/run.ts extra coverage', () => {
 
     const ctx: any = {
       octokit: { rest: { repos: { getContent }, issues: mkIssuesStub() } },
-      log: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),
     };
@@ -2323,7 +2320,7 @@ describe('vendor governance', () => {
     required: ['type', 'name', 'description', 'contact'],
     properties: {
       type: { const: 'system' },
-      name: { 'type': 'string', 'x-form-field': 'identifier', 'pattern': '^[a-z]+\\.[a-z]+$' },
+      name: { type: 'string', 'x-form-field': 'identifier', pattern: '^[a-z]+\\.[a-z]+$' },
       description: { type: 'string', minLength: 3 },
       contact: { type: 'array', minItems: 1, items: { type: 'string' } },
       visibility: { type: 'string' },
@@ -2336,7 +2333,7 @@ describe('vendor governance', () => {
     required: ['type', 'name', 'description', 'contact'],
     properties: {
       type: { const: 'subContext' },
-      name: { 'type': 'string', 'x-form-field': 'identifier', 'pattern': '^[a-z]+\\.[a-z]+\\.[a-z]+$' },
+      name: { type: 'string', 'x-form-field': 'identifier', pattern: '^[a-z]+\\.[a-z]+\\.[a-z]+$' },
       description: { type: 'string', minLength: 3 },
       contact: { type: 'array', minItems: 1, items: { type: 'string' } },
     },
@@ -2368,8 +2365,8 @@ describe('vendor governance', () => {
   });
 
   function mkValidationContext(files: Record<string, unknown>, configOverrides: Record<string, unknown> = {}) {
-    const getContent = jest.fn(async ({ path }: { path: string }) => {
-      if (Object.prototype.hasOwnProperty.call(files, path)) {
+    const getContent = vi.fn(async ({ path }: { path: string }) => {
+      if (Object.hasOwn(files, path)) {
         return toFileResponse(files[path]);
       }
       throw http404();
@@ -2380,21 +2377,21 @@ describe('vendor governance', () => {
         rest: {
           repos: { getContent },
           issues: {
-            get: jest.fn(),
-            listForRepo: jest.fn(),
-            update: jest.fn(),
-            create: jest.fn(),
-            createComment: jest.fn(),
-            addLabels: jest.fn(),
-            removeLabel: jest.fn(),
+            get: vi.fn(),
+            listForRepo: vi.fn(),
+            update: vi.fn(),
+            create: vi.fn(),
+            createComment: vi.fn(),
+            addLabels: vi.fn(),
+            removeLabel: vi.fn(),
           },
         },
       },
       log: {
-        debug: jest.fn(),
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
       },
       repo: () => ({ owner: 'o', repo: 'r' }),
       issue: () => ({ owner: 'o', repo: 'r', issue_number: 1 }),

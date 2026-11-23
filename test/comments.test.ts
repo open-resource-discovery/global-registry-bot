@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, it, jest } from '@jest/globals';
+import { describe, expect, it, type MockedFunction, vi } from 'vitest';
 import type { IssueCommentLike, ReportedContentClassifier } from '../src/handlers/request/comments.js';
 
 type ListCommentsArgs = {
@@ -28,23 +28,23 @@ type Ctx = {
   octokit: {
     rest: {
       issues: {
-        listComments: jest.MockedFunction<ListCommentsFn>;
-        createComment: jest.MockedFunction<CreateCommentFn>;
+        listComments: MockedFunction<ListCommentsFn>;
+        createComment: MockedFunction<CreateCommentFn>;
       };
     };
-    graphql: jest.MockedFunction<GraphqlFn>;
+    graphql: MockedFunction<GraphqlFn>;
   };
-  log: { warn: jest.MockedFunction<WarnFn> };
+  log: { warn: MockedFunction<WarnFn> };
   payload?: unknown;
 };
 
 type CtxBundle = {
   ctx: Ctx;
   mocks: {
-    listComments: jest.MockedFunction<ListCommentsFn>;
-    createComment: jest.MockedFunction<CreateCommentFn>;
-    graphql: jest.MockedFunction<GraphqlFn>;
-    warn: jest.MockedFunction<WarnFn>;
+    listComments: MockedFunction<ListCommentsFn>;
+    createComment: MockedFunction<CreateCommentFn>;
+    graphql: MockedFunction<GraphqlFn>;
+    warn: MockedFunction<WarnFn>;
   };
 };
 
@@ -53,9 +53,9 @@ function errWithStatus(message: string, status: number): { status: number; messa
 }
 
 function mkCtx(payload?: unknown): CtxBundle {
-  const listComments = jest.fn<ListCommentsFn>(() => Promise.resolve({ data: [] })).mockName('listComments');
+  const listComments = vi.fn<ListCommentsFn>(() => Promise.resolve({ data: [] })).mockName('listComments');
 
-  const createComment = jest
+  const createComment = vi
     .fn<CreateCommentFn>(() =>
       Promise.resolve({
         data: { id: 999, body: 'x', user: { type: 'Bot', login: 'bot' }, node_id: 'N999' },
@@ -63,9 +63,9 @@ function mkCtx(payload?: unknown): CtxBundle {
     )
     .mockName('createComment');
 
-  const graphql = jest.fn<GraphqlFn>(() => Promise.resolve({ ok: true })).mockName('graphql');
+  const graphql = vi.fn<GraphqlFn>(() => Promise.resolve({ ok: true })).mockName('graphql');
 
-  const warn = jest.fn<WarnFn>(() => undefined).mockName('warn');
+  const warn = vi.fn<WarnFn>(() => undefined).mockName('warn');
 
   const ctx: Ctx = {
     octokit: { rest: { issues: { listComments, createComment } }, graphql },
@@ -79,7 +79,7 @@ function mkCtx(payload?: unknown): CtxBundle {
 type CommentsModule = typeof import('../src/handlers/request/comments.js');
 
 function loadSubject(): Promise<CommentsModule> {
-  jest.resetModules();
+  vi.resetModules();
   return import('../src/handlers/request/comments.js');
 }
 

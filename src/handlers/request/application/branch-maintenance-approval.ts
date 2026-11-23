@@ -1,8 +1,8 @@
-import { hasAutoApprovedPrHead } from './auto-approved-head-tracking.js';
-import { listPullRequestReviews, type PullRequestReviewReadingContext } from './pull-request-review-reading.js';
 import { buildAutoApprovalReviewMarker } from '../domain/auto-approval-review-marker.js';
 import { toStringTrim } from '../domain/login-utils.js';
 import { getLatestActionableReviewStates } from '../domain/pull-request-review-state.js';
+import { hasAutoApprovedPrHead } from './auto-approved-head-tracking.js';
+import { listPullRequestReviews, type PullRequestReviewReadingContext } from './pull-request-review-reading.js';
 
 type RepoInfo = { owner: string; repo: string };
 

@@ -1,9 +1,9 @@
+import { toStringTrim } from '../domain/login-utils.js';
 import {
   buildDetectedIssuesBody,
   normalizeMachineReadableIssues,
   singleMachineReadableIssue,
 } from '../domain/machine-readable.js';
-import { toStringTrim } from '../domain/login-utils.js';
 
 type IssueParamsBase = { owner: string; repo: string; issue_number: number };
 

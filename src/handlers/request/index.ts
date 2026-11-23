@@ -1,69 +1,73 @@
-import { setStateLabel as setStateLabelRaw } from './state.js';
-import { postOnce as postOnceRaw, collapseBotCommentsByPrefix as collapseBotCommentsByPrefixRaw } from './comments.js';
-import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './template.js';
-import {
-  validateRequestIssue as validateRequestIssueRaw,
-  runApprovalHook as runApprovalHookRaw,
-} from './validation/run.js';
-import {
-  calcSnapshotHash as calcSnapshotHashRaw,
-  extractHashFromPrBody as extractHashFromPRBodyRaw,
-  findOpenIssuePrs as findOpenIssuePRsRaw,
-} from './pr/snapshot.js';
-import { createRequestPr as createRequestPRRaw } from './pr/create.js';
-import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
+import { createHash } from 'node:crypto';
+import type { Context, Probot } from 'probot';
+import { DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
+import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
+import type { ApprovalCommentHandlingCallbacks } from './application/approval-comment-handling.js';
+import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
+import type { ApprovedRequestFinalizationCallbacks } from './application/approved-request-finalization.js';
 import {
   autoApprovedPrHeadKey as autoApprovedPrHeadKeyApplication,
   hasAutoApprovedPrHead as hasAutoApprovedPrHeadApplication,
   markAutoApprovedPrHead as markAutoApprovedPrHeadApplication,
 } from './application/auto-approved-head-tracking.js';
 import {
-  hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr as hasAllowedCurrentHeadManualApprovalForStandaloneDirectPrApplication,
-  hasAllowedStandaloneDirectPrApprovalForCurrentHead as hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication,
-  type DirectPrReviewApprovalCallbacks,
-} from './application/direct-pr-review-approval.js';
-import { type DirectPrChangedResourceApprovalCallbacks } from './application/direct-pr-changed-resource-approval.js';
-import {
-  evaluateDirectPrOnApproval as evaluateDirectPrOnApprovalApplication,
-  type DirectPrApprovalEvaluationCallbacks,
-} from './application/direct-pr-approval-evaluation.js';
-import {
-  evaluateHeadGreenForApprovalReevaluation as evaluateHeadGreenForApprovalReevaluationApplication,
-  type HeadGreenEvaluationCallbacks,
-} from './application/head-green-evaluation.js';
-import {
-  isPullRequestApprovedForBranchMaintenance as isPullRequestApprovedForBranchMaintenanceApplication,
   type BranchMaintenanceApprovalCallbacks,
+  isPullRequestApprovedForBranchMaintenance as isPullRequestApprovedForBranchMaintenanceApplication,
 } from './application/branch-maintenance-approval.js';
 import {
-  runBranchUpdateBenignFailureRetry as runBranchUpdateBenignFailureRetryApplication,
   type BranchUpdateBenignRetryCallbacks,
   type BranchUpdateBenignRetryOutcome,
+  runBranchUpdateBenignFailureRetry as runBranchUpdateBenignFailureRetryApplication,
 } from './application/branch-update-benign-retry.js';
 import {
-  requestPullRequestBranchUpdate as requestPullRequestBranchUpdateApplication,
-  type BranchUpdateOrchestrationCallbacks,
-} from './application/branch-update-orchestration.js';
+  type BranchUpdateDecisionCallbacks,
+  isPullRequestBehindCurrentBase as isPullRequestBehindCurrentBaseApplication,
+  readBranchHeadSha as readBranchHeadShaApplication,
+} from './application/branch-update-decision.js';
 import {
+  type BranchUpdateOrchestrationCallbacks,
+  requestPullRequestBranchUpdate as requestPullRequestBranchUpdateApplication,
+} from './application/branch-update-orchestration.js';
+import { handleCheckCompletedEvent as handleCheckCompletedEventApplication } from './application/check-completed-handler.js';
+import {
+  type CheckPrResolutionCallbacks,
   readCheckRunFromPayload as readCheckRunFromPayloadApplication,
   readCheckRunPrNumbers as readCheckRunPrNumbersApplication,
   readCheckSuiteFromPayload as readCheckSuiteFromPayloadApplication,
   readCheckSuiteId as readCheckSuiteIdApplication,
   resolveCheckSuitePrNumbers as resolveCheckSuitePrNumbersApplication,
-  type CheckPrResolutionCallbacks,
 } from './application/check-pr-resolution.js';
 import {
+  type CheckSuiteAnnotationsCallbacks,
   listAllCheckRunsForSuite as listAllCheckRunsForSuiteApplication,
   readFirstRegistryValidationArtifactsForSuiteRuns as readFirstRegistryValidationArtifactsForSuiteRunsApplication,
-  type CheckSuiteAnnotationsCallbacks,
 } from './application/check-suite-annotations.js';
 import {
-  postCheckSuiteRegistryValidationComments as postCheckSuiteRegistryValidationCommentsApplication,
   type CheckSuiteCiCommentingCallbacks,
+  postCheckSuiteRegistryValidationComments as postCheckSuiteRegistryValidationCommentsApplication,
 } from './application/check-suite-ci-commenting.js';
-import { handleCheckCompletedEvent as handleCheckCompletedEventApplication } from './application/check-completed-handler.js';
-import { extractParentContactCandidates, lookupGithubLoginsByEmail } from './application/parent-contact-resolution.js';
-import { checkParentChainExistsInFlatStructureApplication } from './application/parent-chain-validation.js';
+import {
+  type DirectPrApprovalEvaluationCallbacks,
+  evaluateDirectPrOnApproval as evaluateDirectPrOnApprovalApplication,
+} from './application/direct-pr-approval-evaluation.js';
+import {
+  type DirectPrApproverResolutionCallbacks,
+  resolveAllowedApproversForRequestTypes as resolveAllowedApproversForRequestTypesApplication,
+} from './application/direct-pr-approver-resolution.js';
+import type { DirectPrChangedResourceApprovalCallbacks } from './application/direct-pr-changed-resource-approval.js';
+import {
+  type DirectPrRequestTypeResolutionCallbacks,
+  resolveDirectPrRequestTypes as resolveDirectPrRequestTypesApplication,
+} from './application/direct-pr-request-type-resolution.js';
+import {
+  type DirectPrReviewApprovalCallbacks,
+  hasAllowedCurrentHeadManualApprovalForStandaloneDirectPr as hasAllowedCurrentHeadManualApprovalForStandaloneDirectPrApplication,
+  hasAllowedStandaloneDirectPrApprovalForCurrentHead as hasAllowedStandaloneDirectPrApprovalForCurrentHeadApplication,
+} from './application/direct-pr-review-approval.js';
+import {
+  evaluateHeadGreenForApprovalReevaluation as evaluateHeadGreenForApprovalReevaluationApplication,
+  type HeadGreenEvaluationCallbacks,
+} from './application/head-green-evaluation.js';
 import {
   addApprovedLabelToPr as addApprovedLabelToPrApplication,
   applyApprovedRequestState as applyApprovedRequestStateApplication,
@@ -71,20 +75,35 @@ import {
   ensureLabelsPresentOnce as ensureLabelsPresentOnceApplication,
   ensureReviewLabelsPresentOnIssue as ensureReviewLabelsPresentOnIssueApplication,
   fetchIssueLabels as fetchIssueLabelsApplication,
+  type IssueStateReviewerOperationsCallbacks,
   removeExactLabelsFromIssue as removeExactLabelsFromIssueApplication,
   removeProgressStatusLabels as removeProgressStatusLabelsApplication,
   removeRejectedStatusLabel as removeRejectedStatusLabelApplication,
-  type IssueStateReviewerOperationsCallbacks,
 } from './application/issue-state-reviewer-operations.js';
 import {
-  buildRegistryValidationAggregatePrCommentBody as buildRegistryValidationAggregatePrCommentBodyApplication,
-  type RequestValidationPostingCallbacks,
-} from './application/request-validation-posting.js';
+  detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
+  enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
+  ensureRoutingLockMarker as ensureRoutingLockMarkerApplication,
+  handleClosedIssueWorkflowGuard as handleClosedIssueWorkflowGuardApplication,
+  handleIssueLabelChangeWorkflowGuard as handleIssueLabelChangeWorkflowGuardApplication,
+  type IssueWorkflowGuardCallbacks,
+} from './application/issue-workflow-guard.js';
+import type { OwnerApprovalCommentHandlingCallbacks } from './application/owner-approval-comment-handling.js';
+import {
+  assignParentOwnersForApproval as assignParentOwnersForApprovalApplication,
+  clearParentOwnerActionState as clearParentOwnerActionStateApplication,
+  ensureContactApprovalMarker as ensureContactApprovalMarkerApplication,
+  ensureParentApprovalMarker as ensureParentApprovalMarkerApplication,
+  type OwnerApprovalRequirementsCallbacks,
+  setParentOwnerActionState as setParentOwnerActionStateApplication,
+} from './application/owner-approval-requirements.js';
+import { checkParentChainExistsInFlatStructureApplication } from './application/parent-chain-validation.js';
+import { extractParentContactCandidates, lookupGithubLoginsByEmail } from './application/parent-contact-resolution.js';
 import {
   buildPullRequestHeadReadCandidates as buildPullRequestHeadReadCandidatesApplication,
   isChangedYamlCandidate as isChangedYamlCandidateApplication,
-  listChangedYamlFilesForPr as listChangedYamlFilesForPrApplication,
   listChangedYamlFilesForPrAgainstCurrentBase as listChangedYamlFilesForPrAgainstCurrentBaseApplication,
+  listChangedYamlFilesForPr as listChangedYamlFilesForPrApplication,
   listChangedYamlFilesForPrWithFallback as listChangedYamlFilesForPrWithFallbackApplication,
   listChangedYamlFilesPage as listChangedYamlFilesPageApplication,
   type PullRequestHeadReadCandidate,
@@ -94,7 +113,22 @@ import {
   readRepoFileTextAtRef as readRepoFileTextAtRefApplication,
   registryYamlTreeEntryPath as registryYamlTreeEntryPathApplication,
 } from './application/pr-head-changed-file-discovery.js';
+import {
+  type PullRequestAuthorResolutionCallbacks,
+  resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
+} from './application/pull-request-author-resolution.js';
+import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
+import {
+  type PullRequestMergeabilityCallbacks,
+  waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
+} from './application/pull-request-mergeability.js';
+import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
 import { readRegistryDocForApproval as readRegistryDocForApprovalApplication } from './application/registry-doc-for-approval.js';
+import {
+  buildRegistryValidationAggregatePrCommentBody as buildRegistryValidationAggregatePrCommentBodyApplication,
+  type RequestValidationPostingCallbacks,
+} from './application/request-validation-posting.js';
+import { handoverToCpa } from './application/review-handover.js';
 import { isSequentialDirectRegistryPr as isSequentialDirectRegistryPrApplication } from './application/sequential-direct-registry-pr-detection.js';
 import {
   clearSequentialRegistryPrActive,
@@ -103,46 +137,41 @@ import {
   markSequentialRegistryPrActive as markSequentialRegistryPrActiveState,
   markSequentialRegistryPrHeadSkipped as markSequentialRegistryPrHeadSkippedState,
 } from './application/sequential-registry-pr-state.js';
-import { callPullRequestBranchUpdate as callPullRequestBranchUpdateApplication } from './application/pull-request-branch-update-call.js';
+import { collapseBotCommentsByPrefix as collapseBotCommentsByPrefixRaw, postOnce as postOnceRaw } from './comments.js';
 import {
-  waitForPullRequestMergeability as waitForPullRequestMergeabilityApplication,
-  type PullRequestMergeabilityCallbacks,
-} from './application/pull-request-mergeability.js';
+  composeApprovalCommentHandlingCallbacks,
+  composeApprovedRequestFinalizationCallbacks,
+  composeIssueStateReviewerOperationsCallbacks,
+  composeIssueWorkflowGuardCallbacks,
+  composeOwnerApprovalCommentHandlingCallbacks,
+  createApprovalRuntime,
+  createAutoMergeRuntime,
+  createCheckWorkflowRuntime,
+  createDirectPrRuntime,
+  createRequestLifecycleRuntime,
+} from './composition/index.js';
+import { getDocLinksFromConfig } from './constants.js';
+import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
+import type { ApprovalDecision } from './domain/approval-decision.js';
 import {
-  resolvePullRequestRequestAuthorId as resolvePullRequestRequestAuthorIdApplication,
-  type PullRequestAuthorResolutionCallbacks,
-} from './application/pull-request-author-resolution.js';
+  type ContactApprovalMeta,
+  type ParentApprovalMeta,
+  readContactApprovalMeta,
+  readParentApprovalMeta,
+} from './domain/approval-markers.js';
+import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
+import { type HeadGreenRunSummary, isBlockingCheckConclusion } from './domain/check-conclusions.js';
+import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
 import {
-  resolveAllowedApproversForRequestTypes as resolveAllowedApproversForRequestTypesApplication,
-  type DirectPrApproverResolutionCallbacks,
-} from './application/direct-pr-approver-resolution.js';
+  matchRequestTypesForFile as matchRequestTypesForFilePure,
+  pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
+} from './domain/direct-pr-resource-mapping.js';
+import { readIssueBodyForProcessing, readIssueBodyForSnapshotLegacy } from './domain/issue-body-processing.js';
 import {
-  resolveDirectPrRequestTypes as resolveDirectPrRequestTypesApplication,
-  type DirectPrRequestTypeResolutionCallbacks,
-} from './application/direct-pr-request-type-resolution.js';
-import { listPullRequestReviews as listPullRequestReviewsApplication } from './application/pull-request-review-reading.js';
-import { handoverToCpa } from './application/review-handover.js';
-import { rejectRequestFromApprovalHook } from './application/approval-rejection.js';
-import { type ApprovalCommentHandlingCallbacks } from './application/approval-comment-handling.js';
-import { type OwnerApprovalCommentHandlingCallbacks } from './application/owner-approval-comment-handling.js';
-import {
-  detectSingleRoutingLabel as detectSingleRoutingLabelApplication,
-  enforceRoutingLabelLock as enforceRoutingLabelLockApplication,
-  ensureRoutingLockMarker as ensureRoutingLockMarkerApplication,
-  handleClosedIssueWorkflowGuard as handleClosedIssueWorkflowGuardApplication,
-  handleIssueLabelChangeWorkflowGuard as handleIssueLabelChangeWorkflowGuardApplication,
-  type IssueWorkflowGuardCallbacks,
-} from './application/issue-workflow-guard.js';
-import {
-  assignParentOwnersForApproval as assignParentOwnersForApprovalApplication,
-  clearParentOwnerActionState as clearParentOwnerActionStateApplication,
-  ensureContactApprovalMarker as ensureContactApprovalMarkerApplication,
-  ensureParentApprovalMarker as ensureParentApprovalMarkerApplication,
-  setParentOwnerActionState as setParentOwnerActionStateApplication,
-  type OwnerApprovalRequirementsCallbacks,
-} from './application/owner-approval-requirements.js';
-import { type ApprovedRequestFinalizationCallbacks } from './application/approved-request-finalization.js';
-import { isBlockingCheckConclusion, type HeadGreenRunSummary } from './domain/check-conclusions.js';
+  normalizeLogin as normalizeLoginPure,
+  toStringTrim as toStringTrimPure,
+  uniqLogins as uniqLoginsPure,
+} from './domain/login-utils.js';
 import {
   isPullRequestBehindBase as isPullRequestBehindBasePure,
   isPullRequestDirty as isPullRequestDirtyPure,
@@ -154,51 +183,9 @@ import {
   resolvePullRequestHeadRepoInfo as resolvePullRequestHeadRepoInfoPure,
   sameRepoInfo as sameRepoInfoPure,
 } from './domain/pull-request-repo-info.js';
-import {
-  isPullRequestBehindCurrentBase as isPullRequestBehindCurrentBaseApplication,
-  readBranchHeadSha as readBranchHeadShaApplication,
-  type BranchUpdateDecisionCallbacks,
-} from './application/branch-update-decision.js';
-import {
-  matchRequestTypesForFile as matchRequestTypesForFilePure,
-  pickRequestTypeForChangedResource as pickRequestTypeForChangedResourcePure,
-} from './domain/direct-pr-resource-mapping.js';
-import { type ApprovalDecision } from './domain/approval-decision.js';
-import { isAuthorizedApprover as isAuthorizedApproverPure } from './domain/approval-authorization.js';
-import {
-  normalizeLogin as normalizeLoginPure,
-  toStringTrim as toStringTrimPure,
-  uniqLogins as uniqLoginsPure,
-} from './domain/login-utils.js';
-import { buildAutoApprovalReviewMarker as buildAutoApprovalReviewMarkerPure } from './domain/auto-approval-review-marker.js';
-import {
-  readContactApprovalMeta,
-  readParentApprovalMeta,
-  type ContactApprovalMeta,
-  type ParentApprovalMeta,
-} from './domain/approval-markers.js';
-import { readIssueBodyForProcessing, readIssueBodyForSnapshotLegacy } from './domain/issue-body-processing.js';
-import { type RegistryValidationMachineReadableSource } from './domain/registry-validation-annotations.js';
-import { isApprovalComment, isAuthorUpdateComment, stripQuoteAndCode } from './domain/comment-commands.js';
-import { tryMergeIfGreen as tryMergeIfGreenRaw } from '../../lib/auto-merge.js';
-import { DEFAULT_CONFIG, type NormalizedStaticConfig, type RegistryBotHooks } from '../../config.js';
-import { getDocLinksFromConfig } from './constants.js';
-import { getErrorMessage, getHttpStatus, isPlainObject } from './infrastructure/errors.js';
-import { log as infraLog } from './infrastructure/logger.js';
-import {
-  createGitHubGateway,
-  createGitHubIssueUpdateGateway,
-  type GitHubGateway,
-} from './infrastructure/github-gateway.js';
-import {
-  readDefaultBranchFromPayload,
-  readDefaultBranchFromPush,
-  readPayloadLabelName,
-  readPushChangedFiles,
-  readRepoInfoFromPayload,
-} from './infrastructure/request-context.js';
-import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
-import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
+import type { RegistryValidationMachineReadableSource } from './domain/registry-validation-annotations.js';
+import { buildReviewHandoverBody as buildReviewHandoverBodyPure } from './domain/review-handover-rendering.js';
+import { createCheckEventHandler } from './events/checks.js';
 import { registerRequestEvents } from './events/index.js';
 import { createIssueCommentEventHandler } from './events/issue-comments.js';
 import {
@@ -207,23 +194,36 @@ import {
   createIssueLifecycleEventHandler,
 } from './events/issues.js';
 import { createPullRequestEventHandler } from './events/pull-requests.js';
-import { createCheckEventHandler } from './events/checks.js';
-import { createStatusEventHandler } from './events/status.js';
 import { createPushEventHandler } from './events/push.js';
+import { createStatusEventHandler } from './events/status.js';
+import { getErrorMessage, getHttpStatus, isPlainObject } from './infrastructure/errors.js';
 import {
-  composeApprovalCommentHandlingCallbacks,
-  composeApprovedRequestFinalizationCallbacks,
-  createApprovalRuntime,
-  createAutoMergeRuntime,
-  createCheckWorkflowRuntime,
-  createDirectPrRuntime,
-  createRequestLifecycleRuntime,
-  composeIssueStateReviewerOperationsCallbacks,
-  composeIssueWorkflowGuardCallbacks,
-  composeOwnerApprovalCommentHandlingCallbacks,
-} from './composition/index.js';
-import type { Context, Probot } from 'probot';
-import { createHash } from 'node:crypto';
+  createGitHubGateway,
+  createGitHubIssueUpdateGateway,
+  type GitHubGateway,
+} from './infrastructure/github-gateway.js';
+import { log as infraLog } from './infrastructure/logger.js';
+import { isRepoContentFile, readRepoFileText, readYamlFromRepo } from './infrastructure/repo-files.js';
+import {
+  readDefaultBranchFromPayload,
+  readDefaultBranchFromPush,
+  readPayloadLabelName,
+  readPushChangedFiles,
+  readRepoInfoFromPayload,
+} from './infrastructure/request-context.js';
+import { createStaticConfigContextLoader } from './infrastructure/static-config-context.js';
+import { createRequestPr as createRequestPRRaw } from './pr/create.js';
+import {
+  calcSnapshotHash as calcSnapshotHashRaw,
+  extractHashFromPrBody as extractHashFromPRBodyRaw,
+  findOpenIssuePrs as findOpenIssuePRsRaw,
+} from './pr/snapshot.js';
+import { setStateLabel as setStateLabelRaw } from './state.js';
+import { loadTemplate as loadTemplateRaw, parseForm as parseFormRaw } from './template.js';
+import {
+  runApprovalHook as runApprovalHookRaw,
+  validateRequestIssue as validateRequestIssueRaw,
+} from './validation/run.js';
 
 const DBG = process.env.DEBUG_NS === '1';
 

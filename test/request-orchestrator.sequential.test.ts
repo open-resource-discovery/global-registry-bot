@@ -1,12 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-function-return-type */
 /* eslint-disable require-await */
-import { afterAll, beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
+import { afterAll, beforeAll, beforeEach, expect, type MockedFunction, test, vi } from 'vitest';
 
 const PREV_DEBUG_NS = process.env.DEBUG_NS;
 process.env.DEBUG_NS = '1';
 
 let currentTestNow = Date.parse('2026-04-22T09:00:00.000Z');
-const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => currentTestNow);
+const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => currentTestNow);
 
 afterAll(() => {
   process.env.DEBUG_NS = PREV_DEBUG_NS;
@@ -15,11 +15,11 @@ afterAll(() => {
 
 type IssueParams = { owner: string; repo: string; issue_number: number };
 
-const setStateLabel = jest.fn(async (_ctx: any, _params: any, _options: any, _state: any) => {});
-const ensureAssigneesOnce = jest.fn(async () => {});
+const setStateLabel = vi.fn(async (_ctx: any, _params: any, _options: any, _state: any) => {});
+const ensureAssigneesOnce = vi.fn(async () => {});
 type PostOnceFn = (ctx: any, params: any, body: string, options?: any) => Promise<void>;
 
-const postOnce = jest.fn<PostOnceFn>(async (_ctx, _params, _body, _options) => {});
+const postOnce = vi.fn<PostOnceFn>(async (_ctx, _params, _body, _options) => {});
 
 type CollapseBotCommentsByPrefix = (
   ctx: unknown,
@@ -27,28 +27,28 @@ type CollapseBotCommentsByPrefix = (
   opts: { perPage?: number; tagPrefix: string; keepTags?: string[]; collapseBody?: string; classifier?: string }
 ) => Promise<void>;
 
-const collapseBotCommentsByPrefix = jest.fn() as unknown as jest.MockedFunction<CollapseBotCommentsByPrefix>;
+const collapseBotCommentsByPrefix = vi.fn() as unknown as MockedFunction<CollapseBotCommentsByPrefix>;
 
-const loadTemplate = jest.fn(async () => ({}));
-const parseForm = jest.fn(() => ({}));
-const validateRequestIssue = jest.fn(async () => ({}));
-const calcSnapshotHash = jest.fn(() => 'h1');
-const extractHashFromPrBody = jest.fn(() => 'h1');
+const loadTemplate = vi.fn(async () => ({}));
+const parseForm = vi.fn(() => ({}));
+const validateRequestIssue = vi.fn(async () => ({}));
+const calcSnapshotHash = vi.fn(() => 'h1');
+const extractHashFromPrBody = vi.fn(() => 'h1');
 type FindOpenIssuePrsFn = (
   context: any,
   repo: { owner: string; repo: string },
   issueNumber: number
 ) => Promise<{ number: number; body?: string | null; head: { ref: string; sha: string } }[]>;
 
-const findOpenIssuePrs = jest.fn<FindOpenIssuePrsFn>(async () => []);
+const findOpenIssuePrs = vi.fn<FindOpenIssuePrsFn>(async () => []);
 
 type RunApprovalHookFn = (ctx: any, repo: { owner: string; repo: string }, opts: any) => Promise<boolean>;
-const runApprovalHook = jest.fn<RunApprovalHookFn>(async () => false);
+const runApprovalHook = vi.fn<RunApprovalHookFn>(async () => false);
 
-const createRequestPr = jest.fn(async () => ({ number: 10 }));
-const tryMergeIfGreen = jest.fn(async (_ctx: any, _opts: any) => {});
-const loadStaticConfig = jest.fn(async () => ({}));
-const getDocLinksFromConfig = jest.fn(() => '');
+const createRequestPr = vi.fn(async () => ({ number: 10 }));
+const tryMergeIfGreen = vi.fn(async (_ctx: any, _opts: any) => {});
+const loadStaticConfig = vi.fn(async () => ({}));
+const getDocLinksFromConfig = vi.fn(() => '');
 
 type TestConfig = {
   workflow?: {
@@ -97,10 +97,10 @@ function mkApp() {
   const handlers: Record<string, any[]> = {};
   const app: any = {
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     on: (events: string | string[], fn: any) => {
       const arr = Array.isArray(events) ? events : [events];
@@ -147,23 +147,23 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
     name: 'x',
     payload: {},
     log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     },
     repo: () => ({ owner, repo }),
     issue: () => ({ owner, repo, issue_number: issue.number }),
     octokit: {
       rest: {
         issues: {
-          get: jest.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
-          update: jest.fn<IssuesUpdateFn>(() => Promise.resolve({})),
-          addLabels: jest.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
-          removeLabel: jest.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
+          get: vi.fn<IssuesGetFn>(() => Promise.resolve({ data: issue })),
+          update: vi.fn<IssuesUpdateFn>(() => Promise.resolve({})),
+          addLabels: vi.fn<IssuesAddLabelsFn>(() => Promise.resolve({})),
+          removeLabel: vi.fn<IssuesRemoveLabelFn>(() => Promise.resolve({})),
         },
         pulls: {
-          get: jest.fn<PullsGetFn>((pullArgs: any) =>
+          get: vi.fn<PullsGetFn>((pullArgs: any) =>
             Promise.resolve({
               data: {
                 number: Number(pullArgs?.pull_number ?? 5),
@@ -175,31 +175,31 @@ function mkBaseContext(args: { owner?: string; repo?: string; issue?: any; withC
               },
             })
           ),
-          list: jest.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
-          listFiles: jest.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
-          listCommits: jest.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
-          listReviews: jest.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
-          createReview: jest.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
-          update: jest.fn<PullsUpdateFn>(() => Promise.resolve({})),
-          updateBranch: jest.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
+          list: vi.fn<PullsListFn>(() => Promise.resolve({ data: [] })),
+          listFiles: vi.fn<PullsListFilesFn>(() => Promise.resolve({ data: [] })),
+          listCommits: vi.fn<PullsListCommitsFn>(() => Promise.resolve({ data: [] })),
+          listReviews: vi.fn<PullsListReviewsFn>(() => Promise.resolve({ data: [] })),
+          createReview: vi.fn<PullsCreateReviewFn>(() => Promise.resolve({})),
+          update: vi.fn<PullsUpdateFn>(() => Promise.resolve({})),
+          updateBranch: vi.fn<PullsUpdateBranchFn>(() => Promise.resolve({})),
         },
         git: {
-          deleteRef: jest.fn<GitDeleteRefFn>(() => Promise.resolve({})),
+          deleteRef: vi.fn<GitDeleteRefFn>(() => Promise.resolve({})),
         },
         repos: {
-          getContent: jest.fn<ReposGetContentFn>(() => Promise.resolve({})),
+          getContent: vi.fn<ReposGetContentFn>(() => Promise.resolve({})),
         },
         checks: {
-          listAnnotations: jest.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
-          listForSuite: jest.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
-          listForRef: jest.fn<ChecksListForRefFn>().mockResolvedValue({
+          listAnnotations: vi.fn<ChecksListAnnotationsFn>().mockResolvedValue({ data: [] as any[] }),
+          listForSuite: vi.fn<ChecksListForSuiteFn>().mockResolvedValue({ data: { check_runs: [] } }),
+          listForRef: vi.fn<ChecksListForRefFn>().mockResolvedValue({
             data: {
               check_runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: 'success' }],
             },
           }),
         },
       },
-      request: jest.fn(async () => ({ data: { workflow_runs: [] } })),
+      request: vi.fn(async () => ({ data: { workflow_runs: [] } })),
     },
   };
 
@@ -247,46 +247,46 @@ function mkCheckSuiteContext(args: {
 }
 
 beforeAll(async () => {
-  await jest.unstable_mockModule('../src/handlers/request/state.js', () => ({
+  await vi.doMock('../src/handlers/request/state.js', () => ({
     setStateLabel,
     ensureAssigneesOnce,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/comments.js', () => ({
+  await vi.doMock('../src/handlers/request/comments.js', () => ({
     postOnce,
     collapseBotCommentsByPrefix,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/template.js', () => ({
+  await vi.doMock('../src/handlers/request/template.js', () => ({
     loadTemplate,
     parseForm,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/validation/run.js', () => ({
+  await vi.doMock('../src/handlers/request/validation/run.js', () => ({
     validateRequestIssue,
     runApprovalHook,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/pr/snapshot.js', () => ({
+  await vi.doMock('../src/handlers/request/pr/snapshot.js', () => ({
     calcSnapshotHash,
     extractHashFromPrBody,
     findOpenIssuePrs,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/pr/create.js', () => ({
+  await vi.doMock('../src/handlers/request/pr/create.js', () => ({
     createRequestPr,
   }));
 
-  await jest.unstable_mockModule('../src/lib/auto-merge.js', () => ({
+  await vi.doMock('../src/lib/auto-merge.js', () => ({
     tryMergeIfGreen,
   }));
 
-  await jest.unstable_mockModule('../src/config.js', () => ({
+  await vi.doMock('../src/config.js', () => ({
     DEFAULT_CONFIG,
     loadStaticConfig,
   }));
 
-  await jest.unstable_mockModule('../src/handlers/request/constants.js', () => ({
+  await vi.doMock('../src/handlers/request/constants.js', () => ({
     getDocLinksFromConfig,
   }));
 
@@ -296,7 +296,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   currentTestNow += 7 * 60 * 60 * 1000;
-  jest.resetAllMocks();
+  vi.resetAllMocks();
   dateNowSpy.mockImplementation(() => currentTestNow);
 
   setStateLabel.mockImplementation(async () => {});
@@ -667,9 +667,9 @@ test('push: approval config change uses dedicated direct PR reevaluation reason'
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-config-change', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -859,8 +859,8 @@ test('push: approved registry PR posts manual update notice after protected bran
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-branch-manual', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(() => {
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(() => {
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';
@@ -978,9 +978,9 @@ test('push: approved registry PR logs retry failure after benign expected head m
 
   const handler = handlers['push'][0];
   const ctx = mkBaseContext({ owner: 'o1', repo: 'r-branch-retry-failed', withCachedConfig: true, config: cfg });
-  const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+  const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: TimerHandler) => {
     if (typeof callback === 'function') callback();
-    return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+    return { unref: vi.fn() } as unknown as ReturnType<typeof setTimeout>;
   });
 
   ctx.name = 'push';

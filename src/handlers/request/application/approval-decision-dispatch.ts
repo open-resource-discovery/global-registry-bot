@@ -1,4 +1,4 @@
-import { normalizeApprovalDecision, type ApprovalDecision } from '../domain/approval-decision.js';
+import { type ApprovalDecision, normalizeApprovalDecision } from '../domain/approval-decision.js';
 import { postApprovalUnknownOnce } from './approval-outcome-posting.js';
 
 type DispatchContext = Parameters<typeof postApprovalUnknownOnce>[0];

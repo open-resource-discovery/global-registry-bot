@@ -1,6 +1,6 @@
 import { postOnce } from '../comments.js';
 import { buildApprovalRejectedBody, buildApprovalUnknownBody } from '../domain/approval-comment-rendering.js';
-import { type ApprovalDecision } from '../domain/approval-decision.js';
+import type { ApprovalDecision } from '../domain/approval-decision.js';
 
 type ApprovalOutcomePostingContext = Parameters<typeof postOnce>[0];
 type ApprovalOutcomePostingParams = Parameters<typeof postOnce>[1];

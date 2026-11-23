@@ -1,5 +1,5 @@
-import { buildRoutingLockBody, readRoutingLockExpected } from '../domain/routing-lock-marker.js';
 import { toStringTrim } from '../domain/login-utils.js';
+import { buildRoutingLockBody, readRoutingLockExpected } from '../domain/routing-lock-marker.js';
 
 type IssueParamsBase = {
   owner: string;

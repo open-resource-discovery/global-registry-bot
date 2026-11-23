@@ -1,4 +1,4 @@
-import { normalizeApprovalDecision, type ApprovalDecision } from './approval-decision.js';
+import { type ApprovalDecision, normalizeApprovalDecision } from './approval-decision.js';
 
 function toStringTrim(value: unknown): string {
   if (value === undefined || value === null) return '';

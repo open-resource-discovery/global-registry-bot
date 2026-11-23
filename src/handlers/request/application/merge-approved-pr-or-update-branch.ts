@@ -1,3 +1,4 @@
+import { toStringTrim } from '../domain/login-utils.js';
 import {
   isMergeBlockedByBranchProtection,
   shouldTryBranchUpdateAfterMergeFailure,
@@ -8,7 +9,6 @@ import {
   isPullRequestOpen,
   readMergeableState,
 } from '../domain/pull-request-merge-state.js';
-import { toStringTrim } from '../domain/login-utils.js';
 
 type RepoInfoBase = { owner: string; repo: string };
 

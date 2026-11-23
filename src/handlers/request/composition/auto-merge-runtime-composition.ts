@@ -1,31 +1,31 @@
 import {
-  requestPullRequestBranchUpdateRespectingSequentialRegistryQueue as requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication,
+  type AutoMergeTriggerCallbacks,
+  runAutoMergeEvaluation as runAutoMergeEvaluationApplication,
+  tryAutoMerge as tryAutoMergeApplication,
+} from '../application/auto-merge-trigger.js';
+import {
   type BranchUpdateSequentialHandoffCallbacks,
+  requestPullRequestBranchUpdateRespectingSequentialRegistryQueue as requestPullRequestBranchUpdateRespectingSequentialRegistryQueueApplication,
 } from '../application/branch-update-sequential-handoff.js';
+import {
+  type MergeApprovedPrOrUpdateBranchCallbacks,
+  runMergeApprovedPrOrUpdateBranch as runMergeApprovedPrOrUpdateBranchApplication,
+} from '../application/merge-approved-pr-or-update-branch.js';
+import { tryMergeApprovedPrOrUpdateBranch as tryMergeApprovedPrOrUpdateBranchApplication } from '../application/merge-inflight.js';
+import {
+  type PullRequestAutoMergeEntryCallbacks,
+  processPullRequestForAutoMerge as processPullRequestForAutoMergeApplication,
+} from '../application/pull-request-auto-merge-entry.js';
+import {
+  runOneSequentialDirectRegistryPrMaintenance as runOneSequentialDirectRegistryPrMaintenanceApplication,
+  type SequentialRegistryPrQueueCallbacks,
+} from '../application/sequential-registry-pr-queue.js';
 import {
   advanceSequentialRegistryPrQueueAfterTerminalState as advanceSequentialRegistryPrQueueAfterTerminalStateApplication,
   handleBlockingRegistryHeadConclusion as handleBlockingRegistryHeadConclusionApplication,
   releaseSequentialRegistryPrIfNotApprovedAfterGreen as releaseSequentialRegistryPrIfNotApprovedAfterGreenApplication,
   type SequentialRegistryPrTerminalCallbacks,
 } from '../application/sequential-registry-pr-terminal.js';
-import {
-  runOneSequentialDirectRegistryPrMaintenance as runOneSequentialDirectRegistryPrMaintenanceApplication,
-  type SequentialRegistryPrQueueCallbacks,
-} from '../application/sequential-registry-pr-queue.js';
-import {
-  runAutoMergeEvaluation as runAutoMergeEvaluationApplication,
-  tryAutoMerge as tryAutoMergeApplication,
-  type AutoMergeTriggerCallbacks,
-} from '../application/auto-merge-trigger.js';
-import { tryMergeApprovedPrOrUpdateBranch as tryMergeApprovedPrOrUpdateBranchApplication } from '../application/merge-inflight.js';
-import {
-  runMergeApprovedPrOrUpdateBranch as runMergeApprovedPrOrUpdateBranchApplication,
-  type MergeApprovedPrOrUpdateBranchCallbacks,
-} from '../application/merge-approved-pr-or-update-branch.js';
-import {
-  processPullRequestForAutoMerge as processPullRequestForAutoMergeApplication,
-  type PullRequestAutoMergeEntryCallbacks,
-} from '../application/pull-request-auto-merge-entry.js';
 import type { HeadGreenRunSummary } from '../domain/check-conclusions.js';
 
 type RepoInfoBase = {
