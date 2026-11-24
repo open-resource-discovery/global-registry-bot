@@ -1,0 +1,6 @@
+# Review owners for CI and build configuration.
+/.github/ @open-resource-discovery/global-registry-bot-admin
+/renovate.json @open-resource-discovery/global-registry-bot-admin
+/package.json @open-resource-discovery/global-registry-bot-admin
+/package-lock.json @open-resource-discovery/global-registry-bot-admin
+/action.yml @open-resource-discovery/global-registry-bot-admin
