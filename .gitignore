@@ -12,6 +12,7 @@ yarn-error.log*
 
 # coverage / test artifacts
 coverage
+/reports/jest-coverage/
 *.lcov
 
 # system files
