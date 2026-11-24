@@ -130,7 +130,8 @@ runs:
             github.event.action == 'opened' ||
             github.event.action == 'reopened' ||
             github.event.action == 'ready_for_review' ||
-            (github.event.action == 'synchronize' && (steps.pr_reviewers.outputs.sender_is_bot != 'true' || steps.pr_human_touch.outputs.result == 'true'))
+            (github.event.action == 'synchronize' && (steps.pr_reviewers.outputs.sender_is_bot != 'true' || steps.pr_human_touch.outputs.result
+        == 'true'))
           )
         }}
       continue-on-error: true
