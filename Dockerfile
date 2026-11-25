@@ -16,7 +16,7 @@ WORKDIR /app
 RUN apk add --no-cache bash
 
 COPY package.json package-lock.json .npmrc ./
-RUN npm install --global --ignore-scripts npm@11.20.0 && npm ci
+RUN npm install --global --ignore-scripts npm@11.20.0 && npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
