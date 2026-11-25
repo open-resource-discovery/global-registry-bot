@@ -7,9 +7,10 @@ Published consumer engine requirements are unchanged.
 Install from the committed lockfiles with npm ci.
 npm applies the two-day minimum release age when it resolves versions, including lockfile updates.
 When npm ci reuses a valid lockfile, it does not independently recheck release age.
-Project configuration rejects dependency lifecycle scripts that have no explicit decision.
-Version-specific allowScripts entries deny automatic scripts unless an existing reviewed approval is retained.
-Repository pre/post build and generation commands remain enabled.
+The project disables dependency lifecycle scripts during install.
+CI checks the lockfile separately for missing version-specific decisions.
+Run `npm run setup:hooks` after `npm ci` to install local Husky hooks.
+Run repository build and generation commands explicitly.
 Review a dependency script and its registry identity/integrity before changing its entry to true.
 Avoid scope-wide age exceptions, and use a documented package/version exception only for an urgent reviewed security fix.
 
