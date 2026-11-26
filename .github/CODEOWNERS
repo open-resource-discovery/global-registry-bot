@@ -6,4 +6,3 @@
 /action.yml @open-resource-discovery/global-registry-bot-admin
 /.npmrc @open-resource-discovery/global-registry-bot-admin
 /scripts/check-install-scripts.mjs @open-resource-discovery/global-registry-bot-admin
-/SECURITY_INSTALL.md @open-resource-discovery/global-registry-bot-admin
