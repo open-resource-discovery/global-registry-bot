@@ -94,5 +94,9 @@
   "allowScripts": {
     "@parcel/watcher@2.6.0": false,
     "unrs-resolver@1.12.2": false
+  },
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "11.0.9",
+    "glob@>=9.0.0 <=14.0.1": "14.0.2"
   }
 }
