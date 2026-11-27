@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true # Needed by the release/push step
       - name: Create GitHub Release
-        uses: open-resource-discovery/github-release@70fcf9f5444e0e83420754d19850b06f8831236e # main
+        uses: open-resource-discovery/github-release@46ecd4368ec205fdb422ee7d777d4db8642e8566 # verified github-release #240 on main
         with:
           tag-template: 'v<version>'
           version: ${{ inputs.version }}
