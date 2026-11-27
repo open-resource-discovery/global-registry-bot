@@ -11,11 +11,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   ci:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -49,6 +50,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Trusted metadata boundary tests
+        run: npm run test:trusted-review
 
       - name: Tests (coverage)
         run: npm run test:coverage
