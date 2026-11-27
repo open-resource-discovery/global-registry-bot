@@ -1,6 +1,18 @@
 name: Registry validate
 description: Validate registry YAML files using registry-bot config and schemas
 inputs:
+  trusted-base-review:
+    description: Opt-in protected-base metadata review; requires pull_request_target and a base-only checkout.
+    required: false
+    default: 'false'
+  expected-base-branch:
+    description: Protected default branch for trusted review.
+    required: false
+    default: 'main'
+  expected-bot-id:
+    description: Immutable service bot ID permitted to receive automated approval in trusted mode.
+    required: false
+    default: ''
   mode:
     description: Optional override. pr or main. Leave empty for auto
     required: false
@@ -36,6 +48,15 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Prepare trusted registry metadata
+      id: trusted_review
+      if: inputs.trusted-base-review == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        EXPECTED_BASE_BRANCH: ${{ inputs.expected-base-branch }}
+      run: node "$GITHUB_ACTION_PATH/scripts/trusted-base-review.mjs" prepare
+
     - name: Setup Node
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
@@ -45,7 +66,7 @@ runs:
     - name: Install action dependencies
       shell: bash
       working-directory: ${{ github.action_path }}
-      run: npm ci
+      run: npm ci --ignore-scripts
 
     - name: Build action
       shell: bash
@@ -54,11 +75,15 @@ runs:
 
     - name: Detect human content on bot-created PRs
       id: pr_human_touch
-      if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true }}
+      if: ${{ (github.event_name == 'pull_request' || (inputs.trusted-base-review == 'true' && github.event_name == 'pull_request_target')) && github.event.pull_request.head.repo.fork != true && (inputs.request-reviewers == 'true' || inputs.auto-approve == 'true') }}
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         result-encoding: string
         script: |
+          if (context.eventName === 'pull_request_target') {
+            const { data: current } = await github.rest.pulls.get({ ...context.repo, pull_number: context.payload.pull_request.number });
+            if (current.state !== 'open' || current.draft || current.head.sha !== context.payload.pull_request.head.sha || current.base.sha !== context.payload.pull_request.base.sha) return 'false';
+          }
           const isBotSender = (sender) =>
             sender?.type === 'Bot' || /(\[bot\]|-bot)$/i.test(sender?.login || '');
 
@@ -91,6 +116,7 @@ runs:
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        TRUSTED_BASE_REVIEW: ${{ inputs.trusted-base-review }}
         REGISTRY_VALIDATE_MODE: ${{ inputs.mode }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -99,10 +125,11 @@ runs:
 
     - name: Compute PR reviewers
       id: pr_reviewers
-      if: ${{ inputs.request-reviewers == 'true' && github.event_name == 'pull_request' && steps.validate_registry.outcome == 'success' }}
+      if: ${{ inputs.request-reviewers == 'true' && (github.event_name == 'pull_request' || (inputs.trusted-base-review == 'true' && github.event_name == 'pull_request_target')) && steps.validate_registry.outcome == 'success' }}
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        TRUSTED_BASE_REVIEW: ${{ inputs.trusted-base-review }}
         REGISTRY_VALIDATE_MODE: ${{ inputs.mode }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -122,7 +149,7 @@ runs:
         ${{
           steps.validate_registry.outcome == 'success' &&
           inputs.request-reviewers == 'true' &&
-          github.event_name == 'pull_request' &&
+          (github.event_name == 'pull_request' || (inputs.trusted-base-review == 'true' && github.event_name == 'pull_request_target')) &&
           (steps.pr_reviewers.outputs.reviewers_count != '0' || steps.pr_reviewers.outputs.pr_creator_is_bot == 'true') &&
           github.event.pull_request.head.repo.fork != true &&
           github.event.pull_request.draft != true &&
@@ -144,6 +171,10 @@ runs:
         REVIEWERS_JSON: ${{ steps.pr_reviewers.outputs.reviewers_json }}
       with:
         script: |
+          if (context.eventName === 'pull_request_target') {
+            const { data: current } = await github.rest.pulls.get({ ...context.repo, pull_number: context.payload.pull_request.number });
+            if (current.state !== 'open' || current.draft || current.head.sha !== context.payload.pull_request.head.sha || current.base.sha !== context.payload.pull_request.base.sha) return 'false';
+          }
           const parsed = JSON.parse(process.env.REVIEWERS_JSON || '[]');
           const reviewers = Array.isArray(parsed) ? parsed : [];
 
@@ -199,7 +230,7 @@ runs:
 
     - name: Check auto-approve eligibility
       id: auto_approve_gate
-      if: ${{ inputs.auto-approve == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true && success() }}
+      if: ${{ inputs.auto-approve == 'true' && (github.event_name == 'pull_request' || (inputs.trusted-base-review == 'true' && github.event_name == 'pull_request_target')) && github.event.pull_request.head.repo.fork != true && success() }}
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         BOT_LOGIN: ${{ steps.pr_reviewers.outputs.bot_login }}
@@ -209,6 +240,10 @@ runs:
       with:
         result-encoding: string
         script: |
+          if (context.eventName === 'pull_request_target') {
+            const { data: current } = await github.rest.pulls.get({ ...context.repo, pull_number: context.payload.pull_request.number });
+            if (current.state !== 'open' || current.draft || current.head.sha !== context.payload.pull_request.head.sha || current.base.sha !== context.payload.pull_request.base.sha) return 'false';
+          }
           const botLogin = String(process.env.BOT_LOGIN || '').trim().toLowerCase();
           const senderIsBot = process.env.SENDER_IS_BOT === 'true';
           const prCreatorIsBot = process.env.PR_CREATOR_IS_BOT === 'true';
@@ -231,7 +266,21 @@ runs:
           return (hasOtherUser || hasTeams) ? 'false' : 'true';
 
     - name: Auto approve PR
-      if: ${{ inputs.auto-approve == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true && steps.validate_registry.outcome == 'success' && success() && steps.auto_approve_gate.outputs.result == 'true' }}
+      if: ${{ inputs.trusted-base-review != 'true' && inputs.auto-approve == 'true' && (github.event_name == 'pull_request' || (inputs.trusted-base-review == 'true' && github.event_name == 'pull_request_target')) && github.event.pull_request.head.repo.fork != true && steps.validate_registry.outcome == 'success' && success() && steps.auto_approve_gate.outputs.result == 'true' }}
       uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
       with:
         review-message: 'Auto approved registry PR'
+
+    - name: Approve verified metadata head
+      if: inputs.trusted-base-review == 'true' && inputs.auto-approve == 'true' && steps.validate_registry.outcome == 'success' && steps.auto_approve_gate.outputs.result == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        EXPECTED_BASE_BRANCH: ${{ inputs.expected-base-branch }}
+        EXPECTED_BOT_ID: ${{ inputs.expected-bot-id }}
+        VERIFIED_PR_HEAD: ${{ steps.trusted_review.outputs.head }}
+        VERIFIED_PR_BASE: ${{ steps.trusted_review.outputs.base }}
+        PR_HUMAN_TOUCHED: ${{ steps.pr_human_touch.outputs.result }}
+        REGISTRY_VALIDATE_OK: ${{ steps.validate_registry.outcome }}
+        VALIDATED_FILE_COUNT: ${{ steps.validate_registry.outputs.validated-files }}
+      run: node "$GITHUB_ACTION_PATH/scripts/trusted-base-review.mjs" approve

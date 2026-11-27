@@ -4,3 +4,5 @@
 /package.json @open-resource-discovery/global-registry-bot-admin
 /package-lock.json @open-resource-discovery/global-registry-bot-admin
 /action.yml @open-resource-discovery/global-registry-bot-admin
+/.npmrc @open-resource-discovery/global-registry-bot-admin
+/scripts/check-install-scripts.mjs @open-resource-discovery/global-registry-bot-admin

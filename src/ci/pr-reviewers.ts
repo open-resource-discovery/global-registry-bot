@@ -86,7 +86,10 @@ function pickMode(): Mode {
   if (forced === 'pr' || forced === 'main') return forced;
 
   const eventName = String(process.env.GITHUB_EVENT_NAME ?? '').trim();
-  return eventName === 'pull_request' ? 'pr' : 'main';
+  return eventName === 'pull_request' ||
+    (eventName === 'pull_request_target' && process.env.TRUSTED_BASE_REVIEW === 'true')
+    ? 'pr'
+    : 'main';
 }
 
 async function loadConfig(): Promise<LoadedConfig> {
@@ -265,7 +268,11 @@ async function main(): Promise<void> {
     botLogin,
   };
 
-  if (mode !== 'pr' || eventName !== 'pull_request') {
+  if (
+    mode !== 'pr' ||
+    (eventName !== 'pull_request' &&
+      !(eventName === 'pull_request_target' && process.env.TRUSTED_BASE_REVIEW === 'true'))
+  ) {
     await writeOutputs({ reviewers: [], ...baseOut });
     return;
   }

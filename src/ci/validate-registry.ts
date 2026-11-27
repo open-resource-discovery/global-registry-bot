@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
 import YAML from 'yaml';
-import { readFile, access, readdir, stat } from 'node:fs/promises';
+import { readFile, access, readdir, stat, appendFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import Ajv2020Module from 'ajv/dist/2020.js';
@@ -110,7 +110,9 @@ function normalizeRepoPath(p: string): string {
 
 function isYamlPath(p: string): boolean {
   const s = p.toLowerCase();
-  return s.endsWith('.yaml') || s.endsWith('.yml');
+  return (
+    s.endsWith('.yaml') || s.endsWith('.yml') || (process.env.TRUSTED_BASE_REVIEW === 'true' && s.endsWith('.json'))
+  );
 }
 
 function pickMode(): Mode {
@@ -271,7 +273,7 @@ function matchRequestTypesForFile(filePath: string, requests: RequestsConfig): F
   return { filePath: fp, candidates };
 }
 
-async function getChangedFiles(baseSha: string, headRef = 'HEAD'): Promise<string[]> {
+async function getChangedFiles(baseSha: string, headRef = 'HEAD', allowWorkspaceFallback = true): Promise<string[]> {
   const run = async (lhs: string, rhs: string): Promise<string[]> => {
     const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=AMR', lhs, rhs], {
       maxBuffer: 5 * 1024 * 1024,
@@ -303,7 +305,7 @@ async function getChangedFiles(baseSha: string, headRef = 'HEAD'): Promise<strin
   try {
     return await diffAgainstWorkspace(rhs);
   } catch {
-    if (rhs !== 'HEAD') {
+    if (rhs !== 'HEAD' && allowWorkspaceFallback) {
       return await diffAgainstWorkspace('HEAD');
     }
 
@@ -867,7 +869,9 @@ async function main(): Promise<void> {
     String(process.env.PR_IS_FORK ?? '')
       .trim()
       .toLowerCase() === 'true';
-  const trustedConfigRef = isForkPr ? requireEnv('PR_BASE_SHA') : '';
+  const trustedBaseReview =
+    process.env.TRUSTED_BASE_REVIEW === 'true' && process.env.GITHUB_EVENT_NAME === 'pull_request_target';
+  const trustedConfigRef = isForkPr || trustedBaseReview ? requireEnv('PR_BASE_SHA') : '';
 
   if (isForkPr) {
     console.log(`Fork PR detected -> using trusted config/hooks/schemas from base ${trustedConfigRef}`);
@@ -901,7 +905,11 @@ async function main(): Promise<void> {
 
   if (mode === 'pr') {
     const baseSha = requireEnv('PR_BASE_SHA');
-    const changed = await getChangedFiles(baseSha, 'HEAD');
+    const changed = await getChangedFiles(
+      baseSha,
+      trustedBaseReview ? requireEnv('PR_HEAD_SHA') : 'HEAD',
+      !trustedBaseReview
+    );
 
     targets = changed
       .filter(isYamlPath)
@@ -937,6 +945,10 @@ async function main(): Promise<void> {
     seen.add(k);
     return true;
   });
+
+  if (trustedBaseReview && process.env.GITHUB_OUTPUT) {
+    await appendFile(process.env.GITHUB_OUTPUT, 'validated-files=' + targets.length + String.fromCharCode(10));
+  }
 
   if (targets.length === 0) {
     console.log(`No registry files to validate in mode=${mode}`);

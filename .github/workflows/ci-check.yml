@@ -11,11 +11,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   ci:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -29,8 +30,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Install pinned npm for dependency policy
+        run: npm install --global --ignore-scripts npm@11.20.0 --registry=https://registry.npmjs.org/
+
+      - name: Verify locked install script policy
+        run: node scripts/check-install-scripts.mjs
+
       - name: Install dependencies
-        run: npm ci --prefer-offline
+        run: npm ci --ignore-scripts --prefer-offline
 
       - name: Prettier check
         run: npm run prettier:check
@@ -43,6 +50,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Trusted metadata boundary tests
+        run: npm run test:trusted-review
 
       - name: Tests (coverage)
         run: npm run test:coverage
