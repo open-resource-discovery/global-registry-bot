@@ -20,7 +20,7 @@ inputs:
   node-version:
     description: Node version to use
     required: false
-    default: '22'
+    default: '26'
 
   request-reviewers:
     description: Request PR reviewers based on registry-bot config approvers
@@ -48,6 +48,11 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Setup Node
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
     - name: Prepare trusted registry metadata
       id: trusted_review
       if: inputs.trusted-base-review == 'true'
@@ -57,11 +62,10 @@ runs:
         EXPECTED_BASE_BRANCH: ${{ inputs.expected-base-branch }}
       run: node "$GITHUB_ACTION_PATH/scripts/trusted-base-review.mjs" prepare
 
-    - name: Setup Node
-      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-      with:
-        node-version: ${{ inputs.node-version }}
-        token: ${{ github.token }}
+    - name: Install pinned npm for dependency policy
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm install --global --ignore-scripts npm@11.20.0 --registry=https://registry.npmjs.org/
 
     - name: Install action dependencies
       shell: bash

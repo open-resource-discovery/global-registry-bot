@@ -310,7 +310,8 @@ Shows the happy path call sequence.
 For privileged registry review, use a workflow defined on the protected base branch with pull_request_target and a checkout pinned to the event's base SHA, with persist-credentials: false.
 Set trusted-base-review: true, mode: pr, expected-base-branch, and the verified immutable expected-bot-id when automated approval is enabled.
 The Action rejects forks, drafts, stale heads/base revisions, incomplete changed-file lists, rename escapes, and changes outside regular bounded data JSON/YAML files.
-It fetches PR Git objects without checking out PR code and overlays only validated metadata on the protected base checkout.
+It fetches Git history for both verified revisions, deepening a shallow checkout when needed.
+The checkout stays at the protected base and receives only validated metadata files.
 Configuration, schemas, hooks, and executable code stay at the protected base revision.
 The original reviewer and human-touch policies remain in effect; automated approval additionally checks the service identity and explicitly binds the review to the validated commit.
 Grant contents: read and pull-requests: write, and never install or execute PR-defined code in that job.
