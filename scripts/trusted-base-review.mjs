@@ -170,6 +170,16 @@ async function safeDestination(root, name) {
   }
   return target;
 }
+export async function fetchVerifiedGitObjects(root, remote, base, head, env) {
+  const { stdout } = await exec('git', ['rev-parse', '--is-shallow-repository'], { cwd: root, env });
+  const depth = stdout.trim() === 'true' ? ['--unshallow'] : [];
+  await exec('git', ['fetch', '--no-tags', '--no-recurse-submodules', ...depth, remote, base, head], {
+    cwd: root,
+    env,
+    maxBuffer: 1024 * 1024,
+  });
+}
+
 export async function prepareTrustedReview(env = process.env) {
   const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
   const request = client(env);
@@ -194,16 +204,12 @@ export async function prepareTrustedReview(env = process.env) {
     GIT_CONFIG_VALUE_2: '',
   };
   try {
-    await exec(
-      'git',
-      [
-        'fetch',
-        '--no-tags',
-        '--no-recurse-submodules',
-        server.origin + '/' + env.GITHUB_REPOSITORY + '.git',
-        verified.head,
-      ],
-      { cwd: root, env: gitEnv, maxBuffer: 1024 * 1024 }
+    await fetchVerifiedGitObjects(
+      root,
+      server.origin + '/' + env.GITHUB_REPOSITORY + '.git',
+      verified.base,
+      verified.head,
+      gitEnv
     );
   } catch {
     throw new Error('Could not fetch verified PR Git objects');

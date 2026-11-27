@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +11,7 @@ import {
   verifyTree,
   approveTrustedReview,
   verifyGitChanges,
+  fetchVerifiedGitObjects,
 } from '../scripts/trusted-base-review.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -156,4 +159,38 @@ test('rename validation compares both source and destination with immutable Git 
     renamed
   );
   assert.throws(() => verifyGitChanges([{ path: 'data/new.yaml', status: 'A' }], renamed), /immutable Git diff/);
+});
+
+test('fetches both verified histories when the protected checkout is shallow', async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'registry-review-history-'));
+  const origin = path.join(temp, 'origin');
+  const checkout = path.join(temp, 'checkout');
+  const remote = pathToFileURL(origin).href;
+  const git = (cwd, ...args) =>
+    execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    git(temp, 'init', '--quiet', '--initial-branch=main', origin);
+    git(origin, 'config', 'user.name', 'Fixture');
+    git(origin, 'config', 'user.email', 'fixture@example.invalid');
+    git(origin, 'commit', '--quiet', '--allow-empty', '-m', 'Common history');
+    const common = git(origin, 'rev-parse', 'HEAD');
+    git(origin, 'branch', 'review');
+    git(origin, 'commit', '--quiet', '--allow-empty', '-m', 'Protected base update');
+    const base = git(origin, 'rev-parse', 'HEAD');
+    git(origin, 'switch', '--quiet', 'review');
+    await mkdir(path.join(origin, 'data'));
+    await writeFile(path.join(origin, 'data', 'record.yaml'), 'kind: dataset\n');
+    git(origin, 'add', 'data/record.yaml');
+    git(origin, 'commit', '--quiet', '-m', 'Proposed registry data');
+    const head = git(origin, 'rev-parse', 'HEAD');
+    git(temp, 'clone', '--quiet', '--depth=1', '--branch=main', remote, checkout);
+    assert.equal(git(checkout, 'rev-parse', '--is-shallow-repository'), 'true');
+
+    await fetchVerifiedGitObjects(checkout, remote, base, head, process.env);
+    assert.equal(git(checkout, 'rev-parse', 'HEAD'), base);
+    assert.equal(git(checkout, 'merge-base', base, head), common);
+    assert.equal(git(checkout, 'diff', '--name-status', '--no-renames', common, head), 'A\tdata/record.yaml');
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
