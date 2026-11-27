@@ -8,6 +8,7 @@ import {
   verifyReviewSnapshot,
   verifyTree,
   approveTrustedReview,
+  verifyGitChanges,
 } from '../scripts/trusted-base-review.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -127,4 +128,32 @@ test('approval binds to the verified head and rejects a different service identi
     globalThis.fetch = originalFetch;
     await rm(temp, { recursive: true, force: true });
   }
+});
+
+test('the immutable Git diff detects API omissions and inconsistent change types', () => {
+  verifyGitChanges([{ status: 'A', path: files[0].filename }], files);
+  assert.throws(
+    () =>
+      verifyGitChanges(
+        [
+          { status: 'A', path: files[0].filename },
+          { status: 'M', path: '.github/workflows/ci.yml' },
+        ],
+        files
+      ),
+    /immutable Git diff/
+  );
+  assert.throws(() => verifyGitChanges([{ status: 'M', path: files[0].filename }], files), /immutable Git diff/);
+  assert.throws(() => verifyGitChanges([{ status: 'A', path: files[0].filename }], [files[0], files[0]]), /Duplicate/);
+});
+test('rename validation compares both source and destination with immutable Git changes', () => {
+  const renamed = [{ filename: 'data/new.yaml', previous_filename: 'data/old.yaml', status: 'renamed' }];
+  verifyGitChanges(
+    [
+      { path: 'data/new.yaml', status: 'A' },
+      { path: 'data/old.yaml', status: 'D' },
+    ],
+    renamed
+  );
+  assert.throws(() => verifyGitChanges([{ path: 'data/new.yaml', status: 'A' }], renamed), /immutable Git diff/);
 });

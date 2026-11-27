@@ -83,6 +83,28 @@ export function verifyTree(tree, files) {
   }
   return entries;
 }
+export function verifyGitChanges(changes, files) {
+  const expected = new Map();
+  for (const file of files) {
+    if (expected.has(file.filename)) throw new Error('Duplicate API changed file');
+    expected.set(file.filename, file.status === 'removed' ? 'D' : file.status === 'modified' ? 'M' : 'A');
+    if (file.previous_filename) {
+      if (expected.has(file.previous_filename)) throw new Error('Conflicting rename source');
+      expected.set(file.previous_filename, 'D');
+    }
+  }
+  if (
+    changes.length !== expected.size ||
+    new Set(changes.map((change) => change.path)).size !== changes.length ||
+    !changes.every(
+      (change) =>
+        allowedDataPath(change.path) &&
+        (change.status === expected.get(change.path) || (change.status === 'T' && expected.get(change.path) === 'M'))
+    )
+  ) {
+    throw new Error('API file list does not match the complete immutable Git diff');
+  }
+}
 function client(env, fetchImpl = globalThis.fetch) {
   const api = new URL(env.GITHUB_API_URL);
   if (
@@ -186,6 +208,19 @@ export async function prepareTrustedReview(env = process.env) {
   } catch {
     throw new Error('Could not fetch verified PR Git objects');
   }
+  const { stdout: ancestor } = await exec('git', ['merge-base', verified.base, verified.head], { cwd: root });
+  if (!SHA.test(ancestor.trim())) throw new Error('Missing protected PR merge base');
+  const { stdout: diff } = await exec(
+    'git',
+    ['diff', '--name-status', '-z', '--no-renames', ancestor.trim(), verified.head],
+    { cwd: root, maxBuffer: 5 * 1024 * 1024 }
+  );
+  const fields = diff.split(String.fromCharCode(0));
+  if (fields.pop() !== '' || fields.length % 2) throw new Error('Invalid immutable Git diff');
+  const changes = [];
+  for (let index = 0; index < fields.length; index += 2)
+    changes.push({ status: fields[index], path: fields[index + 1] });
+  verifyGitChanges(changes, verified.files);
   const buffers = new Map();
   let bytes = 0;
   for (const file of verified.files) {
@@ -203,6 +238,7 @@ export async function prepareTrustedReview(env = process.env) {
   const latest = await snapshot(env, event, request);
   if (latest.head !== verified.head || latest.base !== verified.base)
     throw new Error('PR changed during metadata preparation');
+  verifyGitChanges(changes, latest.files);
   for (const file of verified.files) {
     for (const name of [file.status === 'removed' ? file.filename : null, file.previous_filename].filter(Boolean))
       await rm(await safeDestination(root, name), { force: true });
@@ -228,6 +264,7 @@ export async function approveTrustedReview(env = process.env) {
     event.sender?.id !== identity ||
     event.sender?.type !== 'Bot' ||
     env.PR_HUMAN_TOUCHED === 'true' ||
+    String(verified.pr.body || '').includes('<!-- registry-bot:human-content-change -->') ||
     env.REGISTRY_VALIDATE_OK !== 'success' ||
     Number(env.VALIDATED_FILE_COUNT) !== verified.files.filter((file) => file.status !== 'removed').length ||
     Number(env.VALIDATED_FILE_COUNT) <= 0
