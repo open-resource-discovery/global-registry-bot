@@ -83,7 +83,7 @@
   "bugs": {
     "url": "https://github.com/open-resource-discovery/global-registry-bot/issues"
   },
-  "packageManager": "npm@11.21.3",
+  "packageManager": "npm@12.2.3",
   "devEngines": {
     "packageManager": {
       "name": "npm",
