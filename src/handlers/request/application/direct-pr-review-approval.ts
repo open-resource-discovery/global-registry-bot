@@ -42,7 +42,7 @@ type PullRequestLike = {
 };
 
 type PullRequestReviewLike = {
-  id?: number | null;
+  id?: number | bigint | null;
   state?: string | null;
   body?: string | null;
   commit_id?: string | null;
