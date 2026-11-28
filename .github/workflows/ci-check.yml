@@ -31,7 +31,7 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install pinned npm for dependency policy
-        run: npm install --global --ignore-scripts npm@11.20.0 --registry=https://registry.npmjs.org/
+        run: npm install --global --ignore-scripts npm@11.21.3 --registry=https://registry.npmjs.org/
 
       - name: Verify locked install script policy
         run: node scripts/check-install-scripts.mjs
