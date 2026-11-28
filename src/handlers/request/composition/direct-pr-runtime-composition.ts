@@ -78,7 +78,7 @@ type EffectiveConstantsBase = {
 };
 
 type PullRequestReviewLikeBase = {
-  id?: number | null;
+  id?: number | bigint | null;
   state?: string | null;
   body?: string | null;
   submitted_at?: string | null;

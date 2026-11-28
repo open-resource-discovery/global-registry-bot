@@ -262,7 +262,6 @@ type SenderLike = { type?: string | null; login?: string | null };
 
 type IssueLike = {
   number: number;
-  id?: number;
   title?: string | null;
   state?: string | null;
   body?: string | null;
@@ -337,7 +336,7 @@ type PullRequestFileLike = {
 };
 
 type PullRequestReviewLike = {
-  id?: number | null;
+  id?: number | bigint | null;
   state?: string | null;
   body?: string | null;
   submitted_at?: string | null;

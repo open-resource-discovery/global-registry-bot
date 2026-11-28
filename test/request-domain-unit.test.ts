@@ -765,6 +765,18 @@ describe('sortPullRequestReviewsChronologically', () => {
     expect(sorted[0].id).toBe(1);
   });
 
+  test('orders large review IDs without losing precision', () => {
+    const submittedAt = '2024-01-01T00:00:00Z';
+    const reviews = [
+      { id: 9007199254740993n, submitted_at: submittedAt },
+      { id: 1, submitted_at: submittedAt },
+      { id: 9007199254740992n, submitted_at: submittedAt },
+    ];
+
+    const sorted = sortPullRequestReviewsChronologically(reviews);
+    expect(sorted.map((review) => review.id)).toEqual([1, 9007199254740992n, 9007199254740993n]);
+  });
+
   test('does not mutate original array', () => {
     const reviews = [{ id: 1, state: 'APPROVED', submitted_at: '2024-01-01T00:00:00Z', user: { login: 'a' } }];
     const sorted = sortPullRequestReviewsChronologically(reviews);
