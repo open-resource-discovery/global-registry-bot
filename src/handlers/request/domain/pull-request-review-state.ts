@@ -1,5 +1,5 @@
 type PullRequestReviewLike = {
-  id?: number | null;
+  id?: number | bigint | null;
   state?: string | null;
   submitted_at?: string | null;
   user?: { login?: string | null } | null;
@@ -33,9 +33,11 @@ export function sortPullRequestReviewsChronologically<ReviewType extends PullReq
 
     if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
 
-    const aid = typeof a.id === 'number' ? a.id : 0;
-    const bid = typeof b.id === 'number' ? b.id : 0;
-    return aid - bid;
+    const aid = a.id ?? 0;
+    const bid = b.id ?? 0;
+    if (aid < bid) return -1;
+    if (aid > bid) return 1;
+    return 0;
   });
 }
 

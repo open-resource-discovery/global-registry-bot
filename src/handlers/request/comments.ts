@@ -36,7 +36,7 @@ type CommentUserLike = {
 };
 
 export type IssueCommentLike = {
-  id: number;
+  id: number | bigint;
   body?: string | null;
   user?: CommentUserLike | null;
   node_id?: string | null;
@@ -327,7 +327,7 @@ export async function postOnce(
     const nsreqPrefixMarker = '<!-- nsreq:';
 
     for (const c of comments) {
-      const isOlder = c.id !== created.id;
+      const isOlder = String(c.id) !== String(created.id);
       const bodyStr = typeof c.body === 'string' ? c.body : '';
       const isTagged = minimizeAllNsreqComments ? bodyStr.includes(nsreqPrefixMarker) : bodyStr.includes(tagMarker);
       const isBotAuthor = isBotUser(c.user);

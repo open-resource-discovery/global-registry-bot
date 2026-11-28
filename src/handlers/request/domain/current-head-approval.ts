@@ -3,7 +3,7 @@ import { buildAutoApprovalReviewMarker } from './auto-approval-review-marker.js'
 type UserLike = { login?: string | null };
 
 type PullRequestReviewLike = {
-  id?: number | null;
+  id?: number | bigint | null;
   state?: string | null;
   body?: string | null;
   submitted_at?: string | null;
